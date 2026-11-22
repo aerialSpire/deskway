@@ -113,16 +113,20 @@ node --test tests/unit/*.test.mjs tests/contract/*.test.mjs
 
 ## 发布
 
-桌面端安装包由 **Desktop release** 工作流发布。该工作流需在 **Actions → Desktop release → Run workflow** 中手动启动，并填写标签，例如 `v0.1.0`。发布测试版时，勾选 **Mark the GitHub Release as a prerelease**。每个 Release 包含以下文件：
+各版本由 **Release** 工作流发布。该工作流需在 **Actions → Release → Run workflow** 中手动启动，并填写标签，例如 `v0.1.0`。发布测试版时，勾选 **Mark the GitHub Release as a prerelease**。每个 Release 包含以下文件：
 
 | 文件 | 内容 |
 |---|---|
+| `deskway-server-linux-amd64.tar.gz`、`deskway-server-linux-arm64.tar.gz` | Linux 版服务端（x86-64 和 ARM64），附许可证和 systemd 单元模板 |
 | `DeskwayHost-Setup-windows-x64.exe` | Windows（x64）版 Deskway Host 安装程序 |
 | `DeskwayHost-macos-universal.dmg` | macOS 版 Deskway Host（Apple 芯片和 Intel 通用） |
 | `deskway-windows-x64.exe` | Windows 版 AI 客户端程序 |
 | `deskway-macos-arm64`、`deskway-macos-x64` | macOS 版 AI 客户端程序 |
+| `SHA256SUMS` | 以上文件的 SHA-256 校验值 |
 
-AI 客户端程序的文件名与服务端要求的文件名完全一致，自托管的服务端可以直接使用（见[自托管部署第 5 步](docs/self-hosting.md#5-put-the-ai-client-programs-in-place-optional)）。服务端没有预编译版本，请按上文所述从源码编译。
+服务端同时以容器镜像 `ghcr.io/aerialspire/deskway-server` 发布，支持 `linux/amd64` 和 `linux/arm64`，标签为版本号（例如 `0.1.0`）；正式版（非预发布版）同时标记为 `latest`。
+
+AI 客户端程序的文件名与服务端要求的文件名完全一致，自托管的服务端可以直接使用（见[自托管部署第 5 步](docs/self-hosting.md#5-put-the-ai-client-programs-in-place-optional)）。
 
 ## 文档（英文）
 

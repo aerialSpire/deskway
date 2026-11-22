@@ -44,7 +44,34 @@ sudo ufw allow 49160:49359/udp
 
 `dig +short desk.example.net` should print the server's public IP address.
 
-## 2. Install Git and Go
+## 2. Download the server
+
+Each release includes the server for Linux on x86-64 and ARM64, together with the license and the
+systemd unit template. Download the one for your machine and check it against the release's
+checksums:
+
+```sh
+sudo apt-get update && sudo apt-get install -y curl ca-certificates
+
+tag=v0.1.0   # the release to run; see https://github.com/aerialSpire/deskway/releases
+arch=$(dpkg --print-architecture)   # amd64 or arm64
+base="https://github.com/aerialSpire/deskway/releases/download/$tag"
+curl -fLO "$base/deskway-server-linux-$arch.tar.gz"
+curl -fLO "$base/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf "deskway-server-linux-$arch.tar.gz"
+cd "deskway-server-linux-$arch"
+```
+
+`sha256sum` should print `deskway-server-linux-amd64.tar.gz: OK` (or `arm64`), and
+`./deskway-server -h` should list the server's flags. The folder now holds `deskway-server`,
+`deskway.service` and `LICENSE`. Continue with step 4 from this folder.
+
+To run the server in a container instead, see [Running in Docker](#running-in-docker).
+
+## 3. Or build the server from source
+
+Skip this step if you downloaded the server in step 2.
 
 Building the server requires Go 1.26 or later, and the latest stable release is recommended. The
 Debian and Ubuntu packages are usually older, so install Go from [go.dev/dl](https://go.dev/dl/):
@@ -62,32 +89,34 @@ echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
 export PATH=$PATH:/usr/local/go/bin
 ```
 
-`go version` should print `go1.26` or later.
-
-## 3. Build the server
+`go version` should print `go1.26` or later. Then build the server and gather the same files a
+release contains:
 
 ```sh
 git clone https://github.com/aerialSpire/deskway.git deskway
 cd deskway
 git checkout v0.1.0   # the release you want to run; omit to build the latest main
 go build -o bin/deskway-server ./cmd/deskway-server
+
+mkdir -p ~/deskway-server
+cp bin/deskway-server deploy/systemd/deskway.service LICENSE ~/deskway-server/
+cd ~/deskway-server
 ```
 
-The web client is embedded in the binary, so there is nothing else to deploy.
-
-You can also build on another computer and copy the binary over. Go cross-compiles without extra
-tools, so this works from Windows or macOS too:
+The web client is embedded in the binary, so there is nothing else to deploy. You can also build
+on another computer and copy the binary over. Go cross-compiles without extra tools, so this
+works from Windows or macOS too:
 
 ```sh
 GOOS=linux GOARCH=amd64 go build -o bin/deskway-server ./cmd/deskway-server
 ```
 
-`bin/deskway-server -h` should list the server's flags.
-
 ## 4. Install it and create the admin account
 
+Run these commands from the folder that holds `deskway-server` (step 2 or 3):
+
 ```sh
-sudo install -m 755 bin/deskway-server /usr/local/bin/deskway-server
+sudo install -m 755 deskway-server /usr/local/bin/deskway-server
 
 sudo useradd --system --user-group --home-dir /var/lib/deskway --shell /usr/sbin/nologin deskway
 sudo install -d -m 700 -o deskway -g deskway /var/lib/deskway
@@ -120,7 +149,7 @@ names, each with its SHA-256 hash:
 | `deskway-macos-x64` | macOS on Intel |
 
 Each GitHub release publishes the Windows x64 and macOS files under these names, so you can
-download them into the folder unchanged. Use the release tag of the server you built:
+download them into the folder unchanged. Use the release tag of the server you run:
 
 ```sh
 tag=v0.1.0   # the release you are running
@@ -146,14 +175,14 @@ file names don't match.
 
 ## 6. Start the service
 
-The repository includes a hardened systemd unit template, `deploy/systemd/deskway.service`. Fill
-in your domain and IP address and install it:
+The folder from step 2 or 3 holds a hardened systemd unit template, `deskway.service`. From that
+folder, fill in your domain and IP address and install it:
 
 ```sh
 deskway_domain=desk.example.net
 deskway_public_ip=203.0.113.10
 
-sed -e "s/@DOMAIN@/$deskway_domain/g" -e "s/@IP@/$deskway_public_ip/g" deploy/systemd/deskway.service \
+sed -e "s/@DOMAIN@/$deskway_domain/g" -e "s/@IP@/$deskway_public_ip/g" deskway.service \
   | sudo tee /etc/systemd/system/deskway.service >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now deskway
@@ -198,6 +227,49 @@ On a phone, turn off Wi-Fi and open `https://desk.example.net` over mobile data.
 the phone from your first browser when asked, then open the computer and check that you can see
 and control it. The session toolbar shows whether the connection is direct or goes through the
 relay. If the session works over mobile data, the TURN relay is working.
+
+## Running in Docker
+
+The server is also published as a container image, `ghcr.io/aerialspire/deskway-server`, for
+`linux/amd64` and `linux/arm64`. It holds only the server binary, runs as an unprivileged user
+(uid 65532) and keeps its data in `/data`. Use it instead of steps 2 to 6; the firewall (step 1)
+and everything from step 7 on stay the same.
+
+Use the host's network. The TURN relay needs UDP 3478 and the whole range 49160–49359, and it
+must see the server's real public address; mapping two hundred ports through Docker's proxy is
+slow and fragile.
+
+```sh
+tag=0.1.0   # the release version, without the leading "v"
+image=ghcr.io/aerialspire/deskway-server:$tag
+
+sudo install -d -m 700 -o 65532 -g 65532 /var/lib/deskway
+sudo docker run --rm -v /var/lib/deskway:/data "$image" admin me -data /data/state.json
+
+sudo docker run -d --name deskway --restart unless-stopped --network host \
+  -v /var/lib/deskway:/data "$image" \
+  -data /data/state.json -listen :443 -domain desk.example.net -public-ip 203.0.113.10
+```
+
+The first command prints the admin's initial password once, as in step 4. The container can bind
+port 443 although it does not run as root. `sudo docker logs deskway` shows the server log.
+
+For AI clients (step 5), put the programs in `/var/lib/deskway/clients`, owned by uid 65532:
+
+```sh
+sudo install -d -m 755 -o 65532 -g 65532 /var/lib/deskway/clients
+sudo install -m 644 -o 65532 -g 65532 deskway-windows-x64.exe deskway-macos-arm64 deskway-macos-x64 \
+  /var/lib/deskway/clients/
+```
+
+To upgrade, pull the new version, then replace the container with the same `docker run` command
+and the new tag:
+
+```sh
+sudo docker stop deskway && sudo docker rm deskway
+sudo cp -a /var/lib/deskway /var/lib/deskway.bak-$(date +%F)
+# docker run -d --name deskway ... with the new tag, as above
+```
 
 ## Server options
 
@@ -250,13 +322,13 @@ server bind port 443.
 ## Upgrading
 
 1. Read the release notes for the version you are moving to.
-2. Build the new server (step 3, after `git pull` or a fresh checkout of the new tag).
+2. Download the new release (step 2) or build it (step 3).
 3. Stop the service, back up its data, replace the binary and start the service again:
 
    ```sh
    sudo systemctl stop deskway
    sudo cp -a /var/lib/deskway /var/lib/deskway.bak-$(date +%F)
-   sudo install -m 755 bin/deskway-server /usr/local/bin/deskway-server
+   sudo install -m 755 deskway-server /usr/local/bin/deskway-server
    sudo systemctl start deskway
    ```
 
