@@ -156,7 +156,7 @@
   "devices.computers": "Computers",
   "devices.computersSub": "The computers being controlled",
   "devices.noComputers": "No computers yet.",
-  "devices.addComputer": "To add a computer, run Deskway-Setup.exe on it and sign in with this account.",
+  "devices.addComputer": "To add a computer, install Deskway Host on it and sign in with this account.",
   "devices.tagThis": "This device",
   "devices.inUse": "In use now",
   "devices.lastUsed": "Last {when}",

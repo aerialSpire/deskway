@@ -1,4 +1,4 @@
-//! The installer window: Deskway-Setup.exe, and uninstalling from Settings → Apps. Same look as
+//! The installer window: DeskwayHost-Setup-windows-x64.exe, and uninstalling from Settings → Apps. Same look as
 //! the panel. It installs, updates and uninstalls only: the computer is signed in and out in
 //! the panel. The work that needs an administrator runs in an elevated copy of this program
 //! (`install --quiet` / `uninstall --quiet`), which reports back through a small result file.

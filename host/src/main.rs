@@ -130,7 +130,7 @@ fn main() -> Result<()> {
         None if !matches!(args.first().map(String::as_str), Some("service" | "net" | "agent")) => i18n::from_config(),
         None => {}
     }
-    // The same program, named Deskway-Setup.exe and double-clicked, is the installer. On
+    // The same program, named DeskwayHost-Setup-windows-x64.exe and double-clicked, is the installer. On
     // Windows it is also what opens until Deskway is installed: Deskway runs as its services.
     #[cfg(windows)]
     if args.is_empty() && (!net::installed() || std::env::current_exe().ok().and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase())).is_some_and(|s| s.contains("setup"))) {

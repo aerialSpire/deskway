@@ -262,7 +262,7 @@ server bind port 443.
 
 4. Replace the files in `/var/lib/deskway/clients` with the ones from the new release (step 5).
    AI clients update themselves from there.
-5. Update Deskway Host on each computer: on Windows run the new `Deskway-Setup.exe` and choose
+5. Update Deskway Host on each computer: on Windows run the new `DeskwayHost-Setup-windows-x64.exe` and choose
    **Update**; on macOS quit Deskway Host and replace `Deskway.app` in Applications. If a computer no longer speaks
    the same protocol as the server, the browser shows "This computer needs an update" for that
    computer.

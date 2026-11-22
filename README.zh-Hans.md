@@ -122,8 +122,8 @@ node --test tests/unit/*.test.mjs tests/contract/*.test.mjs
 
 | 文件 | 内容 |
 |---|---|
-| `Deskway-Setup.exe` | Windows（x64）版 Deskway Host 安装程序 |
-| `Deskway-macOS-universal.dmg` | macOS 版 Deskway Host（Apple 芯片和 Intel 通用） |
+| `DeskwayHost-Setup-windows-x64.exe` | Windows（x64）版 Deskway Host 安装程序 |
+| `DeskwayHost-macos-universal.dmg` | macOS 版 Deskway Host（Apple 芯片和 Intel 通用） |
 | `deskway-windows-x64.exe` | Windows 版 AI 客户端程序 |
 | `deskway-macos-arm64`、`deskway-macos-x64` | macOS 版 AI 客户端程序 |
 
