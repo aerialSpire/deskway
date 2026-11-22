@@ -98,7 +98,7 @@ jobs:
             mkdir -p "$pkg"
             install -m 755 "$bins/linux-$arch/deskway-server" "$pkg/deskway-server"
             install -m 644 LICENSE deploy/systemd/deskway.service "$pkg/"
-            tar -czf "$out/deskway-server-linux-$arch.tar.gz" -C "$RUNNER_TEMP/pkg" "deskway-server-linux-$arch"
+            tar -czf "$out/deskway-server-linux-$arch.tar.gz" --owner=0 --group=0 --numeric-owner -C "$RUNNER_TEMP/pkg" "deskway-server-linux-$arch"
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
