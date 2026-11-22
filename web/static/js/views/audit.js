@@ -26,8 +26,12 @@ import { PER_PAGE, RANGES, auditQuery } from './audit-query.js';
 const EVERY = 15000;
 
 // Per computer: what is chosen, the page last answered, what was last asked, the calls open.
-const kept = {};
-const of = (id) => kept[id] || (kept[id] = { choice: { range: 'all', from: '', to: '', client: '', tool: '', failed: false, page: 0 }, page: null, asked: '', at: 0, open: new Set() });
+// A Map, so that no computer id can reach the object prototype.
+const kept = new Map();
+const of = (id) => {
+  if (!kept.has(id)) kept.set(id, { choice: { range: 'all', from: '', to: '', client: '', tool: '', failed: false, page: 0 }, page: null, asked: '', at: 0, open: new Set() });
+  return kept.get(id);
+};
 
 function ask(d, force = false) {
   const k = of(d.id);
