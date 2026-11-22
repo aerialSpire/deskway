@@ -406,7 +406,7 @@ func (s *Server) handleLoginStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true})
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(http.StatusNoContent)
 }
