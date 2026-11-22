@@ -1,0 +1,40 @@
+name: CLA
+
+# Asks each new contributor to accept CLA.md on their first pull request and records the
+# acceptance on the cla-signatures branch. pull_request_target is needed for pull requests from
+# forks; this workflow never checks out or runs code from the pull request.
+on:
+  pull_request_target:
+    types: [opened, synchronize, closed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  cla:
+    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.issue.pull_request &&
+        (github.event.comment.body == 'recheck' ||
+         github.event.comment.body == 'I agree with Yang Xin to the Deskway CLA version 1.0, including its terms on proprietary and commercial licensing, and I intend this comment as my signature'))
+    steps:
+      - uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: https://github.com/aerialSpire/deskway/blob/cla-v1.0/CLA.md
+          path-to-signatures: signatures/cla-v1.json
+          branch: cla-signatures
+          allowlist: seanyang6532,dependabot[bot]
+          custom-pr-sign-comment: I agree with Yang Xin to the Deskway CLA version 1.0, including its terms on proprietary and commercial licensing, and I intend this comment as my signature
+          custom-notsigned-prcomment: >-
+            Thank you for your pull request. Before it can be merged, please read the
+            [Deskway Contributor License Agreement](https://github.com/aerialSpire/deskway/blob/cla-v1.0/CLA.md)
+            and, if you agree to it, sign it by posting the comment below. You only need to do this once.
+          custom-allsigned-prcomment: All contributors have signed the Deskway CLA.

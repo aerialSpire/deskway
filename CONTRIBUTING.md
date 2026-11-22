@@ -52,7 +52,18 @@ each piece of state and sets out the rules every change follows.
   the Rust tests on Windows and macOS, and checks that the host and the `deskway` CLI build for
   Intel macOS. It must pass before a pull request is merged.
 
-## License
+## Contributor License Agreement
 
-Deskway is licensed under the [AGPL-3.0](LICENSE). By contributing, you agree that your
-contribution is licensed under the same terms.
+Deskway is published under the [AGPL-3.0](LICENSE). Its maintainer may also license it under
+other terms, including commercial ones. To make that possible, every contributor accepts the
+[Deskway Contributor License Agreement](CLA.md) before their first pull request is merged. You
+keep the copyright in your contributions; the agreement gives the maintainer a licence to use
+them, including under commercial terms.
+
+On your first pull request, a bot posts a comment with the sentence to sign. Read the agreement,
+and if you agree, post that sentence as a comment on the pull request. You sign once; it covers
+your later pull requests. If your employer or anyone else has rights in your work, read section 5
+of the agreement first: you need their written permission.
+
+To tell the maintainer about anything that affects what you confirmed in the agreement (section
+8), open an issue in this repository.
