@@ -1288,13 +1288,16 @@ mod tests {
     fn an_ai_client_takes_the_ai_seat_only_while_ai_is_on_and_beside_the_person() {
         let mut t = Test::new("ai-seat", true, true);
         let [phone, claude, cursor] = t.pair_all();
-        let reason = |sent: &[Value]| sent.iter().find(|m| m["type"] == "bye").map(|m| m["reason"].as_str().unwrap().to_string());
+        // The bye for one session. An admitted session runs on its own thread and may end at any
+        // time (these offers carry no usable SDP), so its bye can arrive with a later offer's answer.
+        let bye = |sent: &[Value], session: &str| sent.iter().find(|m| m["type"] == "bye" && m["session"] == session).cloned();
+        let reason = |sent: &[Value], session: &str| bye(sent, session).map(|m| m["reason"].as_str().unwrap().to_string());
         // E1: never allowed.
-        assert_eq!(reason(&t.offer_from(&claude, CLAUDE, "a1", false, "v=0")).as_deref(), Some("ai_off"));
+        assert_eq!(reason(&t.offer_from(&claude, CLAUDE, "a1", false, "v=0"), "a1").as_deref(), Some("ai_off"));
         t.switch(&phone, true, 10);
         // Never with media, never taking over.
-        assert_eq!(reason(&t.offer_from(&claude, CLAUDE, "a2", false, "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n")).as_deref(), Some("forbidden"));
-        assert_eq!(reason(&t.offer_from(&claude, CLAUDE, "a3", true, "v=0")).as_deref(), Some("forbidden"));
+        assert_eq!(reason(&t.offer_from(&claude, CLAUDE, "a2", false, "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n"), "a2").as_deref(), Some("forbidden"));
+        assert_eq!(reason(&t.offer_from(&claude, CLAUDE, "a3", true, "v=0"), "a3").as_deref(), Some("forbidden"));
         // E5: the person holds the desk seat; the AI client takes the AI seat beside them.
         let _person = t.seated(Seat::Desk, "d1", PHONE);
         let sent = t.offer_from(&claude, CLAUDE, "a4", false, "v=0");
@@ -1302,12 +1305,13 @@ mod tests {
         assert_eq!((status["holder"]["session"].as_str(), status["ai_session"]["session"].as_str(), status["ai_state"].as_str()), (Some("d1"), Some("a4"), Some("on")));
         // E2: another AI client is busy, told who holds it.
         let sent = t.offer_from(&cursor, CURSOR, "a5", false, "v=0");
-        assert_eq!((reason(&sent).as_deref(), sent[0]["holder"]["session"].as_str()), (Some("busy"), Some("a4")));
+        let busy = bye(&sent, "a5").expect("a bye for a5");
+        assert_eq!((busy["reason"].as_str(), busy["holder"]["session"].as_str()), (Some("busy"), Some("a4")));
         // The same AI client again (its deskway started again) takes its own place, though its
         // old session is established.
         t.host.sessions.of_mut(Seat::Ai).established("a4");
         let sent = t.offer_from(&claude, CLAUDE, "a6", false, "v=0");
-        assert!(reason(&sent).is_none(), "admitted: {sent:?}");
+        assert!(reason(&sent, "a6").is_none(), "admitted: {sent:?}");
         assert_eq!((t.host.sessions.of(Seat::Ai).current().unwrap().id.as_str(), t.host.replaced.as_slice()), ("a6", ["a4".to_string()].as_slice()));
         assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "d1", "the person's session is untouched");
     }

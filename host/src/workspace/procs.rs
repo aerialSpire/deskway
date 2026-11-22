@@ -361,11 +361,15 @@ mod tests {
         }
     }
 
+    /// How long a test waits for a shell. The first PowerShell start on a fresh CI machine can
+    /// take well over 20 seconds; on a working computer it takes about one.
+    const SHELL_START: Duration = Duration::from_secs(90);
+
     #[test]
     fn a_program_runs_and_one_that_takes_longer_runs_on() {
         let t = Table::default();
         // Text beyond ASCII, from the shell and from a program it starts, reads as written.
-        let done = t.run(if cfg!(windows) { "Write-Output 'hi 中文'; cmd /c echo 中文2" } else { "echo 'hi 中文'; echo 中文2" }, None, 20_000, false).unwrap();
+        let done = t.run(if cfg!(windows) { "Write-Output 'hi 中文'; cmd /c echo 中文2" } else { "echo 'hi 中文'; echo 中文2" }, None, SHELL_START.as_millis() as u64, false).unwrap();
         assert_eq!((done["running"].as_bool(), done["exit_code"].as_i64()), (Some(false), Some(0)), "{done}");
         let output = done["output"].as_str().unwrap();
         assert!(output.contains("hi 中文") && output.contains("中文2"), "{done}");
@@ -388,7 +392,7 @@ mod tests {
         assert_eq!(started["running"], true, "{started}");
         let line = if cfg!(windows) { "Write-Output ('deskway' + '-pty')" } else { "echo deskway-pty" };
         let from = t.write(id, Some(line), &["enter".into()]).unwrap()["next"].as_u64().unwrap();
-        let end = Instant::now() + Duration::from_secs(20);
+        let end = Instant::now() + SHELL_START;
         let mut seen = String::new();
         let mut at = from;
         while !seen.contains("deskway-pty") && Instant::now() < end {
