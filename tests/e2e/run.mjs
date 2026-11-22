@@ -1,0 +1,56 @@
+// End-to-end tests: drives a headless browser against a running server and host over the
+// Chrome DevTools Protocol. Runs every area (tests/e2e/*.test.mjs) in order, or the ones named
+// with --areas and those they need. Reports video metrics only; it never saves screen frames.
+//
+//   node tests/e2e/run.mjs --browser PATH --url URL --user NAME --password-file FILE
+//     --super-file FILE (the super password) --host-exe PATH --home DIR --out DIR
+//     [--devtools-port 9333] [--areas auth,session,...] [--server-exe PATH --server-state FILE]
+// --user is the server's admin (deskway-server admin), with its own password and super password
+// chosen; members is the area that makes another account, through the admin's page.
+// URL must use a host name such as localhost: device keys and passkeys need a secure context.
+// --host-exe and --home let the tests open pairing windows on the test host, as its owner would.
+// On macOS, --areas host-restart starts and restarts a host with that separate test profile.
+// --server-exe and --server-state add the check that a server restart keeps the session.
+// Several runs can go side by side with their own --devtools-port and server --url.
+import { Harness, options } from './harness.mjs';
+
+// In the order they run. Every area but panel needs auth, which signs in `h.a` (the first
+// device) and finds `h.hostId` (the test computer); the others share nothing else they rely on.
+// An area that changes the account or the browser puts it back before it ends (devices: the
+// passwords and names; i18n and layout: the language). `manage` removes the test computer from
+// the account, so it runs last.
+const AREAS = ['auth', 'session', 'transfer', 'clipboard', 'keyboard', 'input', 'takeover', 'lifecycle', 'devices', 'members', 'touch', 'security', 'i18n', 'layout', 'panel', 'pwa', 'ai', 'manage'];
+
+// Run only when named. clipboard-host uses the real clipboard of the computer running the
+// tests; relay needs a fresh member account and a host started for it, so it runs alone.
+const OPT_IN = ['clipboard-host', 'relay', 'host-restart'];
+const opts = options();
+const modules = Object.fromEntries(await Promise.all([...AREAS, ...OPT_IN].map(async (name) => [name, (await import(`./${name}.test.mjs`)).area])));
+const wanted = new Set();
+const add = (name) => {
+  if (!modules[name]) throw new Error(`no area "${name}" (areas: ${[...AREAS, ...OPT_IN].join(', ')})`);
+  if (wanted.has(name)) return;
+  for (const n of modules[name].needs || []) add(n);
+  wanted.add(name);
+};
+for (const name of opts.areas || AREAS) add(name);
+
+const h = new Harness(opts);
+let code = 1;
+try {
+  await h.launch();
+  if (wanted.has('host-restart')) h.startTestHost();
+  for (const name of [...AREAS, ...OPT_IN].filter((n) => wanted.has(n))) {
+    console.log(`---- ${name}`);
+    await modules[name].run(h);
+  }
+  const errors = h.pages.flatMap((p) => p.errors);
+  h.check('no uncaught page errors', errors.length === 0, errors.join(' | '));
+  code = h.results.every((r) => r.ok) ? 0 : 1;
+} catch (e) {
+  console.log(`FAIL  ${e.message}`);
+} finally {
+  console.log(`\n${h.results.filter((r) => r.ok).length} PASS / ${h.results.filter((r) => !r.ok).length + (code && h.results.every((r) => r.ok) ? 1 : 0)} FAIL`);
+  await h.shutdown();
+  process.exit(code);
+}

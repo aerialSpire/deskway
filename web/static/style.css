@@ -1,0 +1,552 @@
+/* The browser client's pages and session. Tokens and shared components (buttons, inputs, form
+   fields, switches, dialogs, notices, menus, tags, loading) come from design.css; docs/design.md
+   is the standard.
+   Only layout and the client's own pieces live here, every value a token. */
+
+html, body { height: 100%; }
+body { background: var(--ground); }
+/* An app, not a document (with js/app-feel.js): nothing selected, dragged or offered a
+   long-press menu (only fields take text), no tap flash, no double-tap zoom (pinching still
+   zooms), no pull to refresh or bounce at the edges, text not resized by the browser on turning. */
+html {
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation; overscroll-behavior: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+}
+body { overscroll-behavior: none; }
+input, textarea, [contenteditable] { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+img, svg { -webkit-user-drag: none; }
+
+/* ---- Pages: a top bar, the title, the content, top aligned ---- */
+.page { max-width: 1280px; margin: 0 auto; padding: var(--s6) var(--s8) var(--s12); }
+.topbar { min-height: var(--h-control); display: flex; align-items: center; justify-content: space-between; gap: var(--s4); }
+/* Its buttons' words end where the page's content ends, as the title's ⋯ does (.heading-end). */
+.topbar-end { display: flex; align-items: center; gap: var(--s2); margin-right: calc(-1 * var(--s3)); }
+.brand { font-size: var(--fs-subtitle); font-weight: 400; letter-spacing: .01em; }
+.heading { margin-top: var(--s8); }
+.heading-row { display: flex; align-items: baseline; gap: var(--s4); }
+.heading h1 { min-width: 0; display: flex; align-items: baseline; font-size: var(--fs-display); line-height: var(--lh-title); letter-spacing: -.01em; }
+/* One line (docs/design.md, Words): a name too long ends in …; the way back before it stays whole. */
+.heading .title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.heading .count { flex: none; color: var(--quiet); white-space: nowrap; }
+.heading-end { flex: none; margin-left: auto; margin-right: calc(-1 * var(--s3)); align-self: center; }
+.heading > .status { margin-top: var(--s1); }
+/* The way back sits on the title's baseline. Its hit area extends into the left gutter. */
+.title-back { position: relative; display: inline-block; margin-right: var(--s2); padding: 0; border: 0; background: transparent; color: inherit; vertical-align: baseline; }
+.title-back svg { display: block; width: .4em; height: .66em; }
+.title-back::after { content: ""; position: absolute; right: 0; top: 50%; width: var(--h-control); height: var(--h-control); transform: translateY(-50%); }
+.title-back:hover { color: var(--accent); }
+.lead { margin-top: var(--s2); max-width: 520px; color: var(--quiet); }
+.hint { color: var(--quiet); }
+.page > .notice { margin-top: var(--s3); }
+.actions-row { margin-top: var(--s5); display: flex; gap: var(--s2); flex-wrap: wrap; }
+
+/* Pages that are one form (sign in, waiting for approval, choosing passwords, the server
+   unreachable): under the same top bar, the title and the form are one column in the middle,
+   left-aligned inside it, starting a little above the middle of a tall window. */
+@media (min-width: 721px) {
+  .page.single > :not(.topbar) { width: min(100%, 360px); margin-left: auto; margin-right: auto; }
+  .page.single > .heading { margin-top: max(var(--s8), 12vh); }
+}
+/* Forms on a page (sign in, waiting for approval): one column, at most 360 wide. */
+.form { max-width: 360px; margin-top: var(--s5); display: flex; flex-direction: column; }
+.form > .btn.primary { margin-top: var(--s1); }
+.form > .notice + .fields { margin-top: var(--s5); }
+.field-label { display: flex; flex-direction: column; gap: var(--s2); color: var(--quiet); font-size: var(--fs-small); }
+.dialog .steps { margin: var(--s3) 0 0; padding-left: var(--s5); display: flex; flex-direction: column; gap: var(--s2); }
+.dialog .note-box { margin-top: var(--s4); }
+.form > .note-box { margin-bottom: var(--s5); }
+/* A note on a page: the home-screen app's first sign-in, and the like. */
+.note-box { display: flex; gap: var(--s2); padding: var(--s3); border-radius: var(--r-box); background: var(--accent-soft); font-size: var(--fs-small); }
+.note-box b { display: block; font-weight: 400; }
+.wait-step { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s3); }
+.wait-step .code { margin-top: 0; }
+.setup { margin-top: var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+/* Choosing the account's own passwords: each group under the words that say what it is for. */
+.choose > .hint + .fields { margin-top: var(--s4); }
+.choose > .fields + .choose-super { margin-top: var(--s6); }
+.form > .btn.text { align-self: flex-start; margin-top: var(--s3); margin-left: calc(-1 * var(--s3)); }
+
+/* ---- My computers ---- */
+.grid { margin-top: var(--s8); display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--s6); }
+.card {
+  position: relative; border: 1px solid var(--line); border-radius: var(--r-box);
+  background: var(--surface); box-shadow: var(--shadow-card); transition: box-shadow .18s ease;
+}
+.card:hover { box-shadow: var(--shadow-card-hover); }
+.thumb { aspect-ratio: 16 / 10; background: var(--frame); padding: var(--s3); }
+.card .thumb { border-radius: var(--r-box) var(--r-box) 0 0; }
+.thumb.offline { opacity: .6; }
+.thumb-inner {
+  width: 100%; height: 100%; border-radius: var(--r-control); background: var(--screen); overflow: hidden;
+  display: flex; align-items: center; justify-content: center; color: var(--faint); font-size: var(--fs-caption);
+}
+.thumb.offline .thumb-inner { background: transparent; color: var(--quiet); }
+.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.card-body { display: flex; align-items: center; gap: var(--s1); padding: var(--s3) var(--s4) var(--s4); }
+.card-text { flex: 1; min-width: 0; }
+/* AI activity, below a computer's screens (views/audit.js). The page's own scroll only: a call
+   is one line on a wide screen and a card on a narrow one, and opens in place to its details. */
+.audit { margin-top: var(--s5); padding: var(--s4) var(--s5); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-box); display: flex; flex-direction: column; gap: var(--s3); scroll-margin-top: var(--s4); }
+.audit h2 { margin: 0; font-size: var(--fs-subtitle); font-weight: 600; }
+.audit-mark { height: 0; margin-bottom: calc(-1 * var(--s3)); }
+.audit-head { display: flex; flex-direction: column; gap: var(--s3); background: var(--surface); }
+.audit-bar { display: flex; flex-direction: column; gap: var(--s3); }
+/* The title, and beside it whether AI may control the computer with what to do next. */
+.audit-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s4); }
+/* The title, across the card's top, opens and closes the record; its arrow points down while closed. */
+.audit-title h2 { flex: 1 1 auto; }
+.audit-toggle { width: 100%; display: flex; align-items: center; gap: var(--s2); padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.audit-toggle svg { transition: transform .15s; }
+.audit-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.audit-ai { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); font-size: var(--fs-small); color: var(--quiet); }
+.audit-ai .ok { color: var(--ok); }
+.audit-ai .btn.text { color: var(--accent); }
+/* Wide: the head stays at the top of the window; stuck, the title and the filters share a row. */
+@media (min-width: 721px) {
+  .audit-head { position: sticky; top: 0; z-index: 2; margin: 0 calc(-1 * var(--s5)); padding: 0 var(--s5); }
+  .audit-head.stuck { padding-top: var(--s3); box-shadow: var(--shadow-card); }
+  .audit-head.stuck .audit-bar { flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--s4); }
+}
+.audit-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.audit-filters .input { width: auto; flex: 0 1 auto; min-width: 140px; }
+.audit-filter { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--h-control); font-size: var(--fs-small); color: var(--quiet); }
+.audit-note { margin: 0; font-size: var(--fs-small); color: var(--quiet); }
+.audit-list { display: flex; flex-direction: column; }
+.audit-line { width: 100%; display: grid; grid-template-columns: 10em 9em 8em minmax(0, 1fr) 15em 5em; gap: var(--s3); align-items: center; padding: var(--s2) var(--s1); border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; font: inherit; font-size: var(--fs-small); text-align: left; cursor: pointer; }
+.audit-line:hover { background: var(--hover); }
+.audit-line.columns { cursor: default; color: var(--quiet); }
+.audit-line.columns:hover { background: transparent; }
+.audit-line > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-line .col-args, .audit-line .col-took, .audit-line .col-when { color: var(--quiet); }
+.audit .mono { font-family: var(--font-mono); }
+.audit .failed { color: var(--danger); }
+.audit-call.open > .audit-line { background: var(--hover); border-bottom-color: transparent; }
+.audit-detail { margin: 0; padding: var(--s2) var(--s3) var(--s3); display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s1) var(--s4); font-size: var(--fs-small); background: var(--hover); border-bottom: 1px solid var(--line); }
+.audit-detail dt { color: var(--quiet); }
+.audit-detail dd { margin: 0; min-width: 0; }
+.audit-detail .wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.audit-pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); font-size: var(--fs-small); color: var(--quiet); }
+.audit-pages { display: flex; align-items: center; gap: var(--s3); }
+@media (max-width: 720px) {
+  .audit { padding: var(--s3); }
+  .audit-filters .input { flex: 1 1 140px; }
+  .audit-line.columns { display: none; }
+  .audit-line { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "tool when" "result took" "args args"; row-gap: var(--s1); padding: var(--s3) var(--s1); }
+  .audit-line .col-when { grid-area: when; }
+  .audit-line .col-client { display: none; }
+  .audit-line .col-tool { grid-area: tool; }
+  .audit-line .col-args { grid-area: args; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+  .audit-line .col-result { grid-area: result; }
+  .audit-line .col-took { grid-area: took; text-align: right; }
+  .audit-line .col-when { text-align: right; }
+  .audit-detail { grid-template-columns: minmax(0, 1fr); gap: 0 var(--s4); }
+  .audit-detail dt { margin-top: var(--s2); }
+}
+.card-name { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.card-name .tag { flex: none; }
+/* The name is the card's button, stretched over the whole card; the ⋯ sits above it. */
+.card-open {
+  display: block; max-width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left;
+  font-size: var(--fs-subtitle); font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card-open::after { content: ""; position: absolute; inset: 0; border-radius: var(--r-box); }
+.card-open:focus-visible { outline: none; }
+.card-open:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card-body .dropdown { z-index: 1; margin: calc(-1 * var(--s2)) calc(-1 * var(--s3)) calc(-1 * var(--s2)) 0; }
+.card-body .status { margin-top: 0; font-size: var(--fs-small); white-space: nowrap; overflow: hidden; }
+
+/* Loading (design.css .loading): shown until the first real answer, so nothing claims "none"
+   or "failed" early. */
+.page-loading { min-height: 60vh; justify-content: center; }
+.page > .loading { margin-top: var(--s8); }
+.empty { margin-top: var(--s8); max-width: 520px; }
+.empty h2 { font-size: var(--fs-title); line-height: var(--lh-tight); }
+.empty p { margin-top: var(--s2); color: var(--quiet); }
+
+/* ---- A computer ---- */
+/* Its screens: at most this high, so what is under them starts on the first screen. */
+:root { --preview-h: 45vh; }
+.preview {
+  margin-top: var(--s6); padding: var(--s4); border: 1px solid var(--line); border-radius: var(--r-box);
+  background: var(--frame); box-shadow: var(--shadow-card);
+}
+.preview .thumb-inner { aspect-ratio: 16 / 10; height: auto; width: min(100%, calc(var(--preview-h) * 1.6)); margin: 0 auto; }
+.preview img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.preview.offline .thumb-inner { background: transparent; color: var(--quiet); font-size: var(--fs-body); }
+.preview.clickable { display: block; width: 100%; cursor: pointer; text-align: inherit; }
+.preview.clickable:hover { box-shadow: var(--shadow-card-hover); }
+.preview-hint { margin-bottom: var(--s3); color: var(--quiet); font-size: var(--fs-small); }
+.display-map { position: relative; width: 100%; margin: 0 auto; }
+.display-tile {
+  position: absolute; padding: 0; overflow: hidden; border: 3px solid transparent; border-radius: var(--r-box);
+  background: var(--screen); background-clip: padding-box; color: var(--dark-ink); cursor: pointer;
+}
+.display-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.display-tile:hover, .display-tile:focus-visible { border-color: var(--accent-line); outline: none; }
+.display-tile.chosen { border-color: var(--accent); }
+.display-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--dark-quiet); font-size: var(--fs-caption); }
+.display-label { position: absolute; left: var(--s2); top: var(--s2); padding: 0 var(--s2); border-radius: var(--r-control); background: var(--dark); font-size: var(--fs-caption); line-height: var(--lh-body); }
+
+/* ---- My devices ---- */
+.section-title { margin-top: var(--s8); display: flex; flex-direction: column; font-size: var(--fs-subtitle); font-weight: 400; line-height: var(--lh-tight); }
+.section-title span { margin-top: var(--s1); color: var(--quiet); font-size: var(--fs-small); font-weight: 300; }
+.heading + .section-title { margin-top: var(--s5); }
+.device-list { margin-top: var(--s3); border-top: 1px solid var(--line); }
+/* A device: its icon, its name and the line under it, and its ⋯ at the end. */
+.device-row { min-height: 64px; padding: var(--s3) 0; display: flex; align-items: center; gap: var(--s3); border-bottom: 1px solid var(--line); }
+.device-row > .device-icon { flex: none; }
+.device-icon { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-box); background: var(--accent-soft); color: var(--accent); }
+.device-text { flex: 1; min-width: 0; }
+/* The name alone on its line, ended with … when long. */
+.device-name { display: flex; align-items: center; font-weight: 400; min-width: 0; }
+.device-name > .name { min-width: 0; max-width: 32em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The line under it: tags first, then the state, wrapping as words do when narrow. */
+.device-sub { margin-top: 0; color: var(--quiet); font-size: var(--fs-small); }
+.device-sub > .tag { margin-right: var(--s2); }
+.device-state > .dot { display: inline-block; margin-right: var(--s2); vertical-align: 2px; }
+.device-actions { flex: none; margin-left: auto; display: flex; align-items: center; }
+/* The way to add an AI client: a row of the controllers' card, laid out as a device, that opens its page. */
+.device-add { width: 100%; min-height: 64px; padding: var(--s3) var(--s4); display: flex; align-items: center; gap: var(--s3); border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.device-add:hover { background: var(--hover); }
+.device-add .link { color: var(--accent); }
+.device-go { flex: none; margin-left: auto; padding: 0 var(--s2); color: var(--quiet); font-size: var(--fs-subtitle); }
+/* A computer too old for AI control: said in its card instead of the switches. */
+.device-note { padding: var(--s3) var(--s4) var(--s3) calc(2 * var(--s8)); border-top: 1px solid var(--line); color: var(--quiet); font-size: var(--fs-small); }
+/* My devices: each group one card; a computer's settings in its card, under it. */
+.device-list.grouped { border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); }
+.device-list.grouped > * + * { border-top: 1px solid var(--line); }
+.device-list.grouped .device-row { padding: var(--s3) var(--s4); border-bottom: 0; }
+.device-settings > .setting-row { padding: var(--s3) var(--s4) var(--s3) calc(2 * var(--s8)); border-bottom: 0; border-top: 1px solid var(--line); }
+@media (max-width: 720px) {
+  .device-list.grouped .device-row, .device-add { padding: var(--s3); }
+  .device-settings > .setting-row, .device-note { padding: var(--s3); }
+  .audit-ai { margin-left: 0; width: 100%; }
+}
+
+/* ---- Add an AI client: three numbered steps in a card, then the way to connect by hand ---- */
+.page[data-page="aiclient"] { max-width: 880px; }
+.ai-lead { margin-top: var(--s2); max-width: 40em; font-size: var(--fs-small); }
+.ai-steps { margin-top: var(--s5); padding: 0 var(--s6); list-style: none; counter-reset: step; border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); }
+.ai-step { position: relative; padding: var(--s5) 0 var(--s5) calc(var(--s8) + var(--s3)); counter-increment: step; }
+.ai-step + .ai-step { border-top: 1px solid var(--line); }
+.ai-step::before {
+  content: counter(step); position: absolute; left: 0; top: var(--s5); width: var(--s6); height: var(--s6); display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: var(--fs-small);
+}
+.ai-step h2 { font-size: var(--fs-subtitle); font-weight: 600; line-height: var(--lh-tight); }
+.ai-step > .hint { margin-top: var(--s1); font-size: var(--fs-small); }
+.ai-prompt { margin-top: var(--s3); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--ground); }
+.ai-prompt-text { max-height: 240px; overflow: hidden; margin: 0; padding: var(--s3) var(--s4); font: 400 var(--fs-small)/var(--lh-body) var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  mask-image: linear-gradient(to bottom, var(--ink) calc(100% - var(--s8)), transparent); }
+.ai-prompt.open .ai-prompt-text { max-height: none; mask-image: none; }
+.ai-prompt-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); padding: var(--s2) var(--s2) var(--s2) var(--s3); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-box) var(--r-box); background: var(--surface); }
+.ai-prompt-bar .btn.text { color: var(--accent); }
+.ai-prompt .error { padding: 0 var(--s3) var(--s2); }
+.ai-note { margin-top: var(--s3); font-size: var(--fs-small); }
+.ai-wait { margin-top: var(--s3); display: flex; align-items: center; gap: var(--s2); color: var(--quiet); font-size: var(--fs-small); }
+.ai-step .ai-wait + .hint { margin-top: var(--s1); font-size: var(--fs-caption); }
+.ai-request { margin-top: var(--s3); padding: var(--s3) var(--s4); border: 1px solid var(--accent); border-radius: var(--r-box); background: var(--accent-soft); }
+.ai-request .code { margin-top: var(--s2); font-size: var(--fs-title); }
+.ai-request-bar { margin-top: var(--s3); display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); }
+.ai-request-bar .hint { flex: 1 1 200px; font-size: var(--fs-small); }
+.ai-computers { margin-top: var(--s3); border: 1px solid var(--line); border-radius: var(--r-box); }
+.ai-computer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); min-height: var(--h-control); padding: var(--s2) var(--s4); }
+.ai-computer + .ai-computer { border-top: 1px solid var(--line); }
+.ai-computer .name { flex: 1 1 10em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-state { flex: none; display: inline-flex; align-items: center; color: var(--quiet); font-size: var(--fs-small); white-space: nowrap; }
+.ai-state.ok { color: var(--ok); }
+.ai-state .btn.text { color: var(--accent); }
+.ai-manual { margin-top: var(--s5); }
+.ai-manual summary { color: var(--accent); cursor: pointer; }
+.ai-manual h3 { margin-top: var(--s4); color: var(--quiet); font-size: var(--fs-small); font-weight: 400; }
+.ai-code { display: block; margin-top: var(--s1); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-control); background: var(--surface); font: 400 var(--fs-caption)/var(--lh-body) var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .ai-steps { padding: 0 var(--s3); }
+  .ai-step { padding-left: calc(var(--s6) + var(--s3)); }
+  .ai-prompt-text { max-height: 180px; }
+}
+.add-hint { margin-top: var(--s3); font-size: var(--fs-small); }
+.setting-row { padding: var(--s4) 0; display: flex; align-items: center; justify-content: space-between; gap: var(--s4); border-bottom: 1px solid var(--line); }
+/* A page that is a list of settings (Account): rows under the title. */
+.setting-list { margin-top: var(--s6); border-top: 1px solid var(--line); }
+.section-title + .setting-row, .hint + .setting-row { margin-top: var(--s3); border-top: 1px solid var(--line); }
+
+/* ---- Members: the members, and a new initial password shown once ---- */
+.actions-row + .device-list, .actions-row + .members-empty { margin-top: var(--s6); }
+.credentials { margin-top: var(--s4); border-top: 1px solid var(--line); }
+.credentials .setting-row { padding: var(--s2) 0; }
+.credential { font-family: var(--font-mono); text-align: right; overflow-wrap: anywhere; }
+
+/* ---- Session: the remote screen fills the window; toolbar, panels and notes float above ---- */
+.session { position: fixed; inset: 0; display: flex; flex-direction: column; background: var(--screen); padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+.stage {
+  position: relative; flex: 1; min-height: 0; background: var(--screen); overflow: hidden;
+  touch-action: none; cursor: default; outline: none;
+}
+.stage video, .stage .screen-tiles { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: 0 0; pointer-events: none; }
+.capture-note { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; padding: var(--s5); background: var(--screen); color: var(--dark-ink); text-align: center; pointer-events: none; }
+.stage.dropping::after {
+  content: attr(data-drop); position: absolute; inset: var(--s2); z-index: 7; display: grid; place-items: center;
+  border: 2px dashed var(--dark-quiet); border-radius: var(--r-box); background: var(--dark-accent); color: var(--dark-ink); font-size: var(--fs-subtitle); pointer-events: none;
+}
+/* The screen's text box (keyboard.js): unseen, at the last place pressed; what this computer's
+   input method composes shows in it, as a dark note. */
+.text-box { position: absolute; left: 0; top: 0; z-index: 6; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; overflow: hidden; white-space: pre; pointer-events: none; font-size: var(--fs-subtitle); }
+.text-box.composing {
+  width: 16em; height: auto; padding: var(--s1) var(--s2); opacity: 1;
+  border-radius: var(--r-box); background: var(--dark); color: var(--dark-ink); box-shadow: var(--shadow-float); outline: none;
+}
+
+/* Notes at the top right of the screen, one under the other (design.css .notice.dark). */
+/* Notes start under the toolbar's tab, which may say who else controls the computer. */
+.stack { position: absolute; z-index: 6; top: calc(env(safe-area-inset-top) + var(--s6) + var(--s1)); right: var(--s2); display: flex; flex-direction: column; align-items: flex-end; gap: var(--s2); max-width: min(360px, calc(100% - var(--s4))); pointer-events: none; }
+.stack > * { pointer-events: auto; }
+.stack > .notice.passive { pointer-events: none; }
+
+/* Toolbar: one height for everything in it, larger only where fingers are the pointer. */
+.toolbar {
+  --tool-h: var(--h-compact);
+  position: absolute; z-index: 9; top: max(var(--s2), env(safe-area-inset-top)); left: 50%; transform: translate(-50%, calc(-100% - var(--s5)));
+  /* Its own width, up to the window's: placed at left: 50%, it would otherwise wrap at half the window. */
+  width: max-content; max-width: calc(100vw - var(--s3)); display: flex; flex-direction: column;
+  padding: var(--s1); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface);
+  box-shadow: var(--shadow-pop);
+  /* Away it is not drawn at all: under a camera cutout the top inset is taller than the slide,
+     and a strip of it would show in the status bar. It hides once it has slid away. */
+  visibility: hidden; transition: transform .18s ease, visibility 0s linear .18s;
+}
+@media (pointer: coarse) { .toolbar { --tool-h: var(--h-control); } }
+/* Keyboard focus keeps it open; a clicked button keeping focus must not. */
+.toolbar.shown, .toolbar:has(:focus-visible) { transform: translate(-50%, 0); visibility: visible; transition: transform .18s ease; }
+.toolbar-tab {
+  position: absolute; z-index: 8; top: env(safe-area-inset-top); left: 50%; width: 64px; height: var(--s4); transform: translateX(-50%);
+  padding: 0; border: 0; border-radius: 0 0 var(--r-box) var(--r-box); background: var(--dark-key-down); cursor: pointer;
+}
+.toolbar-tab:hover { background: var(--dark-quiet); }
+/* An AI client controlling the computer too: the tab grows to say who, in the accent, always in sight. */
+.toolbar-tab.ai { width: auto; max-width: 70vw; height: auto; min-height: var(--s4); padding: var(--s1) var(--s3); background: var(--accent); color: var(--on-accent); font-size: var(--fs-caption); line-height: var(--lh-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toolbar-tab.ai:hover { background: var(--accent); filter: brightness(1.08); }
+/* All in one row, never wrapped: the computer's name gives way first. */
+.tool-main { display: flex; align-items: center; gap: var(--s1); min-width: 0; }
+.tool-group, .tool-picture { display: contents; }
+/* The row does not fit (toolbar.js fit): the buttons' words in the small size. */
+.toolbar.small .tool-group > .tool { padding: 0 var(--s2); font-size: var(--fs-mini); }
+/* Who else controls the computer, along the bar's bottom. */
+.tool-ai {
+  display: flex; align-items: center; justify-content: center; gap: var(--s2); min-width: 0; margin: var(--s1) calc(-1 * var(--s1)) calc(-1 * var(--s1));
+  padding: var(--s1) var(--s3); border-top: 1px solid var(--line); border-radius: 0 0 var(--r-box) var(--r-box); background: var(--accent-soft); color: var(--accent); font-size: var(--fs-caption);
+}
+.tool-ai[hidden] { display: none; }
+.tool-ai > .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool {
+  height: var(--tool-h); min-width: var(--tool-h); padding: 0 var(--s3); display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-control); background: transparent; color: inherit; font-size: var(--fs-small); line-height: 1; font-weight: 300; white-space: nowrap;
+}
+.tool:hover { background: var(--hover); }
+.tool[aria-pressed="true"] { background: var(--accent-soft); }
+.tool:disabled { color: var(--faint); background: transparent; cursor: default; }
+.tool.end { background: var(--accent); color: var(--on-accent); font-weight: 400; }
+.tool.end:hover { background: var(--accent); filter: brightness(1.08); }
+.tool-sep { flex: none; width: 1px; height: calc(var(--tool-h) - var(--s3)); margin: 0 var(--s1); background: var(--line-strong); }
+.tool-name { flex: 0 1 auto; height: var(--tool-h); display: inline-flex; align-items: center; min-width: 0; padding: 0 var(--s2); font-size: var(--fs-small); font-weight: 400; white-space: nowrap; }
+.tool-name-text { min-width: 0; max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+.tool-main > :not(.tool-name), .tool-group > .tool { flex: none; }
+.tool-status { padding: 0 var(--s2); font-size: var(--fs-caption); }
+.tool-status:disabled { color: var(--quiet); }
+.tool-status[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
+.route-arrow { display: inline-flex; }
+.tool-status[aria-expanded="true"] .route-arrow { transform: rotate(180deg); }
+.tool-count { margin-left: var(--s1); font-size: var(--fs-caption); opacity: .7; font-variant-numeric: tabular-nums; }
+/* The clipboard's state dot in line after its word */
+.tool-clip-label { display: inline-flex; align-items: center; gap: var(--s1); white-space: nowrap; }
+.tool-badge {
+  display: inline-block; vertical-align: middle; margin-left: var(--s1); min-width: var(--s4); height: var(--s4); padding: 0 var(--s1);
+  border-radius: var(--r-box); background: var(--accent); color: var(--on-accent); font-size: var(--fs-caption); line-height: var(--lh-tight); text-align: center;
+}
+/* A narrow window: who and how first, with Disconnect; the buttons in the second row, in the small
+   size, sharing it out where they fit and sliding sideways where they do not. */
+@media (max-width: 860px) {
+  .toolbar { width: calc(100vw - var(--s3)); }
+  .tool-main { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; grid-template-areas: "name status picture end" "tools tools tools tools"; row-gap: var(--s1); column-gap: var(--s2); }
+  .tool-main > .tool-name { grid-area: name; }
+  .tool-name-text { max-width: none; }
+  .tool-main > .tool-status { grid-area: status; }
+  .tool-main > .tool-picture { grid-area: picture; display: flex; gap: var(--s1); }
+  .tool-main > .tool.end { grid-area: end; }
+  .tool-main > .tool-sep { display: none; }
+  .tool-group { grid-area: tools; display: flex; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+  .tool-group::-webkit-scrollbar { display: none; }
+  .tool-group > .tool { flex: 1 0 auto; padding: 0 var(--s2); font-size: var(--fs-mini); }
+  .tool-group.fade-end { mask-image: linear-gradient(to right, var(--ink) calc(100% - var(--s8)), transparent); }
+  .tool-group.fade-start { mask-image: linear-gradient(to left, var(--ink) calc(100% - var(--s8)), transparent); }
+  .tool-group.fade-start.fade-end { mask-image: linear-gradient(to right, transparent, var(--ink) var(--s8), var(--ink) calc(100% - var(--s8)), transparent); }
+}
+
+/* Floating panels: under the toolbar, over the screen, never moving it. --toolbar-h is the
+   toolbar's height, set when a panel opens (toolbar.js placePanels). */
+.panels {
+  position: absolute; z-index: 9; top: calc(max(var(--s2), env(safe-area-inset-top)) + var(--toolbar-h) + var(--s1)); left: 50%; transform: translateX(-50%);
+  width: min(440px, calc(100vw - var(--s4))); max-height: calc(100% - var(--toolbar-h) - var(--s6) - env(safe-area-inset-top)); overflow-y: auto;
+}
+.panels:empty { display: none; }
+.panel { flex: none; padding: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); box-shadow: var(--shadow-pop); }
+/* Receives the phone keyboard's typing; it has to be focusable, so it is see-through, not hidden. */
+.typer { position: absolute; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; resize: none; font-size: var(--fs-subtitle); }
+
+/* Connection readings share one table, including the comparison when it becomes available. */
+.panels:has(> .connection-details) { z-index: 31; } /* Above the floating keyboard and mouse controls. */
+.panel.connection-details { padding: var(--s3); }
+.connection-details-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
+.connection-details-head h2 { margin: 0; font-size: var(--fs-body); font-weight: 400; }
+@media (pointer: coarse) {
+  .connection-details-head .btn { width: var(--h-control); min-height: var(--h-control); }
+}
+.connection-readings { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.connection-readings :is(th, td) { padding: var(--s2) 0 var(--s2) var(--s2); text-align: right; font-weight: 400; }
+.connection-readings th:first-child { padding-left: 0; text-align: left; }
+.connection-readings thead { color: var(--quiet); font-size: var(--fs-caption); }
+.connection-readings td { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.connection-readings tbody tr { border-top: 1px solid var(--line); }
+.connection-readings .reading-note { display: block; color: var(--quiet); font-size: var(--fs-caption); }
+.session :is(.keypad, .mousepad)[inert] { opacity: .55; }
+
+/* The session's displays panel */
+.panel.displays { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.display-btn { flex: 1 1 140px; min-height: 52px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: var(--s2) var(--s3); border: 1px solid var(--line-strong); border-radius: var(--r-control); background: var(--surface); text-align: left; }
+.display-btn.current { border-color: var(--accent); background: var(--accent-soft); }
+.display-name { font-weight: 400; font-size: var(--fs-small); }
+.display-size { color: var(--quiet); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; }
+
+/* Clipboard panel: sharing, what to take from the computer, what to send to it */
+.panel.clip { padding: var(--s3); display: flex; flex-direction: column; gap: var(--s3); }
+.clip-share { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); }
+.clip-quiet { margin-top: 0; color: var(--quiet); font-size: var(--fs-caption); line-height: var(--lh-body); }
+.clip-section { display: flex; flex-direction: column; gap: var(--s2); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.clip-label { color: var(--quiet); font-size: var(--fs-caption); }
+.clip-item { display: flex; align-items: center; gap: var(--s3); }
+.clip-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clip-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.clip-actions .btn { flex: 1 1 auto; }
+
+/* Transfers: one small line at the top right of the screen, the progress filling it */
+.xfer {
+  --p: 0%; position: relative; display: flex; align-items: center; gap: var(--s2); max-width: min(300px, calc(100% - var(--s4))); min-height: 28px;
+  padding: 0 var(--s1) 0 var(--s3); border-radius: var(--r-box); background: linear-gradient(to right, var(--dark-accent) var(--p), var(--dark) var(--p));
+  color: var(--dark-ink); font-size: var(--fs-caption); white-space: nowrap; box-shadow: var(--shadow-float);
+}
+.xfer.ok { background: var(--dark-ok); }
+.xfer.bad { background: var(--dark-warn); }
+.xfer .x-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.xfer .x-pct { font-variant-numeric: tabular-nums; }
+.xfer .x-more { opacity: .8; }
+.x-btn { flex: none; height: var(--s6); min-width: var(--s6); padding: 0 var(--s2); border: 0; border-radius: var(--r-control); background: transparent; color: var(--dark-ink); cursor: pointer; }
+.x-btn:hover { background: var(--dark-hover); }
+
+/* The remote pointer, drawn over the video on touch screens; a light outline keeps a black
+   pointer visible on dark backgrounds. */
+.rcursor { position: absolute; left: 0; top: 0; pointer-events: none; image-rendering: auto; filter: drop-shadow(0 0 1px rgba(255, 255, 255, .9)) drop-shadow(0 1px 2px rgba(0, 0, 0, .35)); will-change: transform; }
+
+/* Mouse panel: a slim column at the right edge of the remote screen */
+.mousepad {
+  position: absolute; z-index: 2; right: var(--s2); top: 50%; transform: translateY(-50%); width: 56px; padding: var(--s2);
+  display: flex; flex-direction: column; gap: var(--s2); border-radius: var(--r-box); background: var(--dark);
+  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); touch-action: none;
+}
+.pad-btn { height: var(--h-control); padding: 0; border: 0; border-radius: var(--r-box); background: var(--surface); color: var(--ink); font-size: var(--fs-small); font-weight: 400; }
+.pad-btn:active, .pad-btn.down { background: var(--accent); color: var(--on-accent); }
+.pad-scroll { height: 132px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-box); background: var(--dark-key); color: var(--dark-ink); font-size: var(--fs-caption); writing-mode: vertical-rl; letter-spacing: .2em; }
+.pad-scroll.active { background: var(--dark-key-down); }
+/* In portrait: a row low on the screen, below the picture */
+.mousepad.row { top: auto; bottom: var(--s3); right: auto; left: 50%; transform: translateX(-50%); width: auto; flex-direction: row; align-items: stretch; }
+.mousepad.row .pad-btn { width: 64px; }
+.mousepad.row .pad-scroll { width: 96px; height: var(--h-control); writing-mode: horizontal-tb; letter-spacing: 0; }
+/* The hint after the word comes from the page (data-hint), in its language */
+.mousepad.row .pad-scroll span::after { content: attr(data-hint); font-size: var(--fs-caption); opacity: .8; }
+:lang(en) .mousepad.row .pad-scroll span::after { margin-left: var(--s1); }
+.pad-grip { flex: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s1); height: 22px; cursor: grab; touch-action: none; }
+.pad-grip span { width: 18px; height: 2px; border-radius: var(--r-control); background: var(--dark-quiet); }
+.mousepad.row .pad-grip { flex-direction: row; width: 22px; height: auto; }
+.mousepad.row .pad-grip span { width: 2px; height: 18px; }
+
+
+/* The on-screen keyboard: a whole computer keyboard across the bottom. A documented exception
+   (docs/design.md): it keeps a keyboard's own proportions. */
+.keypad { position: fixed; z-index: 30; display: flex; flex-direction: column; gap: 4px; padding: 5px 4px calc(5px + env(safe-area-inset-bottom)); background: var(--dark-solid); box-shadow: 0 -2px 10px rgba(0, 0, 0, .25); touch-action: none; }
+.kb-row { display: flex; gap: 4px; }
+/* The phone keyboard is in use: the keys step aside, the bar stays above it. */
+.keypad.ime .kb-row { display: none; }
+.kb-key { flex: 1 1 0; min-width: 0; height: 40px; padding: 0; border: 0; border-radius: 5px; background: var(--dark-key); color: var(--dark-ink); font-size: 15px; line-height: 1; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; overflow: hidden; touch-action: none; }
+.kb-row:first-child .kb-key { height: 30px; font-size: 12px; background: var(--dark-key-quiet); }
+.kb-key.down { background: var(--dark-key-down); }
+.kb-key.mod, .kb-key[data-code="Tab"], .kb-key[data-code="CapsLock"], .kb-key[data-code="Enter"], .kb-key[data-code="Backspace"] { background: var(--dark-key-quiet); font-size: 13px; }
+.kb-key.mod[aria-pressed="true"] { background: var(--accent); }
+.kb-key.mod.locked { background: var(--surface); color: var(--ink); }
+.kb-key.mod.down { background: var(--dark-key-down); }
+.kb-alt { font-size: 10px; color: var(--dark-quiet); }
+.keypad.shift .kb-alt { font-size: 15px; color: var(--dark-ink); }
+.keypad.shift .kb-alt + .kb-main { font-size: 10px; color: var(--dark-quiet); }
+/* The bar above the keys: the whole bar moves the keyboard */
+.kb-bar { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 2px; cursor: grab; touch-action: none; }
+.kb-grip { flex: none; display: flex; align-items: center; gap: 3px; padding: 0 6px; }
+.kb-grip span { width: 2px; height: 16px; border-radius: 1px; background: var(--dark-quiet); }
+.kb-ime-wrap { position: relative; flex: none; }
+.kb-ime { height: 28px; padding: 0 12px; border: 0; border-radius: var(--r-box); background: var(--accent); color: var(--on-accent); font-size: var(--fs-small); cursor: pointer; }
+.kb-ime[aria-pressed="true"] { background: var(--surface); color: var(--ink); }
+.kb-tip { position: absolute; left: 0; bottom: calc(100% + 8px); padding: 6px 10px; border-radius: var(--r-box); background: var(--surface); color: var(--ink); font-size: var(--fs-caption); white-space: nowrap; box-shadow: var(--shadow-float); pointer-events: none; }
+.kb-tip[hidden] { display: none; }
+.kb-preview { flex: 1; min-width: 0; padding: 0 4px; overflow: hidden; color: var(--dark-ink); text-overflow: ellipsis; white-space: nowrap; }
+.kb-preview[hidden] { display: block; visibility: hidden; }
+.kb-hide { flex: none; margin-left: auto; width: 40px; height: 30px; padding: 0; border: 0; border-radius: var(--r-box); background: transparent; color: var(--dark-ink); display: grid; place-items: center; cursor: pointer; }
+.kb-hide:hover, .kb-hide:active { background: var(--dark-key); }
+@media (max-width: 500px) {
+  .keypad, .kb-row { gap: 3px; }
+  .kb-key { height: 38px; font-size: 13px; border-radius: 4px; }
+  .kb-key.mod, .kb-key[data-code="Tab"], .kb-key[data-code="CapsLock"], .kb-key[data-code="Enter"], .kb-key[data-code="Backspace"] { font-size: 11px; }
+  .kb-row:first-child { gap: 2px; }
+  .kb-row:first-child .kb-key { height: 28px; font-size: 10px; }
+  .kb-alt { display: none; }
+  .keypad.shift .kb-alt { display: block; }
+  .keypad.shift .kb-alt + .kb-main { display: none; }
+}
+@media (max-height: 500px) {
+  .keypad, .kb-row { gap: 3px; }
+  .kb-key { height: 28px; }
+  .kb-row:first-child .kb-key { height: 22px; }
+  .kb-bar { height: 26px; }
+  .kb-ime { height: 24px; }
+  .kb-hide { height: 24px; }
+}
+
+/* The system input method clips the stage while the remote picture keeps its drawing size. */
+.session .stage.ime-stage {
+  position: fixed;
+  inset: var(--ime-top) auto auto var(--ime-left);
+  width: var(--ime-width);
+  height: var(--ime-height);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.stage.ime-stage > video, .stage.ime-stage > .screen-tiles {
+  width: var(--ime-picture-width);
+  height: var(--ime-picture-height);
+}
+
+/* ---- Only orientation and size change the layout; flows are the same everywhere ---- */
+@media (max-width: 900px) {
+  .page { padding: var(--s4) var(--s4) var(--s8); }
+  .heading { margin-top: var(--s5); }
+  .grid { margin-top: var(--s5); grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--s3); }
+  .thumb { padding: var(--s2); }
+  .card-body { padding: var(--s2) var(--s3) var(--s3); }
+  .card-open { font-size: var(--fs-small); }
+  .card-body .status { font-size: var(--fs-caption); }
+  .preview { margin-top: var(--s5); padding: var(--s2); }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .page { padding: var(--s1) var(--s5) var(--s5); }
+  .heading { margin-top: var(--s2); }
+  .heading h1 { font-size: var(--fs-title); }
+  .grid { margin-top: var(--s2); grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+  .preview { margin-top: var(--s2); max-width: 420px; }
+}

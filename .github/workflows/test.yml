@@ -1,0 +1,56 @@
+name: Tests
+
+# Runs only for pull requests. Pushes, tags and releases do not run it.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner's Go downloads the toolchain go.mod asks for (GOTOOLCHAIN=auto).
+      - name: Vet and test the server
+        run: |
+          go vet ./...
+          go test ./internal/...
+
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Browser unit and contract tests
+        run: node --test tests/unit/*.test.mjs tests/contract/*.test.mjs
+
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Host, CLI and shared crates
+        shell: bash
+        run: |
+          rustup default stable
+          cargo test --workspace --locked
+      - name: Intel macOS host builds
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --locked --target x86_64-apple-darwin -p deskway-host -p deskway

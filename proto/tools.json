@@ -1,0 +1,869 @@
+{
+  "version": 1,
+  "notes": [
+    "The tools an AI client can call on a Deskway computer (docs/architecture.md, \"MCP and tools\"). The one definition: crates/wire reads it at build time, the computer implements exactly these (host/src/tools) and the deskway command lists them to MCP clients before it reaches any computer.",
+    "batch: the batch a tool comes in. screen: none, read (looks at the screen) or act (changes what the screen shows); an act is refused on a secure desktop. needs_user: it works only with someone signed in at the computer. Every tool also takes `computer`, added by the deskway command, which picks the computer and is not passed on."
+  ],
+  "tools": [
+    {
+      "name": "computer_info",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": false,
+      "description": "What this computer is and what it allows now: its name and system, its displays, who is signed in, whether it is locked, whether a person is controlling it too, and what an AI client may do here.",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "audit_read",
+      "batch": 3,
+      "screen": "none",
+      "needs_user": false,
+      "description": "What AI clients did on this computer, from its own record, as calls: when each started (unix seconds), the AI client, its device and session, the tool, its arguments, its result (ok, running, or the error's code) and the result in short, and how long it took. Newest first, a page at a time: total says how many fit, clients and tools what the record holds. Records cannot be changed or removed; about the last 8 MB are kept.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "integer",
+            "description": "Only calls started at or after this time (unix seconds)."
+          },
+          "until": {
+            "type": "integer",
+            "description": "Only calls started at or before this time (unix seconds)."
+          },
+          "tool": {
+            "type": "string",
+            "description": "Only this tool's calls."
+          },
+          "client": {
+            "type": "string",
+            "description": "Only this AI client's calls, by its name (any case)."
+          },
+          "failed": {
+            "type": "boolean",
+            "description": "Only calls that ended in an error."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Skip this many first (default 0): the next page is offset + limit."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Calls at most (default 50, at most 500)."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "screenshot",
+      "batch": 1,
+      "screen": "read",
+      "needs_user": false,
+      "description": "A picture of one display of the computer (JPEG). The positions the pointer tools take are in this picture's pixels, so take one before pointing, and again after the screen changes.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "display": {
+            "type": "string",
+            "description": "The display's id, as computer_info lists them; the primary display by default."
+          },
+          "max_width": {
+            "type": "integer",
+            "description": "At most this many pixels wide (default 1280, at most 1920); smaller is faster and cheaper to read."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "wait_for",
+      "batch": 2,
+      "screen": "read",
+      "needs_user": false,
+      "description": "Waits until a display changes, or until it holds still, at most timeout_ms; cheaper than taking screenshots in a loop. Use it after starting something slow (a program opening, a page loading), then take a screenshot. A clock or a blinking cursor on the display counts as change.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "until": {
+            "type": "string",
+            "enum": [
+              "change",
+              "still"
+            ],
+            "description": "change (default): until it differs from how it looked when the wait began; still: until it has not changed for still_ms."
+          },
+          "display": {
+            "type": "string",
+            "description": "The display's id, as computer_info lists them; the primary display by default."
+          },
+          "still_ms": {
+            "type": "integer",
+            "description": "With until still: how long it must hold still (default 1000, 200 to 10000)."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "description": "How long to wait at most (default 10000, at most 60000)."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "click",
+      "batch": 1,
+      "screen": "act",
+      "needs_user": false,
+      "description": "Clicks at a place of the latest screenshot.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "description": "Pixels from the left of the latest screenshot."
+          },
+          "y": {
+            "type": "number",
+            "description": "Pixels from the top of the latest screenshot."
+          },
+          "button": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "description": "Which button; left by default."
+          },
+          "count": {
+            "type": "integer",
+            "description": "2 for a double click; 1 by default."
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "move",
+      "batch": 1,
+      "screen": "act",
+      "needs_user": false,
+      "description": "Moves the pointer to a place of the latest screenshot, without clicking (to show a tooltip or a menu).",
+      "input": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "description": "Pixels from the left of the latest screenshot."
+          },
+          "y": {
+            "type": "number",
+            "description": "Pixels from the top of the latest screenshot."
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "drag",
+      "batch": 1,
+      "screen": "act",
+      "needs_user": false,
+      "description": "Presses at one place of the latest screenshot, moves to another and lets go there.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "description": "Pixels from the left of the latest screenshot."
+          },
+          "y": {
+            "type": "number",
+            "description": "Pixels from the top of the latest screenshot."
+          },
+          "to_x": {
+            "type": "number",
+            "description": "Where to let go, from the left."
+          },
+          "to_y": {
+            "type": "number",
+            "description": "Where to let go, from the top."
+          },
+          "button": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "description": "Which button; left by default."
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "to_x",
+          "to_y"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "scroll",
+      "batch": 1,
+      "screen": "act",
+      "needs_user": false,
+      "description": "Scrolls with the wheel over a place of the latest screenshot.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "description": "Pixels from the left of the latest screenshot."
+          },
+          "y": {
+            "type": "number",
+            "description": "Pixels from the top of the latest screenshot."
+          },
+          "down": {
+            "type": "integer",
+            "description": "Wheel notches down (negative: up)."
+          },
+          "right": {
+            "type": "integer",
+            "description": "Notches right (negative: left)."
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "key",
+      "batch": 1,
+      "screen": "act",
+      "needs_user": false,
+      "description": "Presses a key or a combination, such as Enter, Escape, Tab, ctrl+c, ctrl+shift+t, alt+f4, cmd+space or win+r.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "string",
+            "description": "Keys joined by +: modifiers (ctrl, shift, alt, cmd or win) and one key (a letter, a digit, Enter, Escape, Tab, Backspace, Delete, Space, Up, Down, Left, Right, Home, End, PageUp, PageDown, F1 to F12)."
+          }
+        },
+        "required": [
+          "keys"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "type",
+      "batch": 1,
+      "screen": "act",
+      "needs_user": false,
+      "description": "Types text where the focus is, as it is, whatever the computer's keyboard layout.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The text."
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "run",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Runs a command as the person signed in at the computer (Windows: PowerShell 7 where it is installed, else Windows PowerShell; macOS: their login shell) and waits for it, at most wait_ms. A command that takes longer runs on: its answer has running true and an id, and proc_read reads on from next. Programs started here are the computer's: they keep running when this AI client leaves, is stopped, or is given up for idling.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "What to run, as typed in that shell."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "The folder to run it in; the shell's default otherwise."
+          },
+          "wait_ms": {
+            "type": "integer",
+            "description": "How long to wait for it to end (default 30000, at most 600000)."
+          },
+          "elevated": {
+            "type": "boolean",
+            "description": "As an administrator: only where a person allowed AI clients administrator rights for this computer (computer_info's admin). Windows: with the administrator rights of the person signed in, who must have them; macOS: the person at the Mac confirms in the system's prompt every time."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "proc_start",
+      "batch": 2,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Starts a program in a terminal of its own, as the person signed in: an interactive shell (Windows: PowerShell 7 where it is installed, else Windows PowerShell; macOS: their login shell) when command is left out, or a command that asks questions or needs a terminal (an installer, a REPL, ssh). Type into it with proc_write and read it with proc_read (its output comes without the terminal's colours and cursor moves). Like run's programs, it outlives this AI client.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "What to run, as typed in that shell; a shell of its own when left out."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "The folder to start in."
+          },
+          "cols": {
+            "type": "integer",
+            "description": "The terminal's width in characters (default 120)."
+          },
+          "rows": {
+            "type": "integer",
+            "description": "Its height in lines (default 30)."
+          },
+          "elevated": {
+            "type": "boolean",
+            "description": "As an administrator: only where a person allowed AI clients administrator rights for this computer (computer_info's admin). Windows: with the administrator rights of the person signed in, who must have them; macOS: the person at the Mac confirms in the system's prompt every time, and a terminal cannot be."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "proc_write",
+      "batch": 2,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Types into a program proc_start started: text, then keys by name. A line is entered with keys [\"enter\"]. Then proc_read from the next it answers, with wait_ms, to see what it said.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The program's id, from proc_start."
+          },
+          "text": {
+            "type": "string",
+            "description": "What to type."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Keys after the text: enter, tab, backspace, escape, up, down, left, right, home, end, delete, ctrl+c, ctrl+d, ctrl+z, ctrl+l."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "proc_read",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "What a program started with run or proc_start printed (its output and errors together; a terminal's without its colours and cursor moves), from the byte offset `from` on: pass the `next` of the last answer to read on. With wait_ms it waits for something new (or the program's end) first. The last 1 MiB is kept; earlier_output_lost says when bytes before `from` are gone.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The program's id, from run, proc_start or proc_list."
+          },
+          "from": {
+            "type": "integer",
+            "description": "Where to read from (default 0)."
+          },
+          "wait_ms": {
+            "type": "integer",
+            "description": "Wait at most this long for output past `from` (default 0, at most 30000)."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "proc_kill",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Ends a program started with run, and every program it started.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The program's id."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "proc_list",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "The programs AI clients started on this computer that it still keeps: id, command, running or its exit code, and how much they printed.",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fs_list",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "The entries of a folder: name, kind (file, folder, link), size and modified time (Unix seconds); at most 2000.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "A full path on the computer."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs_stat",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "One file or folder: kind, size and modified time.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "A full path on the computer."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs_read",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Part of a file: at most length bytes from offset (default and most 256 KiB). UTF-8 comes back as text, anything else as base64; more and next say how to read on.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "A full path on the computer."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Where to start (default 0)."
+          },
+          "length": {
+            "type": "integer",
+            "description": "How many bytes (default 524288)."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs_write",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Writes a file, creating it and its folders if needed: text, or bytes as base64. It replaces the file, or appends to it.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "A full path on the computer."
+          },
+          "text": {
+            "type": "string",
+            "description": "The content as text."
+          },
+          "base64": {
+            "type": "string",
+            "description": "The content as base64 bytes, instead of text."
+          },
+          "append": {
+            "type": "boolean",
+            "description": "Add to the end instead of replacing (default false)."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs_hash",
+      "batch": 2,
+      "screen": "none",
+      "needs_user": true,
+      "description": "A file's SHA-256 and size: to tell whether two copies are the same, or whether it changed.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file's full path."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fs_move",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Moves or renames a file or folder.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Its full path now."
+          },
+          "to": {
+            "type": "string",
+            "description": "Its full path after."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to"
+        ]
+      }
+    },
+    {
+      "name": "fs_delete",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Deletes a file, or a folder: an empty one, or with everything in it when recursive.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "A full path on the computer."
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "Delete a folder with what is in it (default false)."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "clipboard_get",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "The text on the computer's clipboard (null when it holds no text).",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "clipboard_set",
+      "batch": 1,
+      "screen": "none",
+      "needs_user": true,
+      "description": "Puts text on the computer's clipboard.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The text."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "tunnel",
+      "batch": 2,
+      "screen": "none",
+      "needs_user": false,
+      "description": "Makes a port of the computer's own loopback (127.0.0.1) reachable from the machine you run on: a web server, a debugger or a database started there. Only a port something listens on now; never another machine. The answer says the local port to connect to here; the tunnel lasts while you use this computer (release, or 10 idle minutes, ends it).",
+      "input": {
+        "type": "object",
+        "properties": {
+          "port": {
+            "type": "integer",
+            "description": "The port on the computer's loopback."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "port"
+        ]
+      }
+    },
+    {
+      "name": "windows",
+      "batch": 2,
+      "screen": "none",
+      "needs_user": true,
+      "description": "The windows open on the person's screen: id, title, app (its program's file name), pid, position and size in screen coordinates (not a screenshot's pixels), and whether minimized, maximized or focused.",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "window_act",
+      "batch": 2,
+      "screen": "act",
+      "needs_user": true,
+      "description": "Does one thing to a window windows listed: focus (brings it to the front), minimize, maximize, restore, close (as its close button would: it may ask about unsaved work), or move (its top left corner to x, y in screen coordinates, and its size to w, h when given).",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "The window's id, as windows lists it."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "focus",
+              "minimize",
+              "maximize",
+              "restore",
+              "close",
+              "move"
+            ],
+            "description": "What to do."
+          },
+          "x": {
+            "type": "integer",
+            "description": "move: where its left edge goes."
+          },
+          "y": {
+            "type": "integer",
+            "description": "move: where its top edge goes."
+          },
+          "w": {
+            "type": "integer",
+            "description": "move: its width, with h; its size stays otherwise."
+          },
+          "h": {
+            "type": "integer",
+            "description": "move: its height, with w."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "app_list",
+      "batch": 2,
+      "screen": "none",
+      "needs_user": true,
+      "description": "The apps the person can open (Windows: the Start menu's; macOS: the Applications folders'), by the names app_open takes.",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "app_open",
+      "batch": 2,
+      "screen": "act",
+      "needs_user": true,
+      "description": "Opens an app by its app_list name, a file or folder (with the app the person opens it with), or a web address, as the person would. Its window may take a moment: wait_for, then screenshot.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "An app's name from app_list (any case), a full path, or an address."
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What to pass the app, if anything."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "app_quit",
+      "batch": 2,
+      "screen": "act",
+      "needs_user": true,
+      "description": "Quits an app as the person would (closing its windows: it may ask about unsaved work), or ends it outright with force. Name it by its program (the app field of windows, e.g. notepad) or pass one program's pid. Waits up to 5 seconds and says what still runs.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Its program's name, with or without .exe."
+          },
+          "pid": {
+            "type": "integer",
+            "description": "One program, instead of a name."
+          },
+          "force": {
+            "type": "boolean",
+            "description": "End it without asking it (unsaved work is lost)."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_tree",
+      "batch": 3,
+      "screen": "read",
+      "needs_user": true,
+      "description": "A window's controls as its app describes them to accessibility tools: each element's id, role (button, edit, list_item...), name, value, position and size in screen coordinates, and its children. Cheaper and surer than reading a screenshot for apps that describe themselves; some (games, some web content) describe little. truncated says when elements were left out: ask for less depth, or a larger max_nodes.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "integer",
+            "description": "The window's id, as windows lists it."
+          },
+          "depth": {
+            "type": "integer",
+            "description": "How many levels below the window (default 12, at most 30)."
+          },
+          "max_nodes": {
+            "type": "integer",
+            "description": "Elements at most (default 400, at most 2000)."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "window"
+        ]
+      }
+    },
+    {
+      "name": "ui_act",
+      "batch": 3,
+      "screen": "act",
+      "needs_user": true,
+      "description": "Acts on one element ui_tree listed, by what it is rather than where it shows: invoke (what clicking it does: a button, a link, a menu item), toggle, expand, collapse, select (an item of a list, a tab), focus, or set_value (the text of a box). An element that does not take the action says so; then click it instead.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "window": {
+            "type": "integer",
+            "description": "The window's id, as windows lists it."
+          },
+          "element": {
+            "type": "string",
+            "description": "The element's id, as ui_tree gave it."
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "invoke",
+              "toggle",
+              "expand",
+              "collapse",
+              "select",
+              "focus",
+              "set_value"
+            ],
+            "description": "What to do."
+          },
+          "value": {
+            "type": "string",
+            "description": "set_value: what to put in it."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "window",
+          "element",
+          "action"
+        ]
+      }
+    }
+  ]
+}

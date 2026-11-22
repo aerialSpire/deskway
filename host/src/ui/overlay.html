@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!--design-->
+<!--page-->
+<style>
+/* The bar shown on this computer while it is controlled: a row for each who controls it, each
+   with its Disconnect; rows 32 high, so its buttons are smaller than the standard controls; everything
+   else is design.css. */
+html, body { background: var(--surface); overflow: hidden; }
+body { font-size: var(--fs-caption); font-weight: 400; line-height: 1; user-select: none; }
+.bar { width: max-content; max-width: 560px; display: flex; flex-direction: column; white-space: nowrap; }
+.who { height: 32px; display: flex; align-items: center; gap: var(--s2); min-width: 0; padding: 0 var(--s1) 0 var(--s3); }
+.who[hidden] { display: none; }
+.who + .who { border-top: 1px solid var(--line); }
+.dot { background: var(--warn); }
+.tag { flex: none; height: 18px; padding: 0 var(--s1); }
+#text, #ai { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.who > button { flex: none; }
+#note { color: var(--quiet); }
+#note::before { content: '· '; }
+.note-only #note::before { content: none; }
+button { height: 22px; padding: 0 var(--s2); border: 0; border-radius: var(--r-control); background: var(--accent); color: var(--on-accent); cursor: pointer; }
+button.quiet { background: var(--frame); color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="bar" id="bar" role="status">
+  <div class="who" id="person">
+    <span class="dot" aria-hidden="true"></span>
+    <span id="text"></span>
+    <span id="note" hidden></span>
+    <button id="folder" class="quiet" hidden data-i18n="overlay.open_folder"></button>
+    <button id="end" data-i18n="overlay.disconnect"></button>
+  </div>
+  <div class="who" id="ai-row" hidden>
+    <span class="dot" aria-hidden="true"></span>
+    <span class="tag accent">AI</span>
+    <span id="ai"></span>
+    <button id="stop-ai" data-i18n="overlay.disconnect"></button>
+  </div>
+</div>
+<script>
+const noteOnly = window.deskwayTransfer === true;
+if (noteOnly) {
+  document.body.classList.add('note-only');
+  for (const el of document.querySelectorAll('.dot, #text, #end, #ai-row')) el.hidden = true;
+}
+// The window takes the size of the strip, so nothing extra covers the screen.
+const fit = () => {
+  const r = $('bar').getBoundingClientRect();
+  send({ cmd: noteOnly ? 'transfer-size' : 'overlay-size', w: Math.ceil(r.width), h: Math.ceil(r.height) });
+};
+// Who controls this computer: a person, an AI client, or both, a row each with its Disconnect.
+let shown = null;
+window.setState = (s) => {
+  shown = s;
+  $('person').hidden = !s.person;
+  $('text').textContent = s.person ? t('overlay.controlling', { name: s.person }) : '';
+  $('text').title = $('text').textContent;
+  $('ai-row').hidden = !s.ai;
+  $('ai').textContent = s.ai ? t('overlay.ai', { name: s.ai }) : '';
+  $('ai').title = $('ai').textContent;
+  fit();
+};
+// Files arriving from the controller: "Receiving 2 files · 40%", then "Received 2 files".
+window.setNote = (note) => {
+  const n = $('note');
+  n.hidden = !note;
+  n.textContent = note ? note.text : '';
+  $('folder').hidden = !(note && note.folder);
+  if (noteOnly && note) fit();
+};
+// Another language: the strip changes width, so it is measured again.
+followLanguage(() => {
+  if (shown !== null && !noteOnly) window.setState(shown);
+  else if (noteOnly) fit();
+});
+$('folder').addEventListener('click', () => send({ cmd: 'open-folder' }));
+$('end').addEventListener('click', () => send({ cmd: 'disconnect' }));
+$('stop-ai').addEventListener('click', () => send({ cmd: 'stop-ai' }));
+send({ cmd: noteOnly ? 'transfer-ready' : 'overlay-ready' });
+</script>
+</body>
+</html>

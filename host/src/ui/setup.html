@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Deskway Host</title>
+<!--design-->
+<!--lang-menu-->
+<!--page-->
+<style>
+/* The installer: a bar (what it does, the language, close), then one step at a time. It only
+   installs, updates and uninstalls: signing in and out is the panel's. Tokens and shared
+   components come from design.css (docs/design.md). */
+html, body { height: 100%; background: var(--surface); }
+body { display: flex; flex-direction: column; user-select: none; }
+.bar { flex: none; min-height: var(--h-control); display: flex; align-items: center; justify-content: space-between; gap: var(--s2); padding: 0 var(--s2) 0 var(--s5); color: var(--quiet); font-size: var(--fs-small); }
+.bar-end { display: flex; align-items: center; gap: var(--s1); }
+main { flex: 1; display: flex; flex-direction: column; padding: var(--s2) var(--s8) var(--s6); overflow: auto; }
+.logo { width: var(--h-control); height: var(--h-control); border-radius: var(--r-box); background: var(--accent); color: var(--on-accent); display: flex; align-items: center; justify-content: center; }
+h1 { margin-top: var(--s4); font-size: var(--fs-title); line-height: var(--lh-tight); }
+p { margin-top: var(--s2); color: var(--quiet); font-size: var(--fs-small); }
+.info { margin-top: var(--s4); padding: var(--s3) var(--s4); border-radius: var(--r-box); background: var(--accent-soft); font-size: var(--fs-small); }
+.info b { font-weight: 400; color: var(--ink); }
+.steps { margin: var(--s5) 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--s3); }
+.steps li { display: flex; align-items: center; gap: var(--s3); color: var(--faint); }
+.steps li.now { color: var(--ink); }
+.steps li.done { color: var(--quiet); }
+.mark { flex: none; width: var(--s4); height: var(--s4); display: flex; align-items: center; justify-content: center; }
+.mark.ok { color: var(--ok); }
+.grow { flex: 1; min-height: var(--s4); }
+.actions { display: flex; justify-content: flex-end; gap: var(--s2); flex-wrap: wrap; }
+.actions .btn { min-width: 96px; }
+.note { margin-top: var(--s3); color: var(--faint); font-size: var(--fs-caption); }
+</style>
+</head>
+<body>
+<div class="bar" id="bar"><span id="bar-title"></span><span class="bar-end"><div id="lang" hidden></div><button class="btn icon compact" id="close" type="button" data-i18n-attr="aria-label=common.close"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="M1 1l10 10M11 1L1 11"/></svg></button></span></div>
+<main id="main"></main>
+<!-- The program's own pictures, put in by cloning: the page never makes markup from text. -->
+<template id="logo"><div class="logo" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4.5" width="20" height="13" rx="1.5"/><path d="M13 17.5v3M8.5 21.5h9"/><path d="M10.5 8v6.5l1.7-1.6 1.4 2.6 1.2-.6-1.3-2.5 2.3-.1z" fill="currentColor" stroke="none"/></svg></div></template>
+<template id="mark-done"><span class="mark ok"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 6.5 5 9 10 3"/></svg></span></template>
+<template id="mark-now"><span class="mark"><span class="spinner"></span></span></template>
+<template id="mark-todo"><span class="mark"><span class="dot"></span></span></template>
+<script>
+const picture = (id) => $(id).content.cloneNode(true);
+const actions = (...buttons) => h('div', { class: 'actions' }, buttons);
+const btn = (id, label, primary) => h('button', { class: primary ? 'btn primary' : 'btn', id, type: 'button' }, label);
+const grow = () => h('div', { class: 'grow' });
+const page = (s) => {
+  if (s.page === 'welcome') {
+    return [picture('logo'), h('h1', null, t('setup.title_install')), h('p', null, t('setup.welcome_body')),
+      s.enrolled ? h('div', { class: 'info' }, t('setup.this_computer'), h('b', null, s.name), h('br'), t('setup.server'), s.server) : null,
+      h('div', { class: 'error', id: 'err', role: 'alert' }, s.error), grow(),
+      actions(btn('go', t('setup.install'), true)), h('div', { class: 'note' }, t('setup.install_note'))];
+  }
+  if (s.page === 'installed') {
+    return [picture('logo'), h('h1', null, t('setup.installed_title')), h('p', null, t('setup.installed_body')),
+      h('div', { class: 'info' }, t('setup.this_computer'), h('b', null, s.name)), grow(),
+      actions(btn('to-uninstall', t('setup.uninstall')), btn('go', t('setup.update'), true))];
+  }
+  if (s.page === 'uninstall') {
+    return [picture('logo'), h('h1', null, t('setup.title_uninstall')), h('p', null, t('setup.uninstall_body')),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'purge' }), h('span', null, t('setup.purge'))),
+      h('div', { class: 'error', role: 'alert' }, s.error), grow(),
+      actions(btn('cancel', t('common.cancel')), btn('do-uninstall', t('setup.uninstall'), true)), h('div', { class: 'note' }, t('setup.uninstall_note'))];
+  }
+  if (s.page === 'working') {
+    return [h('h1', null, s.mode === 'uninstall' ? t('setup.uninstalling') : t('setup.installing')),
+      h('ul', { class: 'steps' }, s.steps.map((st) => h('li', { class: st.state }, picture(`mark-${st.state}`), h('span', null, st.label)))), grow()];
+  }
+  if (s.page === 'done') {
+    return s.mode === 'uninstall'
+      ? [picture('logo'), h('h1', null, t('setup.uninstalled_title')), h('p', null, s.purged ? t('setup.purged') : t('setup.kept')), grow(), actions(btn('finish', t('setup.finish'), true))]
+      : [picture('logo'), h('h1', null, t('setup.done_title')), h('p', null, t('setup.done_body')),
+        s.enrolled ? null : h('div', { class: 'info' }, h('b', null, t('setup.next_label')), t('setup.next_body')), grow(),
+        actions(btn('finish', t('tray.open'), true))];
+  }
+  if (s.page === 'failed') {
+    return [h('h1', null, s.mode === 'uninstall' ? t('setup.failed_uninstall') : t('setup.failed_install')),
+      h('div', { class: 'error', role: 'alert' }, s.error), grow(),
+      actions(btn('cancel', t('common.close')), btn('retry', t('setup.retry'), true))];
+  }
+  return [];
+};
+window.render = (s) => {
+  window.last = s;
+  const main = $('main');
+  $('bar-title').textContent = s.mode === 'uninstall' ? t('setup.title_uninstall') : t('setup.title_install');
+  $('close').disabled = s.page === 'working';
+  // Only on the first screen: once work starts, the language is settled.
+  $('lang').hidden = !['welcome', 'installed', 'uninstall'].includes(s.page);
+  main.replaceChildren(...page(s).flat().filter(Boolean));
+  const on = (id, f) => { const b = $(id); if (b) b.addEventListener('click', f); };
+  on('go', () => send({ cmd: 'install' }));
+  on('to-uninstall', () => send({ cmd: 'show-uninstall' }));
+  on('do-uninstall', () => send({ cmd: 'uninstall', purge: $('purge').checked }));
+  on('retry', () => send({ cmd: 'retry' }));
+  on('cancel', () => send({ cmd: 'close' }));
+  on('finish', () => send({ cmd: 'finish' }));
+  const first = main.querySelector('button.primary');
+  if (first) first.focus();
+};
+// A new language redraws the page; the choice to remove the data stays.
+followLanguage(() => {
+  const purge = $('purge') && $('purge').checked;
+  if (window.last) window.render(window.last);
+  if ($('purge')) $('purge').checked = purge;
+}, $('lang'));
+$('close').addEventListener('click', () => send({ cmd: 'close' }));
+// There is no system title bar: the top strip moves the window.
+$('bar').addEventListener('mousedown', (e) => { if (e.button === 0 && !e.target.closest('button, .menu')) send({ cmd: 'drag' }); });
+send({ cmd: 'ready' });
+</script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+//! Minimal STUN binding client, used to learn this host's public address.
+
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::time::{Duration, Instant};
+
+const MAGIC: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
+const XOR_MAPPED_ADDRESS: u16 = 0x0020;
+
+/// Parses "stun:host:port" (the query string, if any, is ignored).
+pub fn resolve(url: &str) -> Option<SocketAddr> {
+    let rest = url.strip_prefix("stun:")?;
+    let rest = rest.split('?').next()?;
+    let target = if rest.contains(':') { rest.to_string() } else { format!("{rest}:3478") };
+    target.to_socket_addrs().ok()?.find(|a| a.is_ipv4())
+}
+
+fn request(id: u64) -> [u8; 20] {
+    let mut m = [0u8; 20];
+    m[1] = 0x01; // binding request, length 0
+    m[4..8].copy_from_slice(&MAGIC);
+    m[8..16].copy_from_slice(&id.to_be_bytes());
+    m
+}
+
+fn parse(resp: &[u8], id: u64) -> Option<SocketAddr> {
+    if resp.len() < 20 || resp[0] != 0x01 || resp[1] != 0x01 || resp[4..8] != MAGIC || resp[8..16] != id.to_be_bytes() {
+        return None;
+    }
+    let mut p = 20;
+    while p + 4 <= resp.len() {
+        let typ = u16::from_be_bytes([resp[p], resp[p + 1]]);
+        let len = u16::from_be_bytes([resp[p + 2], resp[p + 3]]) as usize;
+        let val = resp.get(p + 4..p + 4 + len)?;
+        if typ == XOR_MAPPED_ADDRESS && len >= 8 && val[1] == 1 {
+            let port = u16::from_be_bytes([val[2], val[3]]) ^ 0x2112;
+            let ip = Ipv4Addr::new(val[4] ^ MAGIC[0], val[5] ^ MAGIC[1], val[6] ^ MAGIC[2], val[7] ^ MAGIC[3]);
+            return Some(SocketAddr::new(IpAddr::V4(ip), port));
+        }
+        p += 4 + len.div_ceil(4) * 4;
+    }
+    None
+}
+
+/// Asking one STUN server, from one local socket, which address it sees. Requests go out a
+/// few times, 200 ms apart, and the answer arrives through the socket's reader like any other
+/// packet, so nothing waits for it: the session goes on and offers the address when it comes.
+pub struct Probe {
+    pub local: SocketAddr,
+    server: SocketAddr,
+    id: u64,
+    sent: u32,
+    next: Instant,
+    answered: bool,
+}
+
+const TRIES: u32 = 3;
+const GAP: Duration = Duration::from_millis(200);
+
+impl Probe {
+    pub fn new(local: SocketAddr, server: SocketAddr, now: Instant) -> Self {
+        Probe { local, server, id: u64::from_be_bytes(wire::crypto::random()), sent: 0, next: now, answered: false }
+    }
+
+    /// When it next wants to send, while it still may.
+    pub fn due(&self) -> Option<Instant> {
+        (!self.answered && self.sent < TRIES).then_some(self.next)
+    }
+
+    /// The request to send now and where to, if one is due.
+    pub fn poll(&mut self, now: Instant) -> Option<([u8; 20], SocketAddr)> {
+        let due = self.due()?;
+        if now < due {
+            return None;
+        }
+        self.sent += 1;
+        self.next = now + GAP;
+        Some((request(self.id), self.server))
+    }
+
+    /// The address the server sees, when `data` (from `source`, to `destination`) answers this
+    /// probe; the first answer only.
+    pub fn answer(&mut self, source: SocketAddr, destination: SocketAddr, data: &[u8]) -> Option<SocketAddr> {
+        if self.answered || source != self.server || destination != self.local {
+            return None;
+        }
+        let addr = parse(data, self.id)?;
+        self.answered = true;
+        Some(addr)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_xor_mapped_address() {
+        let r = answer_for(42);
+        assert_eq!(parse(&r, 42), Some("203.0.113.9:5000".parse().unwrap()));
+        assert_eq!(parse(&r, 43), None, "a response for another transaction is ignored");
+    }
+
+    fn answer_for(id: u64) -> Vec<u8> {
+        let mut r = vec![0x01, 0x01, 0, 12];
+        r.extend_from_slice(&MAGIC);
+        r.extend_from_slice(&id.to_be_bytes());
+        r.extend_from_slice(&[0, 0, 0, 0]);
+        r.extend_from_slice(&[0x00, 0x20, 0, 8, 0, 1]);
+        r.extend_from_slice(&(5000u16 ^ 0x2112).to_be_bytes());
+        r.extend_from_slice(&[203 ^ MAGIC[0], 0 ^ MAGIC[1], 113 ^ MAGIC[2], 9 ^ MAGIC[3]]);
+        r
+    }
+
+    #[test]
+    fn a_probe_sends_a_few_times_apart_and_takes_the_first_answer() {
+        let (local, server): (SocketAddr, SocketAddr) = ("192.168.1.2:5000".parse().unwrap(), "192.0.2.1:3478".parse().unwrap());
+        let t0 = Instant::now();
+        let mut p = Probe::new(local, server, t0);
+        let (req, to) = p.poll(t0).expect("the first request goes at once");
+        assert_eq!(to, server);
+        assert!(p.poll(t0).is_none(), "not again before the gap");
+        assert!(p.poll(t0 + GAP).is_some() && p.poll(t0 + GAP * 2).is_some());
+        assert!(p.poll(t0 + GAP * 3).is_none() && p.due().is_none(), "it gives up after {TRIES} tries");
+        let id = u64::from_be_bytes(req[8..16].try_into().unwrap());
+        let other: SocketAddr = "192.0.2.9:3478".parse().unwrap();
+        assert_eq!(p.answer(other, local, &answer_for(id)), None, "only its server answers it");
+        assert_eq!(p.answer(server, local, &answer_for(id + 1)), None, "only for its transaction");
+        assert_eq!(p.answer(server, local, &answer_for(id)), Some("203.0.113.9:5000".parse().unwrap()), "a late answer still counts");
+        assert_eq!(p.answer(server, local, &answer_for(id)), None, "the first answer only");
+    }
+
+    #[test]
+    fn resolves_ip_urls() {
+        assert_eq!(resolve("stun:192.0.2.1:3478"), Some("192.0.2.1:3478".parse().unwrap()));
+        assert_eq!(resolve("turn:192.0.2.1:3478"), None);
+    }
+}

@@ -1,0 +1,11 @@
+# The Rust parts of Deskway: the host (the computer being controlled), the `deskway` command
+# for AI clients, and the crates both use.
+[workspace]
+resolver = "2"
+members = ["crates/wire", "crates/peer", "host", "cli"]
+
+[workspace.package]
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+str0m = { version = "0.25", default-features = false }

@@ -1,0 +1,127 @@
+# AI clients
+
+Deskway lets AI clients that speak the [Model Context Protocol](https://modelcontextprotocol.io)
+(Claude Code, Claude Desktop, Cursor and others) use your computers as tools: look at the
+screen, use the mouse and keyboard, run commands, read and write files, and open and quit apps.
+
+The AI client talks to a small program, `deskway`, that runs on the AI's machine. `deskway` signs
+in to your Deskway server as one of your account's devices and connects to your computers the
+same way a browser does.
+
+## Safeguards
+
+An AI client never uses your password. It signs in with its own device key, and you approve it
+from an approved browser after comparing a six-digit code. The server accepts new AI sign-ins
+only within 10 minutes after you copy the setup prompt.
+
+Approval alone does not give access to any computer. AI control is off for every computer until
+you turn on **Allow AI control** for it on the **My devices** page. While an AI client is in
+control, both the computer and your browser sessions say so, and the person at the computer can
+end it with **Stop AI control**. Each computer keeps its own record of what AI clients did there,
+which you can read in the browser's audit view or with the `audit_read` tool.
+
+Administrator rights are a separate setting, **Allow administrator rights**. On Windows it
+requires the signed-in user to be an administrator. On a Mac, each use has to be confirmed at the
+Mac.
+
+## Requirements
+
+- The AI's machine runs Windows (x64 or ARM64) or macOS (Apple silicon or Intel). `deskway` does
+  not run on Linux.
+- The server has the `deskway` programs in its `clients` folder. The server's administrator sets
+  this up once, as described in [Self-hosting, step 5](self-hosting.md#5-put-the-ai-client-programs-in-place-optional).
+  Until then, **Add an AI client** shows "The server has no AI client programs yet".
+- The computers to be controlled run a current version of Deskway Host. A computer with an older
+  version shows "This computer's Deskway is too old for AI control".
+
+## Connect an AI client
+
+1. In the browser, open **My devices** and choose **Add an AI client**.
+2. Click **Copy prompt** and paste the prompt into your AI client. Copying starts the 10-minute
+   window for new AI sign-ins.
+3. The AI client follows the prompt on its own. It downloads the `deskway` program for its
+   system from your server, checks its SHA-256 hash and runs `deskway login`, which shows six
+   digits. It then adds `deskway mcp` as an MCP server.
+4. When the request "AI client “…” wants to join" appears in the browser, compare its digits with
+   the ones the AI client gave you. Approve the request only if they match.
+5. On **My devices**, turn on **Allow AI control** for each computer it may use.
+
+To set up the client by hand instead, open **Connect by hand, without the prompt** in the same
+window. It lists the download for each system and the commands described below.
+
+## Manual setup
+
+Download the file for your system from the server (the **Add an AI client** window lists the
+links) and save it in your user folder. On macOS, make it executable with `chmod +x deskway`.
+Then sign in:
+
+```sh
+deskway login --server https://desk.example.net --user me --name "Claude Code"
+```
+
+Approve the request in the browser if the digits match. Then register the program with your AI
+client, using its full path:
+
+```sh
+# Claude Code
+claude mcp add deskway -- /full/path/to/deskway mcp
+```
+
+For other clients, add this to their MCP configuration:
+
+```json
+{ "command": "/full/path/to/deskway", "args": ["mcp"] }
+```
+
+To confirm the setup, run `deskway computers`. It lists the account's computers and shows which
+of them allow AI control.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `deskway login --server URL --user NAME [--name NAME]` | Signs this machine in; a browser approves it |
+| `deskway logout [--forget]` | Signs out. `--forget` also deletes the device key |
+| `deskway mcp` | The MCP server an AI client starts (stdio) |
+| `deskway computers` | Lists the account's computers and where AI control is allowed |
+| `deskway call COMPUTER TOOL [JSON]` | Makes one tool call, as an AI client would |
+| `deskway update` | Replaces this program with the server's version now |
+
+Several AI client windows on one machine share one connection through a local proxy that
+`deskway mcp` starts and stops by itself.
+
+`deskway` keeps its sign-in in `%LOCALAPPDATA%\Deskway\cli` on Windows and
+`~/Library/Application Support/Deskway/cli` on macOS. Set `DESKWAY_CLI_HOME` to use another folder.
+
+## Updates
+
+`deskway` keeps itself up to date. When it starts, and every hour after that, it compares itself
+with the program in the server's `clients` folder and replaces itself if they differ. The new
+version takes effect the next time the AI client starts `deskway mcp`. To update your AI clients,
+you only need to update the files in the server's `clients` folder.
+
+## Tools
+
+The tools are defined in [`proto/tools.json`](../proto/tools.json). Each computer reports which
+of them it supports.
+
+| Group | Tools |
+|---|---|
+| Computer | `computer_info`, `audit_read` |
+| Screen | `screenshot`, `wait_for` |
+| Mouse and keyboard | `click`, `move`, `drag`, `scroll`, `key`, `type` |
+| Commands and programs | `run`, `proc_start`, `proc_write`, `proc_read`, `proc_kill`, `proc_list` |
+| Files | `fs_list`, `fs_stat`, `fs_read`, `fs_write`, `fs_hash`, `fs_move`, `fs_delete` |
+| Clipboard | `clipboard_get`, `clipboard_set` |
+| Windows and apps | `windows`, `window_act`, `app_list`, `app_open`, `app_quit` |
+| Accessibility tree | `ui_tree`, `ui_act` |
+| Network | `tunnel` (reach a port on the computer's loopback from the AI's machine) |
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Login is refused right away | Copy the prompt again in **Add an AI client**: new sign-ins are accepted only for 10 minutes after copying |
+| The SHA-256 doesn't match | Don't run the file. Download it again from the server; if it still differs, tell the server's administrator |
+| `computers` lists a computer but calls are refused | Turn on **Allow AI control** for it on **My devices**, and check the person at the computer didn't stop AI control |
+| A tool is reported as unsupported | Update Deskway Host on that computer |

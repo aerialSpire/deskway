@@ -1,0 +1,109 @@
+# Install Deskway Host on Windows
+
+Deskway Host runs on the computer you want to control. On Windows it installs as a system service,
+so the computer can be reached even at the lock screen and the sign-in screen.
+
+You need:
+
+- 64-bit Windows 10 or Windows 11 on an x64 processor.
+- An administrator account on that computer, for installing.
+- A Deskway server address, such as `https://desk.example.net`, and the account the computer
+  belongs to. See [Self-hosting](self-hosting.md) to run your own.
+- A browser that is already signed in and approved for that account, to approve the computer.
+
+## 1. Download
+
+Open the [Releases page](https://github.com/aerialSpire/deskway/releases), pick the latest release, and download
+**`Deskway-Setup.exe`** from its **Assets** list. (The other `.exe` there,
+`deskway-windows-x64.exe`, is the AI client program, not the host.)
+
+The release builds are not code-signed. When you open the file, Windows SmartScreen may show
+"Windows protected your PC". Choose **More info**, check that the file is `Deskway-Setup.exe`,
+and choose **Run anyway**.
+
+To build it yourself instead, see [Building from source](#building-from-source).
+
+## 2. Install
+
+1. Run `Deskway-Setup.exe`. The **Install Deskway Host** window opens.
+2. Click **Install**. When Windows asks for administrator rights, click **Yes**.
+3. The installer installs and starts the system service, then shows **Installation complete**.
+   Click **Done**.
+
+Deskway Host now starts with Windows. Its icon is in the notification area (system tray).
+
+## 3. Sign in this computer
+
+The Deskway Host panel opens when installation finishes. To open it later, choose
+**Open Deskway Host** from the tray icon.
+
+1. Under **Sign in this computer**, enter the **Server address**, the **Account** and the
+   **Password**, then click **Sign in**.
+2. The panel shows **Waiting for approval on a signed-in device**. Your approved browser shows
+   the request "A new computer wants to join" with the computer's name and address. Approve it
+   there, or on the **My devices** page.
+3. The panel shows **Online**. The computer now appears in the browser's list of computers.
+
+## 4. Allow your phones and other computers
+
+A computer accepts control only from devices that were added to it at the computer itself. The
+first time you open the computer from a phone or another browser, you are asked to add that
+device.
+
+- To add a phone or tablet with a camera, click **Add a phone or computer** in the Deskway Host
+  panel, scan the QR code with the phone's camera, and tap **Add** on the phone.
+- To add a computer without a camera, open Deskway in that computer's browser, click this
+  computer and choose **Request control**. Then choose **Allow** at this computer.
+
+The **Allowed devices** list in the panel shows every device that may control this computer, and
+you can remove devices from it there.
+
+## Settings in the panel
+
+| Setting | What it does |
+|---|---|
+| **Start with Windows** | On by default. When off, the host doesn't run after a restart and shows as offline |
+| **Keep this computer awake** | Prevents idle sleep while Deskway Host runs. The display may still turn off |
+| **Lock when disconnected** | Locks Windows when a remote session ends |
+| **Sign out** | Removes this computer from the account. It must be signed in and approved again to be controlled |
+
+The person at the computer can always see when it is being controlled, and can end any session
+from the on-screen notice or from the panel.
+
+## Updating
+
+Download the new release's `Deskway-Setup.exe` and run it. It detects the installed version and
+offers **Update**. Sign-in details and allowed devices are kept.
+
+## Uninstalling
+
+Run `Deskway-Setup.exe` again, or use **Settings → Apps → Deskway Host → Uninstall**, then choose
+**Uninstall**. The installer keeps this computer's sign-in details and allowed devices for a later
+reinstall unless you check the option to delete them.
+
+## Building from source
+
+On Windows with [Rust](https://rustup.rs/) (stable, with the MSVC toolchain and the Visual Studio
+C++ build tools):
+
+```powershell
+cargo build --locked --release -p deskway-host
+```
+
+The result is `target\release\deskway-host.exe`. Copy or rename it to `Deskway-Setup.exe` and run
+it. When the program's file name contains "setup", it opens the installer.
+
+To try Deskway without installing the service, run `scripts\try-local.ps1`. It builds and starts
+a server and the host on one Windows computer, as described in the comments at the top of the
+script.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| "You clicked “No” in the Windows prompt" | Run the installer again and click **Yes** when Windows asks |
+| **Can't reach the server** | The server address is right and opens in a browser on this computer |
+| Sign-in fails with a wrong password | Use the account's password, not the super password |
+| Stays at **Waiting for approval on a signed-in device** | Approve the computer from an already approved browser, on **My devices** |
+| The account can't add more computers | Each account can have up to 10 computers. Remove unused ones on **My devices** |
+| The browser shows "This computer needs an update" | Update Deskway Host to the server's version |

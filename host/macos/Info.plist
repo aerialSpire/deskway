@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>zh-Hans</string>
+        <string>zh-Hant</string>
+    </array>
+    <key>CFBundleIdentifier</key>
+    <string>com.deskway.host</string>
+    <key>CFBundleName</key>
+    <string>@PRODUCT_NAME@</string>
+    <key>CFBundleDisplayName</key>
+    <string>@PRODUCT_NAME@</string>
+    <key>CFBundleExecutable</key>
+    <string>deskway-host</string>
+    <key>CFBundleIconFile</key>
+    <string>Deskway.icns</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <!-- Fallbacks only: each language's text is <lang>.lproj/InfoPlist.strings, made from
+         host/i18n (mac.plist_*) by examples/mac-plist-strings.rs when the app is built. -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>@PRODUCT_NAME@ shares this Mac’s screen so that your approved devices can see and control it.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>@PRODUCT_NAME@ saves files sent from your other devices to the Deskway folder in Downloads.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

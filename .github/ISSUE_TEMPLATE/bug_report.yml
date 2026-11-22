@@ -1,0 +1,59 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems: don't file them here. Use **Security → Report a vulnerability** instead.
+        Don't paste passwords, tokens, your server's address or screenshots with private content.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server
+        - Web client
+        - Deskway Host (Windows)
+        - Deskway Host (macOS)
+        - deskway CLI / AI clients
+        - Self-hosting docs or scripts
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or commit of the server and of the host.
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Server OS, host OS and version, controlling browser and device, direct or relayed connection.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server log (journalctl -u deskway) or host messages around the time of the problem, with private details removed.
+      render: text

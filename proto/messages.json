@@ -1,0 +1,1244 @@
+{
+  "protocol_version": 4,
+  "min_version": 3,
+  "notes": [
+    "The single definition of every Deskway message. Go (internal/proto), Rust (crates/wire) and JS (web/static/js/proto.js) are checked against it by contract tests. docs/protocol.md is the readable version.",
+    "Field types: string, integer, number, boolean, object, array (with items), map (object with arbitrary keys, with values), any, or the name of an entry in types. enum restricts a string.",
+    "status: current = on the wire today (possibly with new fields, which carry their own status); new = introduced by protocol version 2.",
+    "Receivers ignore fields they do not know. Senders only send what the peer's version and caps allow."
+  ],
+  "capabilities": [
+    { "name": "input", "who": "host", "since": 2, "meaning": "The host applies input. Absent: view-only host; the browser hides input controls and sends no input." },
+    { "name": "files", "who": "host", "since": 2, "meaning": "The file channel works: files and images can be sent to the host." },
+    { "name": "clipboard", "who": "host", "since": 2, "meaning": "The shared clipboard (cb, cbreq, cbdata, cberr, clipshare) works." },
+    { "name": "cursor", "who": "host", "since": 2, "meaning": "The host stops drawing the pointer into the video on lc and reports cs and cp." },
+    { "name": "displays", "who": "host", "since": 2, "meaning": "The host reports its displays and switches on display." },
+    { "name": "relmouse", "who": "host", "since": 2, "meaning": "The host applies relative moves (mr) for Pointer Lock sessions." },
+    { "name": "layout", "who": "host", "since": 2, "meaning": "The host reports its keyboard layout's key labels (layout)." },
+    { "name": "chars", "who": "host", "since": 2, "meaning": "The host resolves characters with modifiers through its own layout (kc)." },
+    { "name": "capture", "who": "host", "since": 2, "meaning": "The host reports when nothing can be captured (capture)." },
+    { "name": "desk", "who": "host", "since": 2, "meaning": "The host reports which input desktop is active (desk): lock screen, secure prompts." },
+    { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
+    { "name": "screen-tiles-v1", "who": "host", "since": 4, "meaning": "The host opens the screen-tiles-v1 channel for lossless RGB updates after a sharp viewer advertises the same capability." }
+  ],
+  "types": {
+    "View": {
+      "meaning": "Viewer constraints: what the browser shows the picture at and what it decodes smoothly. Sent with the offer, so the host starts at that size, and as the control message view when they change.",
+      "fields": {
+        "w": { "type": "integer", "optional": false, "meaning": "viewport (the stage times the zoom), device pixels" },
+        "h": { "type": "integer", "optional": false, "meaning": "viewport height, device pixels" },
+        "maxW": { "type": "integer", "optional": false, "meaning": "largest width decoded smoothly (MediaCapabilities, landscape; the host turns it like the display). With it the viewer vouches for the level that size needs, beyond the SDP's" },
+        "maxH": { "type": "integer", "optional": false, "meaning": "largest height decoded smoothly" },
+        "fps": { "type": "integer", "optional": false, "meaning": "frames a second the viewer takes: what it decodes smoothly at that size, or fewer for a sharper picture" }
+      }
+    },
+    "ICEServer": {
+      "meaning": "The browser's RTCIceServer dictionary.",
+      "fields": {
+        "urls": { "type": "array", "items": "string", "optional": false, "meaning": "stun:, turn: or turns: URLs" },
+        "username": { "type": "string", "optional": true, "meaning": "TURN user name" },
+        "credential": { "type": "string", "optional": true, "meaning": "TURN password" }
+      }
+    },
+    "Display": {
+      "meaning": "A display attached to the host, in physical pixels of its virtual desktop.",
+      "fields": {
+        "id": { "type": "string", "optional": false, "meaning": "stable while the display stays connected" },
+        "x": { "type": "integer", "optional": false, "meaning": "left edge" },
+        "y": { "type": "integer", "optional": false, "meaning": "top edge" },
+        "w": { "type": "integer", "optional": false, "meaning": "width" },
+        "h": { "type": "integer", "optional": false, "meaning": "height" },
+        "primary": { "type": "boolean", "optional": false, "meaning": "the main display" }
+      }
+    },
+    "Device": {
+      "meaning": "A computer as shown to the account that owns it.",
+      "fields": {
+        "id": { "type": "string", "optional": false, "meaning": "device id" },
+        "name": { "type": "string", "optional": false, "meaning": "computer name" },
+        "os": { "type": "string", "optional": false, "meaning": "windows or macos" },
+        "online": { "type": "boolean", "optional": false, "meaning": "connected to the server now" },
+        "last_seen": { "type": "integer", "optional": true, "meaning": "unix seconds" },
+        "controller": { "type": "Controller", "optional": true, "meaning": "who holds it now (established or still connecting), as this browser sees it; absent: nobody" },
+        "displays": { "type": "array", "items": "Display", "optional": true, "meaning": "attached displays, while online" },
+        "version": { "type": "integer", "optional": true, "status": "current", "since": 2, "meaning": "the host's protocol version from its hello, while online" },
+        "caps": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 2, "meaning": "the host's capabilities from its hello, while online" },
+        "ai": { "type": "AiView", "optional": true, "meaning": "AI clients on this computer; absent: the switch was never set" },
+        "here": { "type": "boolean", "optional": true, "status": "current", "since": 4, "meaning": "this computer said it is the one this browser or AI client runs on (locate); absent: it did not" },
+        "tools": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 4, "meaning": "the AI tools the computer carries out, from its hello, while online; absent: an older computer, which did not say" }
+      }
+    },
+    "AiView": {
+      "meaning": "AI clients on a computer, as its account sees it (docs/architecture.md, \"AI control\"): the switch, and the AI client using it now.",
+      "fields": {
+        "state": { "type": "string", "enum": ["off", "on", "stopped"], "optional": false, "meaning": "off: not allowed; on: allowed; stopped: allowed, but stopped at the computer until a newer switch" },
+        "admin": { "type": "boolean", "optional": false, "meaning": "with administrator rights" },
+        "ts": { "type": "integer", "optional": false, "meaning": "the latest switch's time: a new switch is signed later than it" },
+        "name": { "type": "string", "optional": true, "meaning": "the AI client using the computer now, its device name; absent: none" },
+        "since": { "type": "integer", "optional": true, "meaning": "unix seconds: since when it uses it" }
+      }
+    },
+    "AuditQuery": {
+      "meaning": "Which of a computer's recorded AI calls a page shows (host/src/audit.rs, Query).",
+      "fields": {
+        "since": { "type": "integer", "optional": true, "meaning": "calls started at or after, unix seconds" },
+        "until": { "type": "integer", "optional": true, "meaning": "calls started at or before, unix seconds" },
+        "tool": { "type": "string", "optional": true, "meaning": "one tool's" },
+        "client": { "type": "string", "optional": true, "meaning": "one AI client's, by name" },
+        "failed": { "type": "boolean", "optional": true, "meaning": "only those that ended in an error" },
+        "offset": { "type": "integer", "optional": true, "meaning": "skip this many first" },
+        "limit": { "type": "integer", "optional": false, "meaning": "calls at most (at most 200)" }
+      }
+    },
+    "AuditCall": {
+      "meaning": "One recorded AI tool call: its start and its end.",
+      "fields": {
+        "at": { "type": "integer", "optional": false, "meaning": "when it started, unix seconds" },
+        "client": { "type": "string", "optional": false, "meaning": "the AI client's device name" },
+        "device": { "type": "string", "optional": false, "meaning": "its credential id" },
+        "session": { "type": "string", "optional": false, "meaning": "its session" },
+        "tool": { "type": "string", "optional": false, "meaning": "the tool" },
+        "args": { "type": "string", "optional": false, "meaning": "its arguments, in short" },
+        "result": { "type": "string", "optional": false, "meaning": "ok, running, or the error's code" },
+        "detail": { "type": "string", "optional": false, "meaning": "the result or the error, in short" },
+        "ms": { "type": "integer", "optional": true, "meaning": "how long it took" }
+      }
+    },
+    "AuditPage": {
+      "meaning": "One page of recorded calls, newest first, and what it is out of.",
+      "fields": {
+        "calls": { "type": "array", "items": "AuditCall", "optional": false, "meaning": "this page" },
+        "total": { "type": "integer", "optional": false, "meaning": "calls that fit the query, all pages" },
+        "clients": { "type": "array", "items": "string", "optional": false, "meaning": "every AI client in the record" },
+        "tools": { "type": "array", "items": "string", "optional": false, "meaning": "every tool in the record" }
+      }
+    },
+    "Controller": {
+      "meaning": "Who holds a computer, as one browser of its account sees it (docs/session-lifecycle.md, Who controls). The server makes it for each browser from the host's holder.",
+      "fields": {
+        "device": { "type": "boolean", "optional": false, "meaning": "the holder is this browser's device (its device key): another page of it, or its own session that did not end; false: another device of the account" },
+        "name": { "type": "string", "optional": false, "meaning": "the holder's device name" },
+        "connecting": { "type": "boolean", "optional": false, "meaning": "the holder is still connecting" }
+      }
+    },
+    "Holder": {
+      "meaning": "The session holding a computer (established or still connecting), as its host reports it.",
+      "fields": {
+        "session": { "type": "string", "optional": false, "meaning": "session id" },
+        "cred": { "type": "string", "optional": true, "meaning": "the controller's device credential, as the host verified it; absent with device checks off" },
+        "name": { "type": "string", "optional": false, "meaning": "the controller's device name, as the host knows it" },
+        "user": { "type": "string", "optional": false, "meaning": "the controller's account id, as the server gave it in the offer" },
+        "established": { "type": "boolean", "optional": false, "meaning": "the control channel opened; false: still connecting" },
+        "since": { "type": "integer", "optional": true, "status": "current", "since": 4, "meaning": "unix seconds: since when it holds the computer" }
+      }
+    },
+    "Approval": {
+      "meaning": "A new browser or computer waiting for an approved browser to let it in.",
+      "fields": {
+        "kind": { "type": "string", "enum": ["browser", "device"], "optional": false, "meaning": "what is waiting" },
+        "id": { "type": "string", "optional": false, "meaning": "record id" },
+        "label": { "type": "string", "optional": false, "meaning": "browser label or computer name" },
+        "ip": { "type": "string", "optional": false, "meaning": "where the request came from" },
+        "code": { "type": "string", "optional": true, "meaning": "six digits shown on both browsers" },
+        "created": { "type": "integer", "optional": false, "meaning": "unix seconds" },
+        "device": { "type": "any", "optional": true, "meaning": "the new browser's device key {cred, alg, key, name}, for the approver to endorse" }
+      }
+    },
+    "IceCandidate": {
+      "meaning": "RTCIceCandidateInit.",
+      "fields": {
+        "candidate": { "type": "string", "optional": false, "meaning": "SDP candidate line" },
+        "sdpMid": { "type": "string", "optional": true, "meaning": "media id" },
+        "sdpMLineIndex": { "type": "integer", "optional": true, "meaning": "m-line index" },
+        "usernameFragment": { "type": "string", "optional": true, "meaning": "ICE ufrag" }
+      }
+    },
+    "OfferAuth": {
+      "meaning": "Proof that an offer comes from a trusted device. Opaque to the server.",
+      "fields": {
+        "k": { "type": "string", "enum": ["dk", "rs"], "optional": false, "meaning": "dk: device key signature over deskway-connect-v3; rs: resume token MAC over deskway-resume-v3" },
+        "nonce": { "type": "string", "optional": false, "status": "current", "since": 2, "meaning": "the host-issued nonce the proof covers (replaces ts)" },
+        "cred": { "type": "string", "optional": true, "meaning": "dk: the device's credential id" },
+        "sig": { "type": "string", "optional": true, "meaning": "dk: ECDSA P-256 r||s, base64url" },
+        "id": { "type": "string", "optional": true, "meaning": "rs: resume token id" },
+        "mac": { "type": "string", "optional": true, "meaning": "rs: HMAC-SHA256, base64" }
+      }
+    },
+    "AnswerAuth": {
+      "meaning": "The host's signature over offer and answer (deskway-answer-v1).",
+      "fields": {
+        "sig": { "type": "string", "optional": false, "meaning": "ECDSA P-256 r||s, base64" },
+        "hk": { "type": "string", "optional": false, "meaning": "host public key, SPKI base64" }
+      }
+    },
+    "VouchEntry": {
+      "meaning": "Another device of the same person.",
+      "fields": {
+        "cred": { "type": "string", "optional": false, "meaning": "credential id" },
+        "alg": { "type": "integer", "optional": false, "meaning": "COSE algorithm" },
+        "key": { "type": "string", "optional": false, "meaning": "SPKI base64" },
+        "name": { "type": "string", "optional": false, "meaning": "device name" }
+      }
+    },
+    "Vouch": {
+      "meaning": "A new device vouching for the person's other devices (deskway-vouch-v1).",
+      "fields": {
+        "list": { "type": "array", "items": "VouchEntry", "optional": false, "meaning": "the other devices" },
+        "sig": { "type": "string", "optional": false, "meaning": "the new device's signature, base64url" }
+      }
+    },
+    "PairAuth": {
+      "meaning": "A device asking to be added (pair: with the code shown on the host; pairask: by the person at it).",
+      "fields": {
+        "cred": { "type": "string", "optional": false, "meaning": "credential id" },
+        "alg": { "type": "integer", "optional": false, "meaning": "COSE algorithm" },
+        "key": { "type": "string", "optional": false, "meaning": "SPKI base64" },
+        "name": { "type": "string", "optional": false, "meaning": "device name" },
+        "mac": { "type": "string", "optional": true, "meaning": "pair only: HMAC over deskway-pair-v1 keyed with the code, base64" },
+        "vouch": { "type": "Vouch", "optional": true, "meaning": "the person's other devices" }
+      }
+    },
+    "PairedAuth": {
+      "meaning": "The host's key after pairing.",
+      "fields": {
+        "hk": { "type": "string", "optional": false, "meaning": "host public key, SPKI base64" },
+        "mac": { "type": "string", "optional": true, "meaning": "pair only: HMAC over deskway-paired-v1 keyed with the code, base64" }
+      }
+    },
+    "LogEntry": {
+      "meaning": "One entry of the account's signed device log.",
+      "fields": {
+        "op": { "type": "string", "enum": ["add", "remove", "policy", "rename"], "optional": false, "meaning": "what the entry does" },
+        "cred": { "type": "string", "optional": false, "meaning": "the device it is about" },
+        "alg": { "type": "integer", "optional": true, "meaning": "add: COSE algorithm" },
+        "key": { "type": "string", "optional": true, "meaning": "add: SPKI base64" },
+        "name": { "type": "string", "optional": true, "meaning": "add, rename: device name (rename: deskway-rename-v1)" },
+        "ts": { "type": "integer", "optional": false, "meaning": "unix seconds, signed" },
+        "by": { "type": "string", "optional": true, "meaning": "the signing device" },
+        "ad": { "type": "string", "optional": true, "meaning": "passkey authenticator data, base64url" },
+        "cd": { "type": "string", "optional": true, "meaning": "passkey client data, base64url" },
+        "sig": { "type": "string", "optional": true, "meaning": "signature, base64url" },
+        "keys": { "type": "boolean", "optional": true, "meaning": "policy: device checks required" },
+        "role": { "type": "string", "enum": ["browser", "ai"], "optional": true, "meaning": "add: what the device is; ai is signed as deskway-endorse-v2, absent is a browser (deskway-endorse-v1)" }
+      }
+    },
+    "AiSwitch": {
+      "meaning": "A browser's signed choice for one computer: whether AI clients may control it, and whether with administrator rights (deskway-ai-v1). The computer takes the newest it has seen from a browser it trusts.",
+      "fields": {
+        "host": { "type": "string", "optional": false, "meaning": "the computer's id" },
+        "ai": { "type": "boolean", "optional": false, "meaning": "AI clients may control it" },
+        "admin": { "type": "boolean", "optional": false, "meaning": "with administrator rights" },
+        "ts": { "type": "integer", "optional": false, "meaning": "unix seconds, signed; later than every earlier switch of this computer" },
+        "by": { "type": "string", "optional": false, "meaning": "the signing browser" },
+        "ad": { "type": "string", "optional": true, "meaning": "passkey authenticator data, base64url" },
+        "cd": { "type": "string", "optional": true, "meaning": "passkey client data, base64url" },
+        "sig": { "type": "string", "optional": false, "meaning": "signature, base64url" }
+      }
+    },
+    "Mods": {
+      "meaning": "Modifier state, as KeyboardEvent.getModifierState reports it.",
+      "fields": {
+        "shift": { "type": "boolean", "optional": false, "meaning": "Shift" },
+        "ctrl": { "type": "boolean", "optional": false, "meaning": "Control" },
+        "alt": { "type": "boolean", "optional": false, "meaning": "Alt / Option" },
+        "meta": { "type": "boolean", "optional": false, "meaning": "Windows key / Command" }
+      }
+    },
+    "Locks": {
+      "meaning": "Toggle key state.",
+      "fields": {
+        "caps": { "type": "boolean", "optional": false, "meaning": "Caps Lock" },
+        "num": { "type": "boolean", "optional": false, "meaning": "Num Lock" },
+        "scroll": { "type": "boolean", "optional": false, "meaning": "Scroll Lock" }
+      }
+    },
+    "Item": {
+      "meaning": "A file: name and size.",
+      "fields": {
+        "n": { "type": "string", "optional": false, "meaning": "file name" },
+        "s": { "type": "integer", "optional": false, "meaning": "size in bytes" }
+      }
+    },
+    "Format": {
+      "meaning": "One clipboard format (RDP CLIPRDR model).",
+      "fields": {
+        "kind": { "type": "string", "enum": ["text", "html", "image", "files"], "optional": false, "meaning": "text: UTF-8; html; image: PNG; files: names and sizes" },
+        "size": { "type": "integer", "optional": true, "meaning": "bytes, when known" },
+        "w": { "type": "integer", "optional": true, "meaning": "image width" },
+        "h": { "type": "integer", "optional": true, "meaning": "image height" },
+        "items": { "type": "array", "items": "Item", "optional": true, "meaning": "files: the files" }
+      }
+    }
+  },
+  "channels": {
+    "signaling.browser": {
+      "transport": "WebSocket /ws/client (browser <-> server), JSON text frames",
+      "discriminator": "type",
+      "messages": [
+        {
+          "type": "hello", "status": "current", "since": 2, "directions": ["server->browser", "browser->server"],
+          "meaning": "First message each way: protocol version and capabilities.",
+          "fields": {
+            "version": { "type": "integer", "optional": false, "meaning": "protocol version" },
+            "caps": { "type": "array", "items": "string", "optional": false, "meaning": "capability names" },
+            "build": { "type": "string", "optional": true, "status": "new", "since": 2, "meaning": "server only: which client files it serves; another than the page loaded with means a newer Deskway (the page offers to reload)" }
+          }
+        },
+        {
+          "type": "devices", "status": "current", "since": 1, "directions": ["server->browser"],
+          "meaning": "The computers this user may see, whenever anything about them changes.",
+          "fields": {
+            "devices": { "type": "array", "items": "Device", "optional": false, "meaning": "the list, sorted by name" }
+          }
+        },
+        {
+          "type": "approvals", "status": "current", "since": 1, "directions": ["server->browser"],
+          "meaning": "Browsers and computers waiting to be let in.",
+          "fields": {
+            "approvals": { "type": "array", "items": "Approval", "optional": false, "meaning": "the waiting requests, oldest first" }
+          }
+        },
+        {
+          "type": "ice", "status": "new", "since": 2, "directions": ["server->browser"],
+          "meaning": "STUN and TURN servers with fresh credentials: when the socket opens and again well before they expire, so a session never waits for them.",
+          "fields": {
+            "ice": { "type": "array", "items": "ICEServer", "optional": false, "meaning": "the servers, as an RTCConfiguration's iceServers" }
+          }
+        },
+        {
+          "type": "watch", "status": "current", "since": 1, "directions": ["browser->server"],
+          "meaning": "The overview (list or detail) is open or closed: previews wanted or not.",
+          "fields": {
+            "on": { "type": "boolean", "optional": false, "meaning": "open" }
+          }
+        },
+        {
+          "type": "locate", "status": "current", "since": 4, "directions": ["browser->server"],
+          "meaning": "Where this browser or AI client runs, so the computer it runs on can say so (here): a hint before connecting, never a rule. Sent again on every new socket.",
+          "fields": {
+            "where": { "type": "array", "items": "string", "optional": false, "meaning": "at most 8 locators of at most 128 characters: a browser's WebRTC mDNS host names (name.local), an AI client's machine:<sha-256 of its machine id>" }
+          }
+        },
+        {
+          "type": "auditreq", "status": "current", "since": 4, "directions": ["browser->server"],
+          "meaning": "Asks a computer of this account for a page of its recorded AI calls. Not from an AI client's login.",
+          "fields": {
+            "device": { "type": "string", "optional": false, "meaning": "the computer" },
+            "query": { "type": "AuditQuery", "optional": false, "meaning": "which calls" }
+          }
+        },
+        {
+          "type": "audit", "status": "current", "since": 4, "directions": ["server->browser"],
+          "meaning": "A computer's answer to auditreq.",
+          "fields": {
+            "device": { "type": "string", "optional": false, "meaning": "the computer" },
+            "page": { "type": "AuditPage", "optional": false, "meaning": "the calls asked for" }
+          }
+        },
+        {
+          "type": "thumb", "status": "current", "since": 1, "directions": ["server->browser"],
+          "meaning": "A preview picture of one display of a computer.",
+          "fields": {
+            "device": { "type": "string", "optional": false, "meaning": "device id" },
+            "screen": { "type": "string", "optional": true, "meaning": "display id; absent: the primary display" },
+            "data": { "type": "string", "optional": false, "meaning": "JPEG, base64" }
+          }
+        },
+        {
+          "type": "challenge", "status": "current", "since": 2, "directions": ["browser->server"],
+          "meaning": "Asks the host for a connect nonce for a new session.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "new session id, at most 64 characters" },
+            "device": { "type": "string", "optional": false, "meaning": "device id" }
+          }
+        },
+        {
+          "type": "nonce", "status": "current", "since": 2, "directions": ["server->browser"],
+          "meaning": "The host's single-use nonce for this session's offer.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "nonce": { "type": "string", "optional": false, "meaning": "base64url, 16 random bytes" }
+          }
+        },
+        {
+          "type": "offer", "status": "current", "since": 1, "directions": ["browser->server"],
+          "meaning": "Starts a session: the browser's SDP offer and its proof.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id (the one the nonce was issued for)" },
+            "device": { "type": "string", "optional": false, "meaning": "device id" },
+            "epoch": { "type": "integer", "optional": false, "meaning": "the negotiation's number: 0 for the offer" },
+            "sdp": { "type": "string", "optional": false, "meaning": "SDP offer" },
+            "view": { "type": "View", "optional": false, "meaning": "the viewer constraints now, so the host starts the picture at that size while the connection is set up (not signed: the view on the control channel confirms it)" },
+            "force": { "type": "boolean", "optional": true, "meaning": "take over a running session (signed)" },
+            "auth": { "type": "OfferAuth", "optional": true, "meaning": "absent when this browser has no key; the host decides" }
+          }
+        },
+        {
+          "type": "answer", "status": "current", "since": 1, "directions": ["server->browser"],
+          "meaning": "The host's SDP answer, signed. Also the reply to restart. One per epoch (sent again for a repeated offer of that epoch).",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "epoch": { "type": "integer", "optional": false, "meaning": "the epoch of the offer or restart it answers" },
+            "sdp": { "type": "string", "optional": false, "meaning": "SDP answer" },
+            "auth": { "type": "AnswerAuth", "optional": false, "meaning": "signature over offer and answer" }
+          }
+        },
+        {
+          "type": "restart", "status": "current", "since": 2, "directions": ["browser->server"],
+          "meaning": "ICE restart on the same peer connection: a new offer for a running session.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "the running session" },
+            "epoch": { "type": "integer", "optional": false, "meaning": "one more than the last offer or restart; replaces any outstanding one" },
+            "sdp": { "type": "string", "optional": false, "meaning": "SDP offer with new ICE credentials and the same DTLS fingerprint" }
+          }
+        },
+        {
+          "type": "candidate", "status": "current", "since": 1, "directions": ["browser->server", "server->browser"],
+          "meaning": "A trickled ICE candidate.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "candidate": { "type": "IceCandidate", "optional": false, "meaning": "the candidate" }
+          }
+        },
+        {
+          "type": "attach", "status": "current", "since": 2, "directions": ["browser->server"],
+          "meaning": "Whenever its socket comes back, the browser claims its session again (connecting or not).",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "the running session" },
+            "device": { "type": "string", "optional": false, "meaning": "device id" }
+          }
+        },
+        {
+          "type": "attached", "status": "current", "since": 2, "directions": ["server->browser"],
+          "meaning": "The session is bound to this socket again: its signaling is routed here.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "host": { "type": "string", "enum": ["online", "away"], "optional": false, "meaning": "whether the computer's own socket is connected now" }
+          }
+        },
+        {
+          "type": "presence", "status": "new", "since": 2, "directions": ["server->browser"],
+          "meaning": "The computer's signaling socket dropped or came back, for each page with a session on it.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "host": { "type": "string", "enum": ["online", "away"], "optional": false, "meaning": "away: dropped; online: back" }
+          }
+        },
+        {
+          "type": "bye", "status": "current", "since": 1, "directions": ["browser->server", "server->browser"],
+          "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), for attach, and for pairing.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
+            "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" },
+            "controller": { "type": "Controller", "optional": true, "meaning": "busy: who holds the computer, as for the device list" }
+          }
+        },
+        {
+          "type": "pair", "status": "current", "since": 1, "directions": ["browser->server"],
+          "meaning": "Adds this device with the pairing code shown on the computer.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "request id" },
+            "device": { "type": "string", "optional": false, "meaning": "device id" },
+            "auth": { "type": "PairAuth", "optional": false, "meaning": "the device and its MAC" }
+          }
+        },
+        {
+          "type": "pairask", "status": "current", "since": 1, "directions": ["browser->server"],
+          "meaning": "Asks the person at the computer to let this device in.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "request id" },
+            "device": { "type": "string", "optional": false, "meaning": "device id" },
+            "auth": { "type": "PairAuth", "optional": false, "meaning": "the device, without mac" }
+          }
+        },
+        {
+          "type": "paired", "status": "current", "since": 1, "directions": ["server->browser"],
+          "meaning": "Pairing accepted: the host's public key.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "request id" },
+            "auth": { "type": "PairedAuth", "optional": false, "meaning": "host key, with a MAC for pair" }
+          }
+        }
+      ]
+    },
+    "signaling.host": {
+      "transport": "WebSocket /ws/host?id= with the device token (host <-> server), JSON text frames",
+      "discriminator": "type",
+      "messages": [
+        {
+          "type": "hello", "status": "current", "since": 2, "directions": ["host->server", "server->host"],
+          "meaning": "First message each way: protocol version and capabilities. The server shows the host's in the device list.",
+          "fields": {
+            "version": { "type": "integer", "optional": false, "meaning": "protocol version" },
+            "caps": { "type": "array", "items": "string", "optional": false, "meaning": "capability names" },
+            "tools": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 4, "meaning": "host only: the AI tools it carries out (proto/tools.json names), at most 128" }
+          }
+        },
+        {
+          "type": "status", "status": "current", "since": 1, "directions": ["host->server"],
+          "meaning": "The session holding the host and its displays. Sent after hello and on every change. A session the server knows that the status no longer names is over.",
+          "fields": {
+            "displays": { "type": "array", "items": "Display", "optional": false, "meaning": "attached displays" },
+            "holder": { "type": "Holder", "optional": true, "meaning": "the session holding the computer, established or still connecting; absent: nobody" },
+            "ai_session": { "type": "Holder", "optional": true, "status": "current", "since": 4, "meaning": "the AI client's session on the AI seat, beside the holder; absent: none" },
+            "ai_state": { "type": "string", "enum": ["off", "on", "stopped"], "optional": true, "status": "current", "since": 4, "meaning": "what AI clients may do here now; absent: a host before version 4" }
+          }
+        },
+        {
+          "type": "thumbs", "status": "current", "since": 1, "directions": ["server->host"],
+          "meaning": "Someone is looking: capture one preview of each display.",
+          "fields": {
+            "on": { "type": "boolean", "optional": false, "meaning": "capture (false: stop)" }
+          }
+        },
+        {
+          "type": "thumb", "status": "current", "since": 1, "directions": ["host->server"],
+          "meaning": "A preview picture.",
+          "fields": {
+            "screen": { "type": "string", "optional": false, "meaning": "display id" },
+            "data": { "type": "string", "optional": false, "meaning": "JPEG, base64" }
+          }
+        },
+        {
+          "type": "locate", "status": "current", "since": 4, "directions": ["server->host"],
+          "meaning": "A browser or AI client of the account says where it runs: is that this computer?",
+          "fields": {
+            "probe": { "type": "string", "optional": false, "meaning": "the server's id for that socket, for the answer; who it is stays with the server" },
+            "where": { "type": "array", "items": "string", "optional": false, "meaning": "its locators, as it sent them" }
+          }
+        },
+        {
+          "type": "auditreq", "status": "current", "since": 4, "directions": ["server->host"],
+          "meaning": "A browser of the account asks for a page of this computer's recorded AI calls.",
+          "fields": {
+            "probe": { "type": "string", "optional": false, "meaning": "the server's id for that socket, for the answer" },
+            "query": { "type": "AuditQuery", "optional": false, "meaning": "which calls" }
+          }
+        },
+        {
+          "type": "audit", "status": "current", "since": 4, "directions": ["host->server"],
+          "meaning": "The page asked for.",
+          "fields": {
+            "probe": { "type": "string", "optional": false, "meaning": "the auditreq's probe" },
+            "page": { "type": "AuditPage", "optional": false, "meaning": "the calls asked for" }
+          }
+        },
+        {
+          "type": "here", "status": "current", "since": 4, "directions": ["host->server"],
+          "meaning": "One of the probe's locators is this computer: its mDNS name resolves to one of this computer's addresses, or it is this machine. Sent only then.",
+          "fields": {
+            "probe": { "type": "string", "optional": false, "meaning": "the locate's probe" }
+          }
+        },
+        {
+          "type": "devlog", "status": "current", "since": 1, "directions": ["server->host"],
+          "meaning": "The owner's signed device log.",
+          "fields": {
+            "auth": { "type": "array", "items": "LogEntry", "optional": false, "meaning": "log entries, oldest first" },
+            "ai": { "type": "AiSwitch", "optional": true, "meaning": "this computer's latest AI switch; absent: never set" }
+          }
+        },
+        {
+          "type": "account", "status": "current", "since": 4, "directions": ["server->host"],
+          "meaning": "The account the computer belongs to, for its panel: when it connects and whenever either name changes. Shown only, never trusted.",
+          "fields": {
+            "user": { "type": "string", "optional": false, "meaning": "the account's sign-in name" },
+            "display": { "type": "string", "optional": false, "meaning": "the name others see" }
+          }
+        },
+        {
+          "type": "challenge", "status": "current", "since": 2, "directions": ["server->host"],
+          "meaning": "A browser asks for a connect nonce (again, if the first did not arrive).",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "new session id" }
+          }
+        },
+        {
+          "type": "nonce", "status": "current", "since": 2, "directions": ["host->server"],
+          "meaning": "A single-use nonce for one offer on this session, valid for 60 seconds.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "nonce": { "type": "string", "optional": false, "meaning": "base64url, 16 random bytes" }
+          }
+        },
+        {
+          "type": "offer", "status": "current", "since": 1, "directions": ["server->host"],
+          "meaning": "A browser starts a session.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "epoch": { "type": "integer", "optional": false, "meaning": "0: the offer" },
+            "sdp": { "type": "string", "optional": false, "meaning": "SDP offer" },
+            "ice": { "type": "array", "items": "ICEServer", "optional": false, "meaning": "STUN and TURN servers" },
+            "view": { "type": "View", "optional": false, "meaning": "the browser's viewer constraints, as it sent them" },
+            "force": { "type": "boolean", "optional": true, "meaning": "take over a running session" },
+            "user": { "type": "string", "optional": false, "meaning": "the browser's account id (never its sign-in name), from its login" },
+            "auth": { "type": "OfferAuth", "optional": true, "meaning": "the browser's proof" }
+          }
+        },
+        {
+          "type": "answer", "status": "current", "since": 1, "directions": ["host->server"],
+          "meaning": "The SDP answer, signed. Also the reply to restart. One per epoch (sent again for a repeated offer of that epoch).",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "epoch": { "type": "integer", "optional": false, "meaning": "the epoch of the offer or restart it answers" },
+            "sdp": { "type": "string", "optional": false, "meaning": "SDP answer" },
+            "auth": { "type": "AnswerAuth", "optional": false, "meaning": "signature over offer and answer" }
+          }
+        },
+        {
+          "type": "restart", "status": "current", "since": 2, "directions": ["server->host"],
+          "meaning": "ICE restart offer for the running session.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "the running session" },
+            "epoch": { "type": "integer", "optional": false, "meaning": "the restart's number, as the browser gave it" },
+            "sdp": { "type": "string", "optional": false, "meaning": "SDP offer; its DTLS fingerprint must equal the session's" }
+          }
+        },
+        {
+          "type": "candidate", "status": "current", "since": 1, "directions": ["host->server", "server->host"],
+          "meaning": "A trickled ICE candidate (the host trickles its relay candidates).",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "candidate": { "type": "IceCandidate", "optional": false, "meaning": "the candidate" }
+          }
+        },
+        {
+          "type": "bye", "status": "current", "since": 1, "directions": ["host->server", "server->host"],
+          "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), and pairing refusals.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "session id" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
+            "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is the same device" },
+            "holder": { "type": "Holder", "optional": true, "meaning": "busy: the session holding the computer" }
+          }
+        },
+        {
+          "type": "pair", "status": "current", "since": 1, "directions": ["server->host"],
+          "meaning": "A device proves it knows the pairing code.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "request id" },
+            "auth": { "type": "PairAuth", "optional": false, "meaning": "the device and its MAC" },
+            "user": { "type": "string", "optional": false, "meaning": "the browser's account id" },
+            "from": { "type": "string", "optional": false, "meaning": "the account's display name" }
+          }
+        },
+        {
+          "type": "pairask", "status": "current", "since": 1, "directions": ["server->host"],
+          "meaning": "A device asks the person at this computer to let it in.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "request id" },
+            "auth": { "type": "PairAuth", "optional": false, "meaning": "the device" },
+            "user": { "type": "string", "optional": false, "meaning": "the browser's account id" },
+            "from": { "type": "string", "optional": false, "meaning": "the account's display name" }
+          }
+        },
+        {
+          "type": "paired", "status": "current", "since": 1, "directions": ["host->server"],
+          "meaning": "Pairing accepted.",
+          "fields": {
+            "session": { "type": "string", "optional": false, "meaning": "request id" },
+            "auth": { "type": "PairedAuth", "optional": false, "meaning": "host key, with a MAC for pair" }
+          }
+        }
+      ]
+    },
+    "control": {
+      "transport": "WebRTC data channel \"input\" (reliable, ordered; the host treats any label except file and move as this one), JSON text",
+      "discriminator": "t",
+      "messages": [
+        {
+          "type": "hello", "status": "current", "since": 2, "directions": ["host->browser", "browser->host"],
+          "meaning": "First message each way once the channel opens. The host's caps here are authoritative (the server cannot change them).",
+          "fields": {
+            "version": { "type": "integer", "optional": false, "meaning": "protocol version" },
+            "caps": { "type": "array", "items": "string", "optional": false, "meaning": "capability names" }
+          }
+        },
+        {
+          "type": "resume", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "A resume token for reconnecting without the device key, at most 8 hours after the key was used.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "token id, base64url" },
+            "k": { "type": "string", "optional": false, "meaning": "HMAC key, base64" }
+          }
+        },
+        {
+          "type": "end", "status": "current", "since": 1, "directions": ["browser->host", "host->browser"],
+          "meaning": "Ends the session, both ways. A closed control channel ends it too.",
+          "fields": {
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with bye (left: the browser left; taken: another session took over; ended: ended at the computer; unpaired: this device was removed; failed: could not be established or recovered in time; ai_off: AI clients may not control this computer now, never allowed or stopped there; idle: an AI session unused for 10 minutes)" },
+            "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
+            "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" }
+          }
+        },
+        {
+          "type": "k", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "A key went down or up, by position.",
+          "fields": {
+            "c": { "type": "string", "optional": false, "meaning": "KeyboardEvent.code" },
+            "d": { "type": "boolean", "optional": false, "meaning": "down" }
+          }
+        },
+        {
+          "type": "kc", "status": "current", "since": 2, "directions": ["browser->host"],
+          "meaning": "A character typed with modifiers through an input method; the host finds the key with its own layout.",
+          "fields": {
+            "ch": { "type": "string", "optional": false, "meaning": "one character" },
+            "mods": { "type": "Mods", "optional": false, "meaning": "modifiers held" }
+          }
+        },
+        {
+          "type": "x", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "Text to type as it is.",
+          "fields": {
+            "v": { "type": "string", "optional": false, "meaning": "the text" }
+          }
+        },
+        {
+          "type": "sync", "status": "current", "since": 2, "directions": ["browser->host"],
+          "meaning": "Lock and modifier state, read from the first key or pointer event after the session starts or the page gets focus or becomes visible, and when a modifier is let go that never went down here. The host sets its toggle keys and modifiers to match.",
+          "fields": {
+            "locks": { "type": "Locks", "optional": false, "meaning": "toggle keys" },
+            "mods": { "type": "Mods", "optional": false, "meaning": "modifiers" }
+          }
+        },
+        {
+          "type": "b", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "A mouse button, with the position (the move before it may have been lost). After an mr and until the next m (Pointer Lock), the host leaves the pointer where it is.",
+          "fields": {
+            "b": { "type": "integer", "optional": false, "meaning": "0 left, 1 middle, 2 right" },
+            "d": { "type": "boolean", "optional": false, "meaning": "down" },
+            "x": { "type": "number", "optional": false, "meaning": "0..1 across the display" },
+            "y": { "type": "number", "optional": false, "meaning": "0..1 down the display" }
+          }
+        },
+        {
+          "type": "w", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "Wheel or scroll.",
+          "fields": {
+            "dx": { "type": "number", "optional": false, "meaning": "horizontal, pixels" },
+            "dy": { "type": "number", "optional": false, "meaning": "vertical, pixels" }
+          }
+        },
+        {
+          "type": "m", "status": "current", "since": 2, "directions": ["browser->host"],
+          "meaning": "The last pointer move of a motion, again on the reliable channel: when no new move followed it by the next animation frame. The same message and sequence as on the move channel; the host drops it if that one arrived, so pointer reports always catch up with the browser's latest move.",
+          "fields": {
+            "x": { "type": "number", "optional": false, "meaning": "0..1 across the display" },
+            "y": { "type": "number", "optional": false, "meaning": "0..1 down the display" },
+            "s": { "type": "integer", "optional": false, "meaning": "move sequence of the move it repeats" }
+          }
+        },
+        {
+          "type": "mr", "status": "current", "since": 2, "directions": ["browser->host"],
+          "meaning": "The last relative move of a motion (Pointer Lock), again on the reliable channel, as m.",
+          "fields": {
+            "dx": { "type": "number", "optional": false, "meaning": "pixels" },
+            "dy": { "type": "number", "optional": false, "meaning": "pixels" },
+            "s": { "type": "integer", "optional": false, "meaning": "move sequence of the move it repeats" }
+          }
+        },
+        {
+          "type": "lc", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "The browser draws the pointer itself: leave it out of the video.",
+          "fields": {
+            "on": { "type": "boolean", "optional": false, "status": "new", "since": 2, "meaning": "browser draws it (renamed from d)" }
+          }
+        },
+        {
+          "type": "view", "status": "current", "since": 2, "directions": ["browser->host"],
+          "meaning": "Viewer constraints (the fields of View), when the channel opens (confirming the offer's, end to end) and whenever they change (resize, rotation, full screen, pixel ratio, the end of a zoom gesture). The host encodes at min(display, constraints), keeping the aspect ratio, at the lowest H.264 level that holds it; the same constraints again change nothing.",
+          "fields": {
+            "w": { "type": "integer", "optional": false, "meaning": "viewport (the stage times the zoom), device pixels" },
+            "h": { "type": "integer", "optional": false, "meaning": "viewport height, device pixels" },
+            "maxW": { "type": "integer", "optional": false, "meaning": "largest width decoded smoothly (MediaCapabilities, landscape; the host turns it like the display). With it the viewer vouches for the level that size needs, beyond the SDP's" },
+            "maxH": { "type": "integer", "optional": false, "meaning": "largest height decoded smoothly" },
+            "fps": { "type": "integer", "optional": false, "meaning": "frames a second the viewer takes: what it decodes smoothly at that size, or fewer for a sharper picture" }
+          }
+        },
+        {
+          "type": "display", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "Show this display.",
+          "fields": {
+            "v": { "type": "string", "optional": false, "meaning": "display id" }
+          }
+        },
+        {
+          "type": "capture-keyframe", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "Capture is back: send a keyframe now.",
+          "fields": {}
+        },
+        {
+          "type": "displays", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "The displays attached and the one shown.",
+          "fields": {
+            "list": { "type": "array", "items": "Display", "optional": false, "meaning": "attached displays" },
+            "cur": { "type": "string", "optional": false, "meaning": "id of the display shown" }
+          }
+        },
+        {
+          "type": "capture", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "Whether anything can be captured (CaptureAvailable).",
+          "fields": {
+            "v": { "type": "string", "enum": ["no-display", "ready"], "optional": false, "meaning": "no-display: nothing to capture; ready: capture again" }
+          }
+        },
+        {
+          "type": "desk", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "The input desktop changed (lock screen, secure prompt).",
+          "fields": {
+            "v": { "type": "string", "optional": false, "meaning": "desktop name; default: the normal desktop" }
+          }
+        },
+        {
+          "type": "cs", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "The pointer's shape.",
+          "fields": {
+            "w": { "type": "integer", "optional": false, "meaning": "width" },
+            "h": { "type": "integer", "optional": false, "meaning": "height" },
+            "hx": { "type": "integer", "optional": false, "meaning": "hotspot x" },
+            "hy": { "type": "integer", "optional": false, "meaning": "hotspot y" },
+            "d": { "type": "string", "optional": false, "meaning": "RGBA pixels, base64" }
+          }
+        },
+        {
+          "type": "layout", "status": "current", "since": 2, "directions": ["host->browser"],
+          "meaning": "The host's keyboard layout and its key labels, for the on-screen keyboard. Sent at session start and when the layout in use changes (noticed with the next key).",
+          "fields": {
+            "name": { "type": "string", "optional": false, "meaning": "layout name, e.g. en-US" },
+            "labels": { "type": "map", "values": "string", "optional": false, "meaning": "KeyboardEvent.code -> what the key types; keys that type nothing visible are left out" },
+            "shift": { "type": "map", "values": "string", "optional": false, "meaning": "KeyboardEvent.code -> what the key types with Shift" }
+          }
+        },
+        {
+          "type": "clipshare", "status": "current", "since": 1, "directions": ["browser->host", "host->browser"],
+          "meaning": "Clipboard sharing on or off: the computer's setting. The browser asks; the host answers with the setting, also at start.",
+          "fields": {
+            "on": { "type": "boolean", "optional": false, "meaning": "sharing" }
+          }
+        },
+        {
+          "type": "cb", "status": "current", "since": 2, "directions": ["browser->host", "host->browser"],
+          "meaning": "Clipboard announcement. From the browser: a local copy (formats only). From the host: the new clipboard state, with the gen it assigned; for the browser's copy only once the placeholders are in place.",
+          "fields": {
+            "gen": { "type": "integer", "optional": true, "meaning": "host->browser only: the generation; the latest wins" },
+            "owner": { "type": "string", "enum": ["host", "browser"], "optional": true, "meaning": "host->browser only: whose clipboard this is" },
+            "formats": { "type": "array", "items": "Format", "optional": false, "meaning": "available formats" },
+            "text": { "type": "string", "optional": true, "meaning": "host->browser only: the text itself when at most 48 KB" },
+            "id": { "type": "string", "optional": true, "meaning": "browser->host only: the announcement's id; if the host cannot take the clipboard it answers cberr with this id" }
+          }
+        },
+        {
+          "type": "cbreq", "status": "current", "since": 2, "directions": ["host->browser", "browser->host"],
+          "meaning": "Asks the clipboard owner for one format of generation gen (a paste on the remote, or Get it here).",
+          "fields": {
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "format": { "type": "string", "enum": ["text", "html", "image", "files"], "optional": false, "meaning": "format kind" },
+            "id": { "type": "string", "optional": false, "meaning": "request id, also the file-channel transfer id" },
+            "i": { "type": "integer", "optional": true, "meaning": "files: which file" }
+          }
+        },
+        {
+          "type": "cbdata", "status": "current", "since": 2, "directions": ["browser->host", "host->browser"],
+          "meaning": "The answer to cbreq: small text or HTML inline; otherwise size, with the bytes on the file channel under id.",
+          "fields": {
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "format": { "type": "string", "enum": ["text", "html", "image", "files"], "optional": false, "meaning": "format kind" },
+            "id": { "type": "string", "optional": false, "meaning": "request id" },
+            "text": { "type": "string", "optional": true, "meaning": "text, at most 48 KB" },
+            "html": { "type": "string", "optional": true, "meaning": "HTML, at most 48 KB" },
+            "size": { "type": "integer", "optional": true, "meaning": "bytes that follow on the file channel" }
+          }
+        },
+        {
+          "type": "cberr", "status": "current", "since": 2, "directions": ["browser->host", "host->browser"],
+          "meaning": "A clipboard request cannot be answered, or the requester gave up.",
+          "fields": {
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "id": { "type": "string", "optional": false, "meaning": "request id" },
+            "why": { "type": "string", "enum": ["cancelled", "gone", "denied", "big", "unsupported", "io"], "optional": false, "meaning": "cancelled: the requester gave up; gone: not the latest any more; denied: the browser was not allowed to read; big: too large; unsupported; io" }
+          }
+        }
+      ]
+    },
+    "move": {
+      "transport": "WebRTC data channel \"move\" (unordered, maxRetransmits 0), JSON text",
+      "discriminator": "t",
+      "messages": [
+        {
+          "type": "m", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "Absolute pointer move. Older sequence numbers are dropped.",
+          "fields": {
+            "x": { "type": "number", "optional": false, "meaning": "0..1 across the display" },
+            "y": { "type": "number", "optional": false, "meaning": "0..1 down the display" },
+            "s": { "type": "integer", "optional": false, "meaning": "move sequence, increasing" }
+          }
+        },
+        {
+          "type": "mr", "status": "current", "since": 2, "directions": ["browser->host"],
+          "meaning": "Relative pointer move (Pointer Lock), in pixels of the host display. Older sequence numbers are dropped.",
+          "fields": {
+            "dx": { "type": "number", "optional": false, "meaning": "pixels" },
+            "dy": { "type": "number", "optional": false, "meaning": "pixels" },
+            "s": { "type": "integer", "optional": false, "meaning": "move sequence, shared with m" }
+          }
+        },
+        {
+          "type": "cp", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "The pointer's position on the host.",
+          "fields": {
+            "x": { "type": "number", "optional": false, "meaning": "0..1 across the display" },
+            "y": { "type": "number", "optional": false, "meaning": "0..1 down the display" },
+            "v": { "type": "boolean", "optional": false, "meaning": "visible" },
+            "s": { "type": "integer", "optional": false, "status": "current", "since": 2, "meaning": "last move sequence applied when the position was read; the browser ignores reports older than the latest move it sent" }
+          }
+        }
+      ]
+    },
+    "file": {
+      "transport": "WebRTC data channel \"file\" (reliable, ordered). JSON text messages; binary messages are chunks (16 KB) of the one transfer active in that direction.",
+      "discriminator": "t",
+      "messages": [
+        {
+          "type": "put", "status": "current", "since": 1, "directions": ["browser->host"],
+          "meaning": "Starts sending files (into Downloads/Deskway, and onto the clipboard) or an image (clipboard only).",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "transfer id, at most 64 characters" },
+            "kind": { "type": "string", "enum": ["files", "image", "text", "html"], "optional": false, "meaning": "what is sent; text and html only with gen (clipboard data over 48 KB)" },
+            "items": { "type": "array", "items": "Item", "optional": false, "meaning": "names and sizes" },
+            "gen": { "type": "integer", "optional": true, "status": "current", "since": 2, "meaning": "answers a cbreq of this generation (id is the request id): the bytes go to that paste, not into Downloads" }
+          }
+        },
+        {
+          "type": "ready", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "Send the bytes.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "transfer id" }
+          }
+        },
+        {
+          "type": "done", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "All bytes arrived and are in place.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "transfer id" },
+            "names": { "type": "array", "items": "string", "optional": false, "meaning": "file names as saved" }
+          }
+        },
+        {
+          "type": "meta", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "Clipboard data for a cbreq follows as binary chunks.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "request id" },
+            "name": { "type": "string", "optional": false, "meaning": "file name" },
+            "size": { "type": "integer", "optional": false, "meaning": "bytes" },
+            "mime": { "type": "string", "optional": true, "meaning": "image/png for images" },
+            "gen": { "type": "integer", "optional": false, "status": "current", "since": 2, "meaning": "clipboard generation" }
+          }
+        },
+        {
+          "type": "fin", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "All bytes after meta were sent (renamed from end, which means the session end on the control channel).",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "request id" }
+          }
+        },
+        {
+          "type": "cancel", "status": "current", "since": 1, "directions": ["browser->host", "host->browser"],
+          "meaning": "Gives up a transfer; what is queued for it is dropped and half files are removed.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "transfer id" }
+          }
+        },
+        {
+          "type": "err", "status": "current", "since": 1, "directions": ["host->browser"],
+          "meaning": "A transfer failed.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "transfer id" },
+            "why": { "type": "string", "enum": ["big", "locked", "io", "gone", "unsupported", "timeout", "size", "image"], "optional": false, "meaning": "big: over the limits; locked: the computer is locked; io; gone: nothing to send; unsupported: no transfers here; timeout: stalled 30 s; size: more bytes than announced; image: not a usable image" }
+          }
+        }
+      ]
+    },
+    "ipc": {
+      "transport": "Named pipe between DeskwayNet (network service) and the Deskway agent (Windows), after the HMAC handshake. Frames: tag 0 = JSON (these messages), tag 1 = encoded video frame (agent->service), tag 3 = blob, bytes of the transfer named by the last FilesReceive/ClipboardData. Both ends are the same build.",
+      "discriminator": "t",
+      "messages": [
+        { "type": "VideoStart", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "The session takes the computer: capture and encoding start for it; a session that held it before loses it.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session that now holds the computer: only its calls are carried out" }, "view": { "type": "Constraints", "optional": false, "meaning": "the viewer's constraints to start at (w, h, max_w, max_h, fps, level as ViewConstraints)" } } },
+        { "type": "VideoStop", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "The session ended: if it holds the computer, capture stops and what it held is released; otherwise nothing happens.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session that ended" } } },
+        { "type": "Keyframe", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Encode a keyframe next.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" } } },
+        {
+          "type": "NetworkBehind", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "What the computer sends is queuing up: encoding waits until it drains, then encodes the screen as it is.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" }, "behind": { "type": "boolean", "optional": false, "meaning": "true while the queue is full" } }
+        },
+        {
+          "type": "Bitrate", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Target bitrate from bandwidth estimation.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" }, "bps": { "type": "integer", "optional": false, "meaning": "bits per second" } }
+        },
+        {
+          "type": "ViewConstraints", "enum": "PlatformCall", "status": "current", "since": 2, "directions": ["service->agent"], "meaning": "The viewer's constraints (control view) and the negotiated level; 0 means not known yet.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "w": { "type": "integer", "optional": false, "meaning": "viewport width" },
+            "h": { "type": "integer", "optional": false, "meaning": "viewport height" },
+            "max_w": { "type": "integer", "optional": false, "meaning": "largest smooth width" },
+            "max_h": { "type": "integer", "optional": false, "meaning": "largest smooth height" },
+            "fps": { "type": "integer", "optional": false, "meaning": "smooth frame rate" },
+            "level": { "type": "integer", "optional": false, "meaning": "H.264 level_idc of the offer's profile-level-id for the payload type in use; the limit until max_w and max_h are known" }
+          }
+        },
+        {
+          "type": "ChooseDisplay", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Capture this display.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" }, "id": { "type": "string", "optional": false, "meaning": "display id" } }
+        },
+        {
+          "type": "LocalCursor", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Leave the pointer out of the video and report it instead.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" }, "on": { "type": "boolean", "optional": false, "meaning": "browser draws it" } }
+        },
+        {
+          "type": "Thumbnails", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Capture one preview of each display (or stop).",
+          "fields": { "on": { "type": "boolean", "optional": false, "meaning": "capture" } }
+        },
+        {
+          "type": "Key", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "A key by position.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "code": { "type": "string", "optional": false, "meaning": "KeyboardEvent.code" },
+            "down": { "type": "boolean", "optional": false, "meaning": "down" }
+          }
+        },
+        {
+          "type": "Char", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "A character with modifiers, resolved with the host's layout.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "ch": { "type": "string", "optional": false, "meaning": "one character" },
+            "mods": { "type": "Mods", "optional": false, "meaning": "modifiers" }
+          }
+        },
+        {
+          "type": "Text", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Type text.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" }, "text": { "type": "string", "optional": false, "meaning": "the text" } }
+        },
+        {
+          "type": "SyncKeys", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Match toggle keys and modifiers.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "locks": { "type": "Locks", "optional": false, "meaning": "toggle keys" },
+            "mods": { "type": "Mods", "optional": false, "meaning": "modifiers" }
+          }
+        },
+        {
+          "type": "Button", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "A mouse button.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "button": { "type": "integer", "optional": false, "meaning": "0 left, 1 middle, 2 right" },
+            "down": { "type": "boolean", "optional": false, "meaning": "down" }
+          }
+        },
+        {
+          "type": "MoveTo", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Absolute move on the captured display.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "x": { "type": "number", "optional": false, "meaning": "0..1" },
+            "y": { "type": "number", "optional": false, "meaning": "0..1" },
+            "seq": { "type": "integer", "optional": false, "meaning": "the browser's move sequence" }
+          }
+        },
+        {
+          "type": "MoveBy", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Relative move.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "dx": { "type": "number", "optional": false, "meaning": "pixels" },
+            "dy": { "type": "number", "optional": false, "meaning": "pixels" },
+            "seq": { "type": "integer", "optional": false, "meaning": "the browser's move sequence" }
+          }
+        },
+        {
+          "type": "Wheel", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Scroll.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "dx": { "type": "number", "optional": false, "meaning": "pixels" },
+            "dy": { "type": "number", "optional": false, "meaning": "pixels" }
+          }
+        },
+        { "type": "ReleaseAll", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Lift every key and button held.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" } } },
+        {
+          "type": "ClipboardAnnounce", "enum": "PlatformCall", "status": "current", "since": 2, "directions": ["service->agent"], "meaning": "The browser owns the clipboard: put placeholders on the OS clipboard (delayed rendering).",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "formats": { "type": "array", "items": "Format", "optional": false, "meaning": "formats" }
+          }
+        },
+        {
+          "type": "ClipboardProvide", "enum": "PlatformCall", "status": "current", "since": 2, "directions": ["service->agent"], "meaning": "Answers a ClipboardRender with inline text or HTML; neither: answer the OS with nothing. Pictures and data over 48 KB arrive as FilesReceive with gen instead.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "format": { "type": "string", "enum": ["text", "html", "image", "files"], "optional": false, "meaning": "format kind" },
+            "text": { "type": "string", "optional": true, "meaning": "text" },
+            "html": { "type": "string", "optional": true, "meaning": "HTML" }
+          }
+        },
+        {
+          "type": "ClipboardRead", "enum": "PlatformCall", "status": "current", "since": 2, "directions": ["service->agent"], "meaning": "Reads one format of the host's clipboard for the browser.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "format": { "type": "string", "enum": ["text", "html", "image", "files"], "optional": false, "meaning": "format kind" },
+            "id": { "type": "string", "optional": false, "meaning": "request id" },
+            "i": { "type": "integer", "optional": true, "meaning": "files: which file" }
+          }
+        },
+        {
+          "type": "ClipboardShare", "enum": "PlatformCall", "status": "current", "since": 2, "directions": ["service->agent"], "meaning": "Watch and serve the clipboard (sharing is on and a session runs) or not. Off: nothing is read, and placeholders this host put on the clipboard are removed.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" }, "on": { "type": "boolean", "optional": false, "meaning": "sharing" } }
+        },
+        {
+          "type": "FilesReceive", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Files or an image arrive; the bytes follow as blobs.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" },
+            "id": { "type": "string", "optional": false, "meaning": "transfer id" },
+            "kind": { "type": "string", "enum": ["files", "image", "text", "html"], "optional": false, "meaning": "what arrives; text and html only with gen" },
+            "items": { "type": "array", "items": "Item", "optional": false, "meaning": "names and sizes" },
+            "gen": { "type": "integer", "optional": true, "meaning": "answers a clipboard render of this generation" }
+          }
+        },
+        {
+          "type": "FilesCancel", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Gives up a transfer; half files are removed.",
+          "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" }, "id": { "type": "string", "optional": false, "meaning": "transfer id" } }
+        },
+        {
+          "type": "KeepAwake", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Hold or release the keep-awake request.",
+          "fields": { "on": { "type": "boolean", "optional": false, "meaning": "keep awake" } }
+        },
+        { "type": "LockScreen", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Lock the computer.", "fields": {} },
+        {
+          "type": "AutoLock", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Lock by itself if the network side disappears during a session.",
+          "fields": { "on": { "type": "boolean", "optional": false, "meaning": "auto lock" } }
+        },
+        {
+          "type": "AutoStart", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Start with Windows or not (the services' start type).",
+          "fields": { "on": { "type": "boolean", "optional": false, "meaning": "start with Windows" } }
+        },
+        {
+          "type": "DisplayOpened", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "Capture runs on this display.",
+          "fields": { "display": { "type": "Display", "optional": false, "meaning": "the display" } }
+        },
+        {
+          "type": "DisplaysChanged", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "Displays were attached, removed or rearranged.",
+          "fields": {
+            "list": { "type": "array", "items": "Display", "optional": false, "meaning": "attached displays" },
+            "current": { "type": "string", "optional": true, "meaning": "id of the display captured, during a session" }
+          }
+        },
+        {
+          "type": "EncodedSize", "enum": "PlatformEvent", "status": "current", "since": 2, "directions": ["agent->service"], "meaning": "A new encoder runs (start, new constraints, display switched or turned).",
+          "fields": {
+            "w": { "type": "integer", "optional": false, "meaning": "encoded width" },
+            "h": { "type": "integer", "optional": false, "meaning": "encoded height" },
+            "max_bitrate": { "type": "integer", "optional": false, "meaning": "the most this size uses, bits per second: the bandwidth estimate probes up to it" }
+          }
+        },
+        {
+          "type": "CaptureAvailable", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "Whether anything can be captured.",
+          "fields": { "on": { "type": "boolean", "optional": false, "meaning": "available" } }
+        },
+        {
+          "type": "CursorShape", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "The pointer's shape.",
+          "fields": {
+            "w": { "type": "integer", "optional": false, "meaning": "width" },
+            "h": { "type": "integer", "optional": false, "meaning": "height" },
+            "hx": { "type": "integer", "optional": false, "meaning": "hotspot x" },
+            "hy": { "type": "integer", "optional": false, "meaning": "hotspot y" },
+            "rgba": { "type": "string", "optional": false, "meaning": "RGBA pixels, base64" }
+          }
+        },
+        {
+          "type": "CursorPos", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "The pointer's position.",
+          "fields": {
+            "x": { "type": "number", "optional": false, "meaning": "0..1" },
+            "y": { "type": "number", "optional": false, "meaning": "0..1" },
+            "visible": { "type": "boolean", "optional": false, "meaning": "visible" },
+            "seq": { "type": "integer", "optional": false, "meaning": "last move sequence applied when the position was read" }
+          }
+        },
+        {
+          "type": "Thumbnail", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "A preview picture.",
+          "fields": {
+            "screen": { "type": "string", "optional": false, "meaning": "display id" },
+            "data": { "type": "string", "optional": false, "meaning": "JPEG, base64" }
+          }
+        },
+        {
+          "type": "InputDesktop", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "The input desktop changed.",
+          "fields": { "name": { "type": "string", "optional": false, "meaning": "desktop name" } }
+        },
+        {
+          "type": "LayoutChanged", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "The keyboard layout and its key labels.",
+          "fields": {
+            "name": { "type": "string", "optional": false, "meaning": "layout name" },
+            "labels": { "type": "map", "values": "string", "optional": false, "meaning": "code -> label" },
+            "shift": { "type": "map", "values": "string", "optional": false, "meaning": "code -> label with Shift" }
+          }
+        },
+        {
+          "type": "ClipboardChanged", "enum": "PlatformEvent", "status": "current", "since": 2, "directions": ["agent->service"], "meaning": "Something was copied on the host.",
+          "fields": {
+            "formats": { "type": "array", "items": "Format", "optional": false, "meaning": "formats" },
+            "text": { "type": "string", "optional": true, "meaning": "the text when at most 48 KB" }
+          }
+        },
+        {
+          "type": "ClipboardAnnounced", "enum": "PlatformEvent", "status": "current", "since": 2, "directions": ["agent->service"], "meaning": "The answer to ClipboardAnnounce: the placeholders are in place, or why not.",
+          "fields": {
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "why": { "type": "string", "enum": ["cancelled", "gone", "denied", "big", "unsupported", "io"], "optional": true, "meaning": "absent: in place; denied: sharing off or a secure desktop; io: the clipboard was busy" }
+          }
+        },
+        {
+          "type": "ClipboardRender", "enum": "PlatformEvent", "status": "current", "since": 2, "directions": ["agent->service"], "meaning": "The OS asks for the data behind a placeholder (a paste on the host).",
+          "fields": {
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "format": { "type": "string", "enum": ["text", "html", "image", "files"], "optional": false, "meaning": "format kind" }
+          }
+        },
+        {
+          "type": "ClipboardData", "enum": "PlatformEvent", "status": "current", "since": 2, "directions": ["agent->service"], "meaning": "Answers ClipboardRead: inline, or size with the bytes following for the file channel (meta, chunks, fin under id).",
+          "fields": {
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "format": { "type": "string", "enum": ["text", "html", "image", "files"], "optional": false, "meaning": "format kind" },
+            "id": { "type": "string", "optional": false, "meaning": "request id" },
+            "name": { "type": "string", "optional": true, "meaning": "file name, for image and files" },
+            "text": { "type": "string", "optional": true, "meaning": "text" },
+            "html": { "type": "string", "optional": true, "meaning": "HTML" },
+            "size": { "type": "integer", "optional": true, "meaning": "bytes that follow as blobs" }
+          }
+        },
+        {
+          "type": "ClipboardFailed", "enum": "PlatformEvent", "status": "current", "since": 2, "directions": ["agent->service"], "meaning": "A ClipboardRead cannot be answered.",
+          "fields": {
+            "gen": { "type": "integer", "optional": false, "meaning": "generation" },
+            "id": { "type": "string", "optional": false, "meaning": "request id" },
+            "why": { "type": "string", "enum": ["cancelled", "gone", "denied", "big", "unsupported", "io"], "optional": false, "meaning": "why" }
+          }
+        },
+        {
+          "type": "FilesReady", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "Send the bytes.",
+          "fields": { "id": { "type": "string", "optional": false, "meaning": "transfer id" } }
+        },
+        {
+          "type": "FilesDone", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "All bytes are in place.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "transfer id" },
+            "names": { "type": "array", "items": "string", "optional": false, "meaning": "file names as saved" }
+          }
+        },
+        {
+          "type": "FilesFailed", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "A transfer failed.",
+          "fields": {
+            "id": { "type": "string", "optional": false, "meaning": "transfer id" },
+            "why": { "type": "string", "enum": ["big", "locked", "io", "gone", "unsupported", "timeout", "size", "image"], "optional": false, "meaning": "as the file channel's err" }
+          }
+        },
+        {
+          "type": "Note", "enum": "PlatformEvent", "status": "new", "since": 2, "directions": ["agent->service"], "meaning": "A line for the on-screen indicator, or none.",
+          "fields": {
+            "text": { "type": "string", "optional": true, "meaning": "absent: clear the line" },
+            "folder": { "type": "string", "optional": true, "meaning": "a folder to open" }
+          }
+        }
+      ]
+    }
+  }
+}

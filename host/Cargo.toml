@@ -1,0 +1,106 @@
+[package]
+name = "deskway-host"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "deskway-host"
+path = "src/main.rs"
+
+[dependencies]
+deskway-wire = { path = "../crates/wire" }
+deskway-peer = { path = "../crates/peer" }
+str0m = { workspace = true }
+anyhow = "1"
+base64 = "0.22"
+hmac = "0.12"
+jpeg-encoder = "0.6"
+native-tls = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tungstenite = { version = "0.27", features = ["native-tls"] }
+ureq = { version = "2", default-features = false, features = ["native-tls", "json"] }
+
+tao = "0.34"
+tray-icon = "0.21"
+wry = "0.53"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+sha2 = "0.10"
+rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
+getrandom = "0.2"
+qrcode = { version = "0.14", default-features = false }
+png = "0.17"
+
+[dev-dependencies]
+deskway-wire = { path = "../crates/wire", features = ["contract"] }
+bincode = "1.3.3"
+
+[target.'cfg(windows)'.dependencies]
+bincode = "1.3.3"
+windows-service = "0.8.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+dispatch2 = "0.3"
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-core-media = "0.3"
+objc2-core-video = "0.3"
+objc2-foundation = "0.3"
+objc2-screen-capture-kit = "0.3"
+objc2-service-management = "0.3"
+objc2-video-toolbox = "0.3"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+  "Win32_Devices_Display",
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_Power",
+  "Win32_System_Registry",
+  "Win32_System_RestartManager",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Services",
+  "Win32_System_StationsAndDesktops",
+  "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
+  "Win32_UI_Shell",
+  "Win32_Media_MediaFoundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Console",
+  "Win32_System_DataExchange",
+  "Win32_System_Environment",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_Shutdown",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_UI_Accessibility",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_WindowsAndMessaging",
+]
+
+[build-dependencies]
+embed-resource = "3.0.12"

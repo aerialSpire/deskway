@@ -1,0 +1,151 @@
+name: Desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag for the selected commit (for example, v0.1.0)
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build Windows host and CLI (x64)
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+          cargo build --locked --release --target x86_64-pc-windows-msvc -p deskway-host -p deskway
+
+          $out = "$env:RUNNER_TEMP/desktop-windows"
+          New-Item -ItemType Directory -Path $out | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/deskway-host.exe "$out/Deskway-Setup.exe"
+          Copy-Item target/x86_64-pc-windows-msvc/release/deskway.exe "$out/deskway-windows-x64.exe"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-windows
+          path: ${{ runner.temp }}/desktop-windows/
+          if-no-files-found: error
+          retention-days: 3
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build universal macOS host DMG and CLI (Apple silicon and Intel)
+        shell: bash
+        run: |
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          ./scripts/build-mac-host.sh --universal-dmg
+
+          out="$RUNNER_TEMP/desktop-macos"
+          mkdir "$out"
+          cp bin/Deskway-macOS-universal.dmg "$out/"
+          # The CLI files keep the names the server hands them out under (internal/server/aiclients.go),
+          # so a self-hosted server can serve the release files as they are.
+          sh scripts/build-ai-clients.sh "$out"
+          lipo "$out/deskway-macos-arm64" -verify_arch arm64
+          lipo "$out/deskway-macos-x64" -verify_arch x86_64
+          for cli in "$out/deskway-macos-arm64" "$out/deskway-macos-x64"; do
+            codesign --force --sign - --timestamp=none "$cli"
+            codesign --verify --strict "$cli"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-macos
+          path: ${{ runner.temp }}/desktop-macos/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: desktop-*
+          path: ${{ runner.temp }}/deskway-release
+          merge-multiple: true
+      - name: Publish the release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          tag_ref="refs/tags/$RELEASE_TAG"
+          git check-ref-format "$tag_ref"
+          remote_tags=$(git ls-remote --tags origin "$tag_ref" "$tag_ref^{}")
+          # Use the peeled commit when the tag is annotated.
+          tag_commit=$(awk 'NF { ref = $1 } /\^\{\}$/ { peeled = $1 } END { print (peeled ? peeled : ref) }' <<< "$remote_tags")
+          if [[ -n "$tag_commit" && "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "Tag $RELEASE_TAG already points to $tag_commit. The build used $GITHUB_SHA." >&2
+            exit 1
+          fi
+
+          cd "$RUNNER_TEMP/deskway-release"
+          assets=(Deskway-Setup.exe Deskway-macOS-universal.dmg deskway-windows-x64.exe deskway-macos-arm64 deskway-macos-x64)
+          expected='{}'
+          for asset in "${assets[@]}"; do
+            test -s "$asset"
+            digest=$(sha256sum -- "$asset")
+            expected=$(jq -c --arg name "$asset" --arg digest "sha256:${digest%% *}" '.[$name] = $digest' <<< "$expected")
+          done
+
+          release=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -c --arg tag "$RELEASE_TAG" 'first(.[][] | select(.tag_name == $tag)) // empty')
+          if [[ -n "$release" ]] && ! jq -e --argjson expected "$expected" --argjson prerelease "$PRERELEASE" '
+            .draft and .prerelease == $prerelease and
+            all(.assets[]; .state == "uploaded" and ($expected[.name] // "") == .digest)
+          ' <<< "$release" >/dev/null; then
+            echo "Release $RELEASE_TAG is already published or its draft differs from this run." >&2
+            exit 1
+          fi
+
+          if [[ -z "$tag_commit" ]]; then
+            git -C "$GITHUB_WORKSPACE" push origin "$GITHUB_SHA:$tag_ref"
+          fi
+          if [[ -z "$release" ]]; then
+            gh release create --repo "$GITHUB_REPOSITORY" --draft --prerelease="$PRERELEASE" --verify-tag --generate-notes --title "$RELEASE_TAG" -- "$RELEASE_TAG"
+            release='{"assets":[]}'
+          fi
+
+          # A retry of the publish job can reuse matching assets from a partial upload.
+          missing=()
+          for asset in "${assets[@]}"; do
+            if ! jq -e --arg name "$asset" 'any(.assets[]; .name == $name)' <<< "$release" >/dev/null; then
+              missing+=("$asset")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            gh release upload --repo "$GITHUB_REPOSITORY" -- "$RELEASE_TAG" "${missing[@]}"
+          fi
+          gh release view --repo "$GITHUB_REPOSITORY" --json assets -- "$RELEASE_TAG" | jq -e --argjson expected "$expected" '
+            (.assets | length) == ($expected | length) and
+            all(.assets[]; .state == "uploaded" and ($expected[.name] // "") == .digest)
+          ' >/dev/null
+          gh release edit --repo "$GITHUB_REPOSITORY" --draft=false -- "$RELEASE_TAG"

@@ -1,0 +1,233 @@
+/* Deskway's design: every token and every shared component, for the browser client and the
+   host's windows alike (the host embeds this file). docs/design.md is the standard;
+   tests/unit/design.test.mjs keeps every other stylesheet to these names. */
+
+:root {
+  /* Colour: page */
+  --ground: #F6F7F8;
+  --surface: #FFFFFF;
+  --frame: #E7E9EC;
+  --screen: #1E2226;
+  /* Colour: text */
+  --ink: #272B30;
+  --quiet: #5C636B;
+  --faint: #9AA0A7;
+  /* Colour: lines and fills */
+  --line: rgba(22, 26, 30, .07);
+  --line-strong: rgba(22, 26, 30, .12);
+  --hover: rgba(22, 26, 30, .05);
+  --scrim: rgba(22, 26, 30, .20);
+  --switch-off: #C9CDD2;
+  /* Colour: meaning */
+  --accent: #2563EB;
+  --accent-soft: rgba(37, 99, 235, .10);
+  --accent-line: rgba(37, 99, 235, .45);
+  --on-accent: #FFFFFF;
+  --ok: #2F7D5B;
+  --ok-soft: rgba(47, 125, 91, .12);
+  --warn: #A8612A;
+  --warn-soft: #FBF6F1;
+  --danger: #9A3B2E;
+  --danger-soft: #FBF4F2;
+  --danger-line: rgba(154, 59, 46, .35);
+  /* Colour: over the remote picture */
+  --dark: rgba(28, 32, 36, .88);
+  --dark-solid: rgba(28, 32, 36, .94);
+  --dark-ink: #FFFFFF;
+  --dark-quiet: rgba(255, 255, 255, .70);
+  --dark-key: rgba(255, 255, 255, .14);
+  --dark-key-quiet: rgba(255, 255, 255, .08);
+  --dark-key-down: rgba(255, 255, 255, .42);
+  --dark-hover: rgba(255, 255, 255, .18);
+  --dark-accent: rgba(37, 99, 235, .95);
+  --dark-ok: rgba(47, 125, 91, .92);
+  --dark-warn: rgba(168, 97, 42, .95);
+  --warn-on-dark: #F3C37A;
+
+  /* Type */
+  --font-zh-hans: Inter, "PingFang SC", "Microsoft YaHei Light", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-zh-hant: Inter, "PingFang TC", "Microsoft JhengHei Light", "Microsoft JhengHei", "Noto Sans TC", system-ui, sans-serif;
+  --font-en: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --fs-mini: 11px;
+  --fs-caption: 12px;
+  --fs-small: 13px;
+  --fs-body: 14px;
+  --fs-subtitle: 16px;
+  --fs-title: 20px;
+  --fs-display: 28px;
+  --lh-body: 1.6;
+  --lh-tight: 1.4;
+  --lh-title: 1.25;
+
+  /* Spacing */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s8: 32px;
+  --s12: 48px;
+
+  /* Shape and size */
+  --r-control: 4px;
+  --r-box: 6px;
+  --h-control: 44px;
+  --h-compact: 32px;
+  --h-row: 40px;
+
+  /* Shadow */
+  --shadow-card: 0 1px 2px rgba(22, 26, 30, .04), 0 8px 24px rgba(22, 26, 30, .06);
+  --shadow-card-hover: 0 1px 2px rgba(22, 26, 30, .05), 0 14px 34px rgba(22, 26, 30, .10);
+  --shadow-pop: 0 2px 4px rgba(22, 26, 30, .06), 0 24px 60px rgba(22, 26, 30, .18);
+  --shadow-float: 0 2px 10px rgba(0, 0, 0, .28);
+  --shadow-button: 0 1px 2px rgba(22, 26, 30, .12), inset 0 1px 0 rgba(255, 255, 255, .14);
+}
+
+/* ---- Base ---- */
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  color: var(--ink);
+  font: 300 var(--fs-body)/var(--lh-body) var(--font-zh-hans);
+  -webkit-font-smoothing: antialiased;
+}
+html:lang(en) body { font-family: var(--font-en); }
+html:lang(zh-Hant) body { font-family: var(--font-zh-hant); }
+h1, h2, h3, p { margin: 0; font-weight: 300; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---- Buttons: secondary by default; primary, text and danger; two heights ---- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s2);
+  min-height: var(--h-control); padding: 0 var(--s4); border: 1px solid var(--line-strong); border-radius: var(--r-control);
+  background: var(--surface); color: var(--ink); font-weight: 400; line-height: var(--lh-tight); text-align: center; text-decoration: none;
+}
+.btn:hover { background: var(--hover); }
+.btn.primary { border-color: transparent; background: var(--accent); color: var(--on-accent); box-shadow: var(--shadow-button); }
+.btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn.text { border-color: transparent; background: transparent; color: var(--quiet); font-weight: 300; }
+.btn.text:hover { background: var(--hover); }
+.btn.danger { color: var(--danger); }
+.btn.danger.primary { background: var(--danger); color: var(--on-accent); }
+.btn.compact { min-height: var(--h-compact); padding: 0 var(--s3); font-size: var(--fs-small); }
+.btn.block { width: 100%; }
+/* An icon alone (a computer's ⋯, a window's close): square, quiet, no frame until hovered. */
+.btn.icon { flex: none; width: var(--h-control); padding: 0; border-color: transparent; background: transparent; color: var(--quiet); }
+.btn.icon.compact { width: var(--h-compact); padding: 0; }
+.btn.icon:hover, .btn.icon[aria-expanded="true"] { background: var(--hover); }
+.btn:disabled { opacity: .55; cursor: default; filter: none; }
+
+/* ---- Inputs ---- */
+.input {
+  width: 100%; height: var(--h-control); padding: 0 var(--s3); border: 1px solid var(--line-strong); border-radius: var(--r-control);
+  background: var(--surface); color: var(--ink); user-select: text;
+}
+
+/* ---- Form fields: a column of labelled inputs, a checkbox with its words, the error line ---- */
+.fields { display: flex; flex-direction: column; gap: var(--s4); }
+.fields label { display: flex; flex-direction: column; gap: var(--s1); font-size: var(--fs-small); }
+.check { display: flex; align-items: center; gap: var(--s2); color: var(--quiet); }
+.fields label.check { flex-direction: row; align-items: center; font-size: var(--fs-body); }
+.check input[type="checkbox"] { flex: none; width: 16px; height: 16px; margin: 0; }
+.error { min-height: var(--s5); margin-top: var(--s2); color: var(--danger); font-size: var(--fs-small); }
+
+/* ---- Switch ---- */
+.switch {
+  flex: none; width: 34px; height: 20px; padding: 2px; display: flex; border: 0; border-radius: var(--r-control);
+  background: var(--switch-off); box-shadow: inset 0 1px 2px rgba(22, 26, 30, .12);
+}
+.switch[aria-checked="true"] { justify-content: flex-end; background: var(--accent); }
+.switch span { width: 16px; height: 16px; border-radius: 3px; background: var(--surface); box-shadow: 0 1px 2px rgba(22, 26, 30, .22); }
+.switch:disabled { opacity: .55; cursor: default; }
+
+/* ---- Status ---- */
+.dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.accent { background: var(--accent); }
+.status { display: flex; align-items: center; gap: var(--s2); color: var(--quiet); }
+
+/* ---- Tags ---- */
+.tag {
+  display: inline-flex; align-items: center; min-height: 20px; padding: 0 var(--s2); border-radius: var(--r-control);
+  background: var(--hover); color: var(--quiet); font-size: var(--fs-caption); font-weight: 400; line-height: var(--lh-tight); white-space: nowrap;
+}
+.tag.accent { background: var(--accent-soft); color: var(--accent); }
+.tag.ok { background: var(--ok-soft); color: var(--ok); }
+
+/* ---- Spinner ---- */
+.spinner {
+  flex: none; width: 14px; height: 14px; border: 1.5px solid var(--line-strong); border-top-color: var(--quiet); border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+/* Loading: the spinner and what is being waited for. */
+.loading { display: flex; align-items: center; gap: var(--s3); color: var(--quiet); }
+
+/* ---- Notice: one line of state, its dot, an optional action ---- */
+.notice { display: flex; align-items: center; gap: var(--s2); color: var(--quiet); font-size: var(--fs-small); line-height: var(--lh-tight); }
+.notice > .text { flex: 1; min-width: 0; }
+.notice > .btn { flex: none; }
+.notice.dark { padding: var(--s2) var(--s3); border-radius: var(--r-box); background: var(--dark); color: var(--dark-ink); box-shadow: var(--shadow-float); }
+.notice.dark.warn { color: var(--warn-on-dark); }
+.notice.dark .btn.text { color: var(--dark-ink); }
+.notice.dark .btn.text:hover { background: var(--dark-hover); }
+
+/* ---- Dialog ---- */
+.overlay { position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: var(--s4); background: var(--scrim); }
+.dialog {
+  width: 100%; max-width: 420px; max-height: calc(100% - var(--s4)); overflow-y: auto;
+  padding: var(--s6); border-radius: var(--r-box); background: var(--surface); box-shadow: var(--shadow-pop);
+}
+.dialog h2 { font-size: var(--fs-title); line-height: var(--lh-tight); }
+.dialog p { margin-top: var(--s2); color: var(--quiet); }
+.dialog .fields { margin-top: var(--s4); gap: var(--s3); }
+.dialog-actions { margin-top: var(--s5); display: flex; justify-content: flex-end; gap: var(--s2); flex-wrap: wrap; }
+.code {
+  margin-top: var(--s3); font: 400 var(--fs-display)/var(--lh-title) var(--font-mono);
+  letter-spacing: .08em; font-variant-numeric: tabular-nums; color: var(--ink);
+}
+
+/* ---- Inline confirm: removing one row of a list, in place ---- */
+.confirm { margin: var(--s1) 0 var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--danger-line); border-radius: var(--r-box); background: var(--danger-soft); }
+.confirm .title { font-size: var(--fs-small); font-weight: 400; line-height: var(--lh-tight); }
+.confirm p { margin-top: var(--s1); color: var(--quiet); font-size: var(--fs-caption); line-height: var(--lh-body); }
+.confirm .actions { margin-top: var(--s3); display: flex; justify-content: flex-end; gap: var(--s2); flex-wrap: wrap; }
+
+/* ---- Menu: drops from the button that opens it, aligned to its right edge ---- */
+.dropdown { position: relative; }
+.menu {
+  position: absolute; z-index: 20; top: calc(100% + var(--s1)); right: 0; min-width: 200px; max-width: min(320px, calc(100vw - var(--s8)));
+  padding: var(--s1); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); box-shadow: var(--shadow-pop);
+}
+.menu-head { padding: var(--s2) var(--s3); display: flex; flex-direction: column; font-weight: 400; line-height: var(--lh-tight); }
+.menu-head span { color: var(--quiet); font-size: var(--fs-caption); font-weight: 300; }
+.menu-item {
+  display: block; width: 100%; min-height: var(--h-row); padding: var(--s2) var(--s3); border: 0; border-radius: var(--r-control);
+  background: transparent; color: inherit; text-align: left; line-height: var(--lh-tight);
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--hover); }
+.menu-item.danger { color: var(--danger); }
+/* A checked choice in a menu (the language): its words, then the mark in the accent. */
+.menu-item[role="menuitemradio"] { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.menu-item[aria-checked="true"] { font-weight: 400; }
+.menu-item[aria-checked="true"] svg { color: var(--accent); }
+
+/* ---- A bar's menus (the language, the account): text buttons in the ink ---- */
+.bar-btn { padding: 0 var(--s3); color: var(--ink); }
+.bar-btn[aria-expanded="true"] { background: var(--hover); }
+.lang-btn > svg:first-child { color: var(--quiet); }
+/* In a narrow window or on a phone the language is its globe alone, as square as the buttons
+   beside it (compact in a window's bar, beside its close). */
+@media (max-width: 600px) {
+  .lang-btn { width: var(--h-control); padding: 0; }
+  .lang-btn.compact { width: var(--h-compact); padding: 0; }
+  .lang-btn .lang-name, .lang-btn > svg:last-child { display: none; }
+}
+.menu-sep { height: 1px; margin: var(--s1) var(--s2); background: var(--line); }
