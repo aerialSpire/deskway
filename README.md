@@ -81,17 +81,13 @@ a server at all.
 
 | | Deskway | RustDesk | Chrome Remote Desktop |
 |---|---|---|---|
-| MCP remote control for AI | Built in | Community implementations | No |
-| AI access control | Approve the client, then allow it per computer | Community implementations | No |
-| Person and AI at the same time | Separate sessions side by side | Community implementations | No |
-| AI activity log | Every tool call recorded on the computer | No | No |
-| Signaling and relay | Your server: direct or your own TURN relay | Self-hosted ID and relay servers | Google's service |
-| Web client | Served by your server | Eligible Server Pro plans | Provided by Google |
-| Accounts | Managed on your server | Device IDs; organization accounts and SSO in Pro | Google account |
-| Controlling device | Desktop and mobile browsers | Desktop, mobile and web clients | Desktop browser, mobile apps |
+| AI control through MCP | Built in | Community projects; built-in support proposed upstream, not merged | No |
+| Signaling and relay | Your server | Public servers by default, or self-hosted | Google's service |
+| Web client | Served by your server | Server Pro plans | Provided by Google |
 | Controlled computers | Windows, macOS | Windows, macOS, Linux, Android | Windows, macOS, Linux |
 
-Based on each project's public documentation as of November 2026. Corrections are welcome.
+As of November 2026. The [full comparison](docs/comparison.md) covers accounts, AI access control
+and logging, with a source for every entry.
 
 The [overview](docs/overview.md) describes every feature and the security model in more detail.
 
