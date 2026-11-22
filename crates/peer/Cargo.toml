@@ -12,7 +12,7 @@ doctest = false
 [dependencies]
 deskway-wire = { path = "../wire" }
 anyhow = "1"
-hmac = "0.12"
+hmac = "0.13"
 if-addrs = "0.13"
 md-5 = "0.10"
 serde_json = "1"
