@@ -25,7 +25,7 @@ ureq = { version = "2", default-features = false, features = ["native-tls", "jso
 
 tao = "0.34"
 tray-icon = "0.21"
-wry = "0.53"
+wry = "0.57"
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 sha2 = "0.10"
 rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
