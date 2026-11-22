@@ -144,20 +144,25 @@ To try the whole system on one Windows computer, run `scripts/try-local.ps1`.
 
 ## Releases
 
-Desktop builds are published by the **Desktop release** workflow. It is started by hand from
-**Actions → Desktop release → Run workflow** with a tag such as `v0.1.0`. For a test build,
-enable **Mark the GitHub Release as a prerelease**. Each release contains these files:
+Releases are published by the **Release** workflow. It is started by hand from
+**Actions → Release → Run workflow** with a tag such as `v0.1.0`. For a test build, enable
+**Mark the GitHub Release as a prerelease**. Each release contains these files:
 
 | File | What it is |
 |---|---|
+| `deskway-server-linux-amd64.tar.gz`, `deskway-server-linux-arm64.tar.gz` | The server for Linux on x86-64 and ARM64, with the license and the systemd unit template |
 | `DeskwayHost-Setup-windows-x64.exe` | Deskway Host installer for Windows (x64) |
 | `DeskwayHost-macos-universal.dmg` | Deskway Host for macOS (Apple silicon and Intel) |
 | `deskway-windows-x64.exe` | AI client program for Windows |
 | `deskway-macos-arm64`, `deskway-macos-x64` | AI client programs for macOS |
+| `SHA256SUMS` | SHA-256 checksums of the files above |
+
+The same server is published as a container image, `ghcr.io/aerialspire/deskway-server`, for
+`linux/amd64` and `linux/arm64`, tagged with the version (for example `0.1.0`) and, for
+releases that are not prereleases, `latest`.
 
 The AI client files have the exact names the server expects, so a self-hosted server can use
 them unchanged ([Self-hosting, step 5](docs/self-hosting.md#5-put-the-ai-client-programs-in-place-optional)).
-There is no prebuilt server binary. Build the server from source as described above.
 
 ## Documentation
 
