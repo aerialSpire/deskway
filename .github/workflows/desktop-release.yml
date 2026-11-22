@@ -36,7 +36,7 @@ jobs:
 
           $out = "$env:RUNNER_TEMP/desktop-windows"
           New-Item -ItemType Directory -Path $out | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/deskway-host.exe "$out/Deskway-Setup.exe"
+          Copy-Item target/x86_64-pc-windows-msvc/release/deskway-host.exe "$out/DeskwayHost-Setup-windows-x64.exe"
           Copy-Item target/x86_64-pc-windows-msvc/release/deskway.exe "$out/deskway-windows-x64.exe"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -60,7 +60,7 @@ jobs:
 
           out="$RUNNER_TEMP/desktop-macos"
           mkdir "$out"
-          cp bin/Deskway-macOS-universal.dmg "$out/"
+          cp bin/DeskwayHost-macos-universal.dmg "$out/"
           # The CLI files keep the names the server hands them out under (internal/server/aiclients.go),
           # so a self-hosted server can serve the release files as they are.
           sh scripts/build-ai-clients.sh "$out"
@@ -108,7 +108,7 @@ jobs:
           fi
 
           cd "$RUNNER_TEMP/deskway-release"
-          assets=(Deskway-Setup.exe Deskway-macOS-universal.dmg deskway-windows-x64.exe deskway-macos-arm64 deskway-macos-x64)
+          assets=(DeskwayHost-Setup-windows-x64.exe DeskwayHost-macos-universal.dmg deskway-windows-x64.exe deskway-macos-arm64 deskway-macos-x64)
           expected='{}'
           for asset in "${assets[@]}"; do
             test -s "$asset"

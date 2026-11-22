@@ -154,8 +154,8 @@ enable **Mark the GitHub Release as a prerelease**. Each release contains these 
 
 | File | What it is |
 |---|---|
-| `Deskway-Setup.exe` | Deskway Host installer for Windows (x64) |
-| `Deskway-macOS-universal.dmg` | Deskway Host for macOS (Apple silicon and Intel) |
+| `DeskwayHost-Setup-windows-x64.exe` | Deskway Host installer for Windows (x64) |
+| `DeskwayHost-macos-universal.dmg` | Deskway Host for macOS (Apple silicon and Intel) |
 | `deskway-windows-x64.exe` | AI client program for Windows |
 | `deskway-macos-arm64`, `deskway-macos-x64` | AI client programs for macOS |
 

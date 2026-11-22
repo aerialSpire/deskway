@@ -14,7 +14,7 @@ You need:
 ## 1. Download and install
 
 1. Open the [Releases page](https://github.com/aerialSpire/deskway/releases), pick the latest release, and download
-   **`Deskway-macOS-universal.dmg`** from its **Assets** list. (The `deskway-macos-arm64` and
+   **`DeskwayHost-macos-universal.dmg`** from its **Assets** list. (The `deskway-macos-arm64` and
    `deskway-macos-x64` files there are the AI client programs, not the host.)
 2. Open the DMG and drag **Deskway.app** into **Applications**.
 3. Open Deskway from Applications.
@@ -114,8 +114,8 @@ command-line developer tools (`xcode-select --install`):
 
 ```sh
 ./scripts/build-mac-host.sh --install          # build, install to /Applications and open it
-./scripts/build-mac-host.sh --dmg              # bin/Deskway-macOS-arm64.dmg (Apple silicon only)
-./scripts/build-mac-host.sh --universal-dmg    # bin/Deskway-macOS-universal.dmg (Apple silicon and Intel)
+./scripts/build-mac-host.sh --dmg              # bin/DeskwayHost-macos-arm64.dmg (Apple silicon only)
+./scripts/build-mac-host.sh --universal-dmg    # bin/DeskwayHost-macos-universal.dmg (Apple silicon and Intel)
 ```
 
 `--universal-dmg` needs the Intel Rust target: `rustup target add x86_64-apple-darwin`. Run

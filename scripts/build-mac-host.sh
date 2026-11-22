@@ -70,14 +70,14 @@ codesign --verify --strict --all-architectures "$bundle"
 if [ "$mode" != install ]; then
     # Keep the distribution copy out of Launch Services and the privacy permission pickers.
     if [ "$mode" = dmg ]; then
-        package="Deskway-macOS-$package_arch.dmg"
+        package="DeskwayHost-macos-$package_arch.dmg"
         mkdir "$staging/image"
         mv "$bundle" "$staging/image/"
         ln -s /Applications "$staging/image/Applications"
         hdiutil create -volname 'Deskway Host' -srcfolder "$staging/image" -format UDZO "$staging/$package"
         hdiutil verify "$staging/$package"
     else
-        package=Deskway-macOS-arm64.zip
+        package=DeskwayHost-macos-arm64.zip
         ditto -c -k --keepParent "$bundle" "$staging/$package"
     fi
     mv "$staging/$package" "$root/bin/$package"

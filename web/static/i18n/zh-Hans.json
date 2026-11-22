@@ -156,7 +156,7 @@
   "devices.computers": "受控端",
   "devices.computersSub": "被控制的电脑",
   "devices.noComputers": "还没有电脑。",
-  "devices.addComputer": "添加受控端：在那台电脑上运行 Deskway-Setup.exe，用这个账号登录。",
+  "devices.addComputer": "添加受控端：在那台电脑上安装 Deskway Host，用这个账号登录。",
   "devices.tagThis": "本机",
   "devices.inUse": "正在使用",
   "devices.lastUsed": "上次使用：{when}",

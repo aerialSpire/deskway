@@ -14,18 +14,18 @@ You need:
 ## 1. Download
 
 Open the [Releases page](https://github.com/aerialSpire/deskway/releases), pick the latest release, and download
-**`Deskway-Setup.exe`** from its **Assets** list. (The other `.exe` there,
+**`DeskwayHost-Setup-windows-x64.exe`** from its **Assets** list. (The other `.exe` there,
 `deskway-windows-x64.exe`, is the AI client program, not the host.)
 
 The release builds are not code-signed. When you open the file, Windows SmartScreen may show
-"Windows protected your PC". Choose **More info**, check that the file is `Deskway-Setup.exe`,
+"Windows protected your PC". Choose **More info**, check that the file is `DeskwayHost-Setup-windows-x64.exe`,
 and choose **Run anyway**.
 
 To build it yourself instead, see [Building from source](#building-from-source).
 
 ## 2. Install
 
-1. Run `Deskway-Setup.exe`. The **Install Deskway Host** window opens.
+1. Run `DeskwayHost-Setup-windows-x64.exe`. The **Install Deskway Host** window opens.
 2. Click **Install**. When Windows asks for administrator rights, click **Yes**.
 3. The installer installs and starts the system service, then shows **Installation complete**.
    Click **Done**.
@@ -72,12 +72,12 @@ from the on-screen notice or from the panel.
 
 ## Updating
 
-Download the new release's `Deskway-Setup.exe` and run it. It detects the installed version and
+Download the new release's `DeskwayHost-Setup-windows-x64.exe` and run it. It detects the installed version and
 offers **Update**. Sign-in details and allowed devices are kept.
 
 ## Uninstalling
 
-Run `Deskway-Setup.exe` again, or use **Settings → Apps → Deskway Host → Uninstall**, then choose
+Run `DeskwayHost-Setup-windows-x64.exe` again, or use **Settings → Apps → Deskway Host → Uninstall**, then choose
 **Uninstall**. The installer keeps this computer's sign-in details and allowed devices for a later
 reinstall unless you check the option to delete them.
 
@@ -90,7 +90,7 @@ C++ build tools):
 cargo build --locked --release -p deskway-host
 ```
 
-The result is `target\release\deskway-host.exe`. Copy or rename it to `Deskway-Setup.exe` and run
+The result is `target\release\deskway-host.exe`. Copy or rename it to `DeskwayHost-Setup-windows-x64.exe` and run
 it. When the program's file name contains "setup", it opens the installer.
 
 To try Deskway without installing the service, run `scripts\try-local.ps1`. It builds and starts
