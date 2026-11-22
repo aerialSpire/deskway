@@ -12,10 +12,14 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Major versions of Rust crates often need related crates and code updated together, so
+    # they are upgraded by hand.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       cargo:
         patterns: ["*"]
-        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: /
