@@ -10,3 +10,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 - First public release: the Deskway server, web client, Deskway Host for Windows and macOS
   (Apple silicon and Intel), and the `deskway` CLI for AI clients.
+
+### Fixed
+
+- Restore the **Request control** and **Take over** prompts after a full-screen connection attempt ends.

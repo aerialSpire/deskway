@@ -33,8 +33,24 @@ export const area = {
     await b.clickText('.dialog button', t('common.cancel'));
     h.check('cancel keeps the first session', await a.v(`!!s && s.info().connection === 'connected'`));
 
-    await b.eval(TAKE_OVER);
-    await b.until(`!!document.querySelector('.dialog')`, 'takeover dialog again');
+    // A stale computer list can miss the holder. Deliver the host's busy reply once the
+    // attempted connection has already moved the dialog layer into full screen.
+    await b.send('Page.bringToFront');
+    await b.send('Runtime.evaluate', { userGesture: true, expression: `(() => {
+      const d = window.__deskway;
+      d.interceptSignals((m) => {
+        if (m.type !== 'bye' || m.reason !== 'busy') return m;
+        window.__busyReply = m;
+        return { type: 'ignored' };
+      });
+      localStorage.setItem('deskway.autofull', '1');
+      d.serverSays({ type: 'devices', devices: d.devices().map((x) => ({ ...x, controller: undefined })) });
+      ${TAKE_OVER};
+    })()` });
+    await b.until(`window.__busyReply && document.fullscreenElement?.contains(document.getElementById('dialog-root'))`, 'full screen before the busy reply');
+    await b.v(`(d.interceptSignals(null), d.serverSays(window.__busyReply))`);
+    await b.eval(`localStorage.setItem('deskway.autofull', '0')`);
+    await b.until(`!document.fullscreenElement && ${hasButton(t('force.deviceGo'))}`, 'takeover dialog after the busy reply');
     await b.clickText('.dialog button', t('force.deviceGo'));
     await a.until(`${dialogTitle}.includes(${q('session.takenHereTitle')})`, 'first tab told the session moved');
     h.check('D1 confirmed: the first tab sees this device started remote in another window', true, await a.eval(`document.querySelector('.dialog p').textContent`));
