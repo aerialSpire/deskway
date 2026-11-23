@@ -221,16 +221,17 @@ export class Toolbar {
     const root = this.s.root;
     if (this.isFull) {
       this.isFull = false;
-      if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
-      this.applyFull();
+      if (document.fullscreenElement === root) await document.exitFullscreen().catch(() => {});
+      if (!this.s.closed) this.applyFull();
       return;
     }
     this.isFull = true;
     // Browsers without element full screen, like Safari on iPhone, still get the toolbar out of the way.
     if (root.requestFullscreen) {
       await root.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+      if (this.s.closed) return;
       // Sends Esc and system shortcuts to the remote computer. Holding Esc still exits.
-      if (document.fullscreenElement && navigator.keyboard && navigator.keyboard.lock) {
+      if (document.fullscreenElement === root && navigator.keyboard && navigator.keyboard.lock) {
         navigator.keyboard.lock().catch(() => {});
       }
     }
@@ -259,11 +260,14 @@ export class Toolbar {
   }
 
   destroy() {
+    const root = this.s.root;
     clearTimeout(this.timer);
     removeEventListener('resize', this.onResize);
-    this.s.root.removeEventListener('keydown', this.onKey, true);
+    root.removeEventListener('keydown', this.onKey, true);
     document.removeEventListener('fullscreenchange', this.onFullscreenChange);
-    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    // The detail page replaces this root and may immediately open a dialog.
+    if ($dialogs.parentElement === root) document.body.append($dialogs);
+    if (document.fullscreenElement === root) document.exitFullscreen().catch(() => {});
     if (navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
   }
 }

@@ -222,9 +222,20 @@ export const area = {
     await inWithSuper('waiting again');
     await c.eval(`document.querySelector('.card-open').click()`);
     await c.until(SCREENS, 'detail after super password');
-    await c.eval(TAKE_OVER);
+    // Let the browser enter full screen before delivering the real refusal.
+    await c.v(`d.interceptSignals((m) => {
+      if (m.type !== 'bye' || m.reason !== 'unpaired') return m;
+      window.__unpairedReply = m;
+      return { type: 'ignored' };
+    })`);
+    await c.send('Page.bringToFront');
+    await c.eval(`localStorage.setItem('deskway.autofull', '1')`);
+    await c.send('Runtime.evaluate', { expression: TAKE_OVER, userGesture: true });
+    await c.until(`window.__unpairedReply && document.fullscreenElement?.contains(document.getElementById('dialog-root'))`, 'full screen before the refusal');
+    await c.v(`(d.interceptSignals(null), d.serverSays(window.__unpairedReply))`);
+    await c.eval(`localStorage.setItem('deskway.autofull', '0')`);
     await c.until(`document.querySelector('.dialog h2')?.textContent.includes(${JSON.stringify(fixed('notAdded.title'))})`, 'removed device refused by the computer');
-    h.check('a removed device cannot control the computer, even signed in again', await c.eval(`!document.querySelector('.session')`));
+    h.check('a removed device returns from full screen and can request control', await c.eval(`!document.fullscreenElement && !document.querySelector('.session') && document.querySelector('.dialog .primary')?.textContent === ${q('notAdded.request')}`));
     const panel = h.panelPipe();
     await c.clickText('.dialog button', t('notAdded.request'), { exact: true });
     await c.until(`document.querySelector('.dialog h2')?.textContent.includes(${JSON.stringify(fixed('ask.waitTitle'))})`, 'waiting for the person at the computer');
