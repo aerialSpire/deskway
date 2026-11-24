@@ -465,7 +465,7 @@ dependencies = [
 
 [[package]]
 name = "deskway"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "deskway-host"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "deskway-peer"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "deskway-wire",
@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "deskway-wire"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",

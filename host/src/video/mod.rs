@@ -10,7 +10,6 @@ use crate::display::DisplayInfo;
 use crate::platform::{Bytes, Desk, PlatformEvent};
 
 pub mod size;
-mod tiles;
 pub use size::{Constraints, FPS};
 pub(crate) const SHARP_FPS: u32 = 2;
 
@@ -22,6 +21,7 @@ const THUMB_EVERY: Duration = Duration::from_secs(3);
 /// Each pass refines it, then output stops completely so a static screen costs nothing.
 const REFINE_PASSES: u32 = 6;
 const REFINE_EVERY: Duration = Duration::from_millis(120);
+const NARROW_SHARP_BITRATE: u32 = 500_000;
 
 /// Keyframes come only when the browser asks (it lost something). Several requests in a
 /// burst are served by one keyframe, since each costs many times a normal frame.
@@ -71,10 +71,6 @@ pub trait Capturer: Sized {
 
     /// Fails with [`NoDisplay`] when no display is attached.
     fn open(wanted: Option<&str>, draw_cursor: bool) -> anyhow::Result<Self>;
-    /// Opens a capture that can return original RGB pixels for lossless updates.
-    fn open_rgb(wanted: Option<&str>, draw_cursor: bool) -> anyhow::Result<Self> {
-        Self::open(wanted, draw_cursor)
-    }
     fn display(&self) -> &DisplayInfo;
     /// Every display attached now, each with its stable id.
     fn displays() -> Vec<DisplayInfo>;
@@ -88,9 +84,6 @@ pub trait Capturer: Sized {
     fn snapshot(&mut self, display: &DisplayInfo, max_width: usize, done: Done);
     /// The latest image at `size` (even, at most `pixel_size`).
     fn frame(&mut self, context: &Self::Context, draw_cursor: bool, size: (usize, usize)) -> anyhow::Result<&Self::Frame>;
-    fn rgb(&mut self, _context: &Self::Context, _draw_cursor: bool) -> anyhow::Result<Still> {
-        anyhow::bail!("RGB capture unavailable")
-    }
     fn cursor_position(&self, context: &Self::Context) -> (f64, f64, bool);
     fn cursor_shape(&self, context: &Self::Context) -> Option<CursorShape>;
     /// The desktop that has input now.
@@ -135,8 +128,6 @@ pub enum Command {
     Start(Constraints),
     Stop,
     Keyframe,
-    /// Nonzero opens or continues a lossless capture and grants one tile. Zero returns to video.
-    SharpTile(u32),
     Bitrate(u32),
     /// The network is behind: encoding waits (the screen's changes are kept, not encoded) until
     /// it has caught up; then the screen as it is goes out.
@@ -157,12 +148,12 @@ pub enum Command {
 
 /// Starts the capture thread. It reports through `events` and ends when the returned sender
 /// is dropped while idle.
-pub fn spawn<C: Capturer + 'static, E: Encoder<Frame = C::Frame> + 'static>(events: Sender<PlatformEvent>, moves: crate::input::AppliedMoves) -> Sender<Command> {
+pub fn spawn<C: Capturer + 'static, E: Encoder<Frame = C::Frame> + 'static>(events: Sender<PlatformEvent>, applied: crate::input::AppliedInput) -> Sender<Command> {
     let (tx, rx) = channel();
     std::thread::Builder::new()
         .name("capture".into())
         .spawn(move || {
-            if let Err(e) = run::<C, E>(rx, events, moves) {
+            if let Err(e) = run::<C, E>(rx, events, applied) {
                 eprintln!("capture thread stopped: {e}");
             }
         })
@@ -246,19 +237,35 @@ fn frame_interval(bitrate: u32, fps: u32) -> Duration {
     Duration::from_millis(1000 / fps as u64)
 }
 
+/// At two frames per second a CBR encoder can spend half a second of bandwidth on
+/// one picture. Use measured access-unit sizes to reduce that burst on a narrow link.
+fn sharp_frame_share(current: u32, bytes: usize, bitrate: u32) -> u32 {
+    let send_ms = bytes as u64 * 8000 / u64::from(bitrate.max(1));
+    if send_ms > 250 {
+        (u64::from(current) * 200 / send_ms).max(40) as u32
+    } else if send_ms < 100 {
+        (current + 5).min(100)
+    } else {
+        current
+    }
+}
+
+fn encoder_bitrate(budget: u32, ceiling: u32, share: u32) -> u32 {
+    // Preserve a usable text frame at the bottom of the narrowband range.
+    let available = budget.min(ceiling).max(1);
+    ((u64::from(available) * u64::from(share) / 100) as u32).max(available.min(64_000))
+}
+
 /// What the browser drawing its own pointer needs: shape changes and positions.
 struct CursorReport {
     on: bool,
     shape_due: bool,
     pos_due: bool,
     last: Instant,
-    /// The injector's last applied move, read before each position so a report never claims a
-    /// move it predates.
-    moves: crate::input::AppliedMoves,
 }
 
 impl CursorReport {
-    fn send<C: Capturer>(&mut self, out: &Sender<PlatformEvent>, d: &C, context: &C::Context) {
+    fn send<C: Capturer>(&mut self, out: &Sender<PlatformEvent>, d: &C, context: &C::Context, applied: &crate::input::AppliedInput) {
         if !self.on {
             return;
         }
@@ -271,7 +278,7 @@ impl CursorReport {
         if self.pos_due && self.last.elapsed() >= CURSOR_EVERY {
             self.pos_due = false;
             self.last = Instant::now();
-            let seq = self.moves.get();
+            let seq = applied.move_sequence();
             let (x, y, visible) = d.cursor_position(context);
             let _ = out.send(PlatformEvent::CursorPosition { x, y, visible, seq });
         }
@@ -294,15 +301,18 @@ struct Pipeline<C: Capturer, E: Encoder<Frame = C::Frame>> {
     /// Screenshots asked for: id, display (`None`: the primary), most width.
     snapshots: Vec<(String, Option<String>, usize)>,
     dup: Option<C>,
-    tiles: Option<tiles::Tiles>,
-    tile_requested: bool,
     enc: Option<E>,
     selected: Option<String>,
     announce: bool,
+    applied: crate::input::AppliedInput,
     cursor: CursorReport,
     network_bitrate: u32,
+    frame_share: u32,
     /// What was sent is still queuing up: nothing new is encoded until it drains.
     network_behind: bool,
+    // Only a captured image change after input can advance the next frame.
+    input_until: Option<Instant>,
+    input_changed: bool,
     /// The viewer's constraints, and how the running encoder encodes under them.
     constraints: Constraints,
     encoding: Option<size::Encoding>,
@@ -321,7 +331,7 @@ struct Pipeline<C: Capturer, E: Encoder<Frame = C::Frame>> {
 }
 
 impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
-    fn new(out: Sender<PlatformEvent>, moves: crate::input::AppliedMoves) -> anyhow::Result<Self> {
+    fn new(out: Sender<PlatformEvent>, applied: crate::input::AppliedInput) -> anyhow::Result<Self> {
         Ok(Pipeline {
             out,
             encoders: E::catalog()?,
@@ -333,14 +343,16 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
             want_thumbs: false,
             snapshots: Vec::new(),
             dup: None,
-            tiles: None,
-            tile_requested: false,
             enc: None,
             selected: None,
             announce: false,
-            cursor: CursorReport { on: false, shape_due: false, pos_due: false, last: Instant::now(), moves },
+            applied,
+            cursor: CursorReport { on: false, shape_due: false, pos_due: false, last: Instant::now() },
             network_bitrate: START_BITRATE,
+            frame_share: 100,
             network_behind: false,
+            input_until: None,
+            input_changed: false,
             constraints: Constraints::default(),
             encoding: None,
             max_level: size::Level::from_idc(E::MAX_LEVEL).expect("encoder level is in Table A-1"),
@@ -372,16 +384,16 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
     fn command(&mut self, cmd: Command) {
         match cmd {
             Command::Start(c) => {
-                if self.tiles.take().is_some() {
-                    self.dup = None;
-                }
-                self.tile_requested = false;
                 self.constraints = c;
                 self.wait_for_display = false;
                 self.active = true;
                 self.no_display = false;
                 self.network_bitrate = START_BITRATE;
+                self.frame_share = 100;
                 self.network_behind = false;
+                self.input_until = None;
+                self.input_changed = false;
+                self.applied.take_interaction();
                 self.enc = None; // a fresh encoder guarantees the new viewer starts on a keyframe
                 self.dirty = true;
                 self.refine_left = 0;
@@ -392,10 +404,6 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
                 self.cursor.on = false;
             }
             Command::Stop => {
-                if self.tiles.take().is_some() {
-                    self.dup = None;
-                }
-                self.tile_requested = false;
                 self.active = false;
                 self.enc = None;
                 // Constraints belong to the session that set them.
@@ -414,24 +422,21 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
                     self.key_due = Some(self.last_key + KEYFRAME_GAP);
                 }
             }
-            Command::SharpTile(epoch) => {
-                if self.tiles.as_ref().map_or(0, |tiles| tiles.epoch) != epoch {
-                    self.tiles = (epoch != 0).then(|| tiles::Tiles::new(epoch));
-                    self.dup = None;
-                    self.enc = None;
-                    self.refine_left = 0;
-                }
-                self.tile_requested = epoch != 0;
-            }
             Command::Behind(b) => self.network_behind = b,
             Command::Bitrate(b) => {
                 self.network_bitrate = b;
+                if b >= NARROW_SHARP_BITRATE {
+                    self.frame_share = 100;
+                }
                 if let (Some(e), Some(now)) = (&self.enc, &self.encoding) {
-                    e.set_bitrate(b.min(now.max_bitrate));
+                    e.set_bitrate(encoder_bitrate(b, now.max_bitrate, self.frame_share));
                 }
             }
             // Applied with the next frame; a static screen gets one so the size follows.
             Command::View(c) => {
+                if c.fps != self.constraints.fps {
+                    self.frame_share = 100;
+                }
                 self.constraints = c;
                 self.dirty = true;
             }
@@ -507,16 +512,12 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
             return true;
         }
         C::follow_input_desktop();
-        let open = if self.tiles.is_some() { C::open_rgb } else { C::open };
-        match open(self.selected.as_deref(), !self.cursor.on) {
+        match C::open(self.selected.as_deref(), !self.cursor.on) {
             Ok(d) => {
                 let info = d.display();
                 eprintln!("capture: {} {}x{} at {},{}", info.id, info.w, info.h, info.x, info.y);
                 self.displays_changed(C::displays());
                 self.enc = None;
-                if let Some(tiles) = self.tiles.as_mut() {
-                    tiles.reset();
-                }
                 self.dirty = true;
                 self.announce = true;
                 self.context = C::Context::default();
@@ -536,11 +537,6 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
                 self.wait_for_display = true;
             }
             Err(e) => {
-                if let Some(tiles) = self.tiles.take() {
-                    let _ = self.out.send(PlatformEvent::SharpTile { epoch: tiles.epoch, packet: None });
-                    self.tile_requested = false;
-                    return false;
-                }
                 // Lock screen or sleep: keep trying without taking down the host.
                 eprintln!("capture unavailable: {e}");
                 std::thread::sleep(Duration::from_secs(1));
@@ -557,8 +553,14 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
             self.announce = false;
             let _ = self.out.send(PlatformEvent::Capturing { list: C::displays(), current: d.display().clone() });
         }
+        if self.applied.take_interaction() && self.active {
+            self.input_until = Some(Instant::now() + Duration::from_millis(500));
+        }
         match d.wait(&mut self.context, Duration::from_millis(15)) {
             Ok(c) => {
+                if c.image && self.input_until.is_some_and(|until| Instant::now() <= until) {
+                    self.input_changed = true;
+                }
                 if c.image || (c.pointer && !self.cursor.on) {
                     self.dirty = true;
                     self.refine_left = REFINE_PASSES;
@@ -608,49 +610,22 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
     /// encoder for the size the viewer wants.
     fn encode(&mut self) {
         let Some(d) = self.dup.as_mut() else { return };
-        self.cursor.send(&self.out, d, &self.context);
-        if let Some(tiles) = self.tiles.as_mut() {
-            if !self.tile_requested {
-                return;
-            }
-            if self.dirty {
-                if !tiles.can_sample() {
-                    return;
-                }
-                self.dirty = false;
-                if let Err(e) = d.rgb(&self.context, !self.cursor.on).and_then(|pixels| tiles.sample(pixels)) {
-                    eprintln!("lossless capture: {e:#}");
-                    let _ = self.out.send(PlatformEvent::SharpTile { epoch: tiles.epoch, packet: None });
-                    self.tile_requested = false;
-                    return;
-                }
-            }
-            let (x, y, _) = d.cursor_position(&self.context);
-            let packet = match tiles.next(x, y) {
-                Ok(Some(packet)) => Some(Bytes(packet)),
-                Ok(None) => return,
-                Err(e) => {
-                    eprintln!("lossless tile: {e:#}");
-                    None
-                }
-            };
-            if self.no_display && packet.is_some() {
-                self.no_display = false;
-                let _ = self.out.send(PlatformEvent::CaptureAvailable(true));
-            }
-            self.tile_requested = false;
-            let _ = self.out.send(PlatformEvent::SharpTile { epoch: tiles.epoch, packet });
-            return;
-        }
+        self.cursor.send(&self.out, d, &self.context, &self.applied);
         // Behind: nothing is encoded, so nothing more queues up; the changes wait in `dirty`.
         if self.network_behind {
             return;
         }
         let fps = self.encoding.map_or(FPS, |e| e.fps);
         let interval = frame_interval(self.network_bitrate, fps);
+        // Merge bursts of typing; pointer motion and refinement do not bypass the normal cadence.
+        let change_interval = if self.input_changed && fps == SHARP_FPS {
+            interval.min(Duration::from_millis(100))
+        } else {
+            interval
+        };
         let refine_interval = if fps == SHARP_FPS && self.network_bitrate < 300_000 { interval } else { REFINE_EVERY };
         let refine_due = !self.dirty && self.refine_left > 0 && self.last_encode.elapsed() >= refine_interval;
-        if !(self.dirty && self.last_encode.elapsed() >= interval) && !refine_due {
+        if !(self.dirty && self.last_encode.elapsed() >= change_interval) && !refine_due {
             return;
         }
         if refine_due {
@@ -668,7 +643,8 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
             }
         }
         if self.enc.is_none() {
-            self.enc = open_encoder::<E>(&mut self.encoders, self.preferred, &target, self.network_bitrate.min(target.max_bitrate));
+            let rate = encoder_bitrate(self.network_bitrate, target.max_bitrate, self.frame_share);
+            self.enc = open_encoder::<E>(&mut self.encoders, self.preferred, &target, rate);
             if self.enc.is_none() {
                 eprintln!("no usable H.264 encoder");
                 std::thread::sleep(Duration::from_secs(1));
@@ -694,9 +670,26 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
         self.dirty = false;
         match encoder.encode(frame) {
             Ok(frames) => {
+                if self.input_changed {
+                    // An asynchronous encoder may accept input without returning a picture yet.
+                    self.dirty = frames.is_empty();
+                    self.input_changed = self.dirty && self.input_until.is_some_and(|t| Instant::now() < t);
+                    if !self.input_changed {
+                        self.input_until = None;
+                    }
+                }
                 if self.no_display && !frames.is_empty() {
                     let _ = self.out.send(PlatformEvent::CaptureAvailable(true));
                     self.no_display = false;
+                }
+                if !refine_due && now.fps == SHARP_FPS && self.network_bitrate < NARROW_SHARP_BITRATE {
+                    if let Some(bytes) = frames.iter().map(Vec::len).max() {
+                        let share = sharp_frame_share(self.frame_share, bytes, self.network_bitrate);
+                        if share != self.frame_share {
+                            self.frame_share = share;
+                            encoder.set_bitrate(encoder_bitrate(self.network_bitrate, now.max_bitrate, share));
+                        }
+                    }
                 }
                 for data in frames {
                     let _ = self.out.send(PlatformEvent::Frame(Bytes(data)));
@@ -712,8 +705,8 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
     }
 }
 
-fn run<C: Capturer, E: Encoder<Frame = C::Frame>>(rx: Receiver<Command>, out: Sender<PlatformEvent>, moves: crate::input::AppliedMoves) -> anyhow::Result<()> {
-    let mut p = Pipeline::<C, E>::new(out, moves)?;
+fn run<C: Capturer, E: Encoder<Frame = C::Frame>>(rx: Receiver<Command>, out: Sender<PlatformEvent>, applied: crate::input::AppliedInput) -> anyhow::Result<()> {
+    let mut p = Pipeline::<C, E>::new(out, applied)?;
     // The displays as they are now, before anything opens a capture: an AI client finds the
     // display to take a picture of in this list, so it cannot wait for a picture to fill it.
     p.displays_changed(C::displays());
@@ -837,7 +830,7 @@ mod tests {
     #[test]
     fn no_display_is_reported_and_recovers_with_an_encoded_frame() {
         let (events, updates) = channel();
-        let commands = spawn::<TestCapture, TestEncoder>(events, crate::input::AppliedMoves::default());
+        let commands = spawn::<TestCapture, TestEncoder>(events, crate::input::AppliedInput::default());
         let next = || loop {
             match updates.recv_timeout(Duration::from_secs(5)).unwrap() {
                 PlatformEvent::Desktop(_) => continue,
@@ -892,7 +885,7 @@ mod tests {
     #[test]
     fn a_new_view_reconfigures_the_encoder_and_frames_follow() {
         let (events, updates) = channel();
-        let commands = spawn::<Wide, TestEncoder>(events, crate::input::AppliedMoves::default());
+        let commands = spawn::<Wide, TestEncoder>(events, crate::input::AppliedInput::default());
         commands.send(Command::Start(Constraints::default())).unwrap();
         let size = || loop {
             if let PlatformEvent::EncodedSize { w, h, max_bitrate } = updates.recv_timeout(Duration::from_secs(5)).unwrap() {
@@ -941,12 +934,45 @@ mod tests {
         fn cursor_shape(&self, _: &()) -> Option<CursorShape> { None }
     }
 
+    #[test]
+    fn input_advances_a_changed_frame_once_and_only_after_backpressure_clears() {
+        let (events, updates) = channel();
+        let mut p = Pipeline::<Busy, TestEncoder>::new(events, Default::default()).unwrap();
+        p.command(Command::Start(Constraints { fps: SHARP_FPS, ..Default::default() }));
+        p.dup = Some(Busy::open(None, false).unwrap());
+        p.encode();
+        assert!(updates.try_iter().any(|e| matches!(e, PlatformEvent::Frame(_))));
+        p.command(Command::Bitrate(80_000));
+        p.last_encode = Instant::now() - Duration::from_millis(150);
+        p.input_until = Some(Instant::now() + Duration::from_millis(500));
+        assert!(p.capture());
+        p.command(Command::Behind(true));
+        p.encode();
+        assert!(!updates.try_iter().any(|e| matches!(e, PlatformEvent::Frame(_))));
+        p.command(Command::Behind(false));
+        p.encode();
+        assert!(updates.try_iter().any(|e| matches!(e, PlatformEvent::Frame(_))));
+        p.last_encode = Instant::now() - Duration::from_millis(150);
+        assert!(p.capture());
+        p.encode();
+        assert!(!updates.try_iter().any(|e| matches!(e, PlatformEvent::Frame(_))));
+    }
+
+    #[test]
+    fn oversized_sharp_frames_reduce_the_next_budget_and_small_frames_restore_it() {
+        assert_eq!(sharp_frame_share(100, 12_000, 160_000), 40);
+        assert_eq!(encoder_bitrate(160_000, 500_000, 40), 64_000);
+        assert_eq!(encoder_bitrate(32_000, 500_000, 40), 32_000);
+        assert_eq!(sharp_frame_share(40, 1_000, 160_000), 45);
+        assert_eq!(sharp_frame_share(100, 1_000, 160_000), 100);
+    }
+
     /// The network behind: nothing is encoded however much the screen changes; caught up: the
     /// screen as it is goes out at once.
     #[test]
     fn a_network_that_falls_behind_holds_encoding_until_it_catches_up() {
         let (events, updates) = channel();
-        let commands = spawn::<Busy, TestEncoder>(events, crate::input::AppliedMoves::default());
+        let commands = spawn::<Busy, TestEncoder>(events, crate::input::AppliedInput::default());
         commands.send(Command::Start(Constraints::default())).unwrap();
         let frame = |within: Duration| {
             let until = Instant::now() + within;

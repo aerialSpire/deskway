@@ -283,7 +283,7 @@ img, svg { -webkit-user-drag: none; }
   position: relative; flex: 1; min-height: 0; background: var(--screen); overflow: hidden;
   touch-action: none; cursor: default; outline: none;
 }
-.stage video, .stage .screen-tiles { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: 0 0; pointer-events: none; }
+.stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: 0 0; pointer-events: none; }
 .capture-note { position: absolute; inset: 0; z-index: 3; display: grid; place-items: center; padding: var(--s5); background: var(--screen); color: var(--dark-ink); text-align: center; pointer-events: none; }
 .stage.dropping::after {
   content: attr(data-drop); position: absolute; inset: var(--s2); z-index: 7; display: grid; place-items: center;
@@ -527,7 +527,7 @@ img, svg { -webkit-user-drag: none; }
   min-height: 0;
   overflow: hidden;
 }
-.stage.ime-stage > video, .stage.ime-stage > .screen-tiles {
+.stage.ime-stage > video {
   width: var(--ime-picture-width);
   height: var(--ime-picture-height);
 }

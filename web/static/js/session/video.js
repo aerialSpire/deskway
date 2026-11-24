@@ -10,7 +10,6 @@ import { t } from '../i18n.js';
 import { Control } from '../proto.js';
 import { decodeLimit, viewport, viewMessage, watchPixelRatio } from './constraints.js';
 import { picture, setPicture } from '../picture.js';
-import { ScreenTiles } from './screen-tiles.js';
 import { pictureArea } from './ime-viewport.js';
 
 export class Video {
@@ -18,15 +17,6 @@ export class Video {
     this.s = s;
     this.el = h('video', { autoplay: true, playsinline: true, muted: true });
     this.el.muted = true;
-    this.canvas = h('canvas', { class: 'screen-tiles', hidden: true, 'aria-hidden': 'true', width: 0, height: 0 });
-    this.tiles = new ScreenTiles(this.canvas, this.el, (newScreen) => {
-      if (newScreen) this.refit();
-      this.s.onPicture();
-      if (this.captureState === 'recovering') this.finishRecovery();
-    });
-    for (const event of ['enterpictureinpicture', 'leavepictureinpicture', 'webkitpresentationmodechanged']) {
-      this.el.addEventListener(event, () => this.syncTiles());
-    }
     this.note = h('div', { class: 'capture-note', hidden: true, role: 'status' });
     this.zoom = { s: 1, x: 0, y: 0 };
     // The stage and picture sizes the zoom was last set against.
@@ -49,7 +39,7 @@ export class Video {
     this.el.play().catch(() => {});
   }
 
-  get statsMode() { return !this.tiles.active && !this.captureState && this.el.videoWidth > 0 ? picture() : null; }
+  get statsMode() { return !this.captureState && this.el.videoWidth > 0 ? picture() : null; }
 
   beginIme() {
     const box = this.s.stage.getBoundingClientRect();
@@ -140,13 +130,12 @@ export class Video {
     const dy = frame.top - stage.top + y;
     const transform = s !== 1 || dx || dy ? `translate(${dx}px, ${dy}px) scale(${s})` : '';
     this.el.style.transform = transform;
-    this.canvas.style.transform = transform;
   }
 
   // The picture's size and its letterboxed scale on a stage of w x h.
   fit(w, h) {
-    const vw = (this.tiles.active ? this.canvas.width : this.el.videoWidth) || w;
-    const vh = (this.tiles.active ? this.canvas.height : this.el.videoHeight) || h;
+    const vw = this.el.videoWidth || w;
+    const vh = this.el.videoHeight || h;
     return { vw, vh, fit: Math.min(w / vw, h / vh) };
   }
 
@@ -221,16 +210,10 @@ export class Video {
 
   async sendView() {
     if (!this.resizes || !this.s.connected) return;
-    this.syncTiles();
     const m = await this.constraints();
     const key = JSON.stringify(m);
     if (!m || !this.resizes || key === this.lastView) return;
     if (this.s.send(m)) this.lastView = key;
-  }
-
-  syncTiles() {
-    if (this.s.closed) return;
-    this.tiles.update(picture() === 'sharp' && !this.s.pip.active);
   }
 
   // The computer has no display to capture ('no-display'), or has one again ('ready'). Input
@@ -241,7 +224,6 @@ export class Video {
       s.releaseAll();
       s.touch.reset();
       this.recovery = null;
-      this.tiles.clear(false);
       this.captureState = 'no-display';
       s.waiting = null;
       s.showNotice(null);
@@ -252,10 +234,6 @@ export class Video {
     }
     if (status !== 'ready' || this.captureState !== 'no-display' || s.closed) return;
     this.captureState = 'recovering';
-    if (this.tiles.active) {
-      this.finishRecovery();
-      return;
-    }
     this.note.textContent = t('session.displayBack');
     const recovery = this.recovery = {};
     // The first new frame may have been presented before this message: the keyframe asked for
@@ -283,7 +261,6 @@ export class Video {
     this.unwatchPixelRatio = null;
     this.lastView = null;
     this.recovery = null;
-    this.tiles.update(false);
     if (this.captureState) this.el.srcObject = null;
     this.captureState = null;
     this.note.hidden = true;

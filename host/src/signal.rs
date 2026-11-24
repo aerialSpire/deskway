@@ -167,7 +167,6 @@ impl Router {
     fn targets(e: &PlatformEvent) -> (bool, bool) {
         match e {
             PlatformEvent::Frame(_)
-            | PlatformEvent::SharpTile { .. }
             | PlatformEvent::CaptureAvailable(_)
             | PlatformEvent::EncodedSize { .. }
             | PlatformEvent::CursorShape(_)

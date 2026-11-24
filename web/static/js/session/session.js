@@ -79,7 +79,7 @@ export class Session {
     this.lockNote = h('div', { class: 'notice dark warn', hidden: true, role: 'status' }, t('session.locked'));
     this.stack = h('div', { class: 'stack' }, this.notice, this.lockNote);
     // The words shown while files are dragged over it come from here (style.css: .dropping).
-    this.stage = h('div', { class: 'stage', tabindex: '0', 'aria-label': t('session.screen'), 'data-drop': t('session.drop') }, this.video.el, this.video.canvas, this.pointer.img, this.video.note, this.stack);
+    this.stage = h('div', { class: 'stage', tabindex: '0', 'aria-label': t('session.screen'), 'data-drop': t('session.drop') }, this.video.el, this.pointer.img, this.video.note, this.stack);
     this.displays = new Displays(this);
     this.touch = new Touch(this);
     this.mousePad = new MousePad(this);
@@ -226,9 +226,6 @@ export class Session {
     this.transfer.attach(file);
     input.onmessage = (e) => this.onHostMessage(e.data);
     move.onmessage = (e) => this.onHostMessage(e.data);
-    this.connection.pc.addEventListener('datachannel', ({ channel }) => {
-      if (channel.label === CAPS.SCREEN_TILES) this.video.tiles.attach(channel);
-    });
     // The host chooses H.264 from what this offer lists.
     const tr = this.connection.pc.addTransceiver('video', { direction: 'recvonly' });
     if ('playoutDelayHint' in tr.receiver) tr.receiver.playoutDelayHint = 0;
@@ -248,8 +245,7 @@ export class Session {
       this.toolbar.route('connected');
       this.connectionStats.start(this.connection.pc);
       if (!this.helloSent) {
-        const caps = this.video.tiles.supported ? [CAPS.SCREEN_TILES] : [];
-        this.helloSent = this.send({ t: Control.HELLO, version: PROTOCOL_VERSION, caps });
+        this.helloSent = this.send({ t: Control.HELLO, version: PROTOCOL_VERSION, caps: [] });
       }
       this.video.sendView();
       this.displays.restore();

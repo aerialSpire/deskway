@@ -484,7 +484,6 @@ mod tests {
             Call::AiSession { session: Some("a1".into()) },
             Call::Snapshot { id: "q1".into(), display: Some(d.id.clone()), max: 1280 },
             Call::InputDone { session: "s1".into(), id: "q3".into() },
-            Call::SharpTile { session: "s1".into(), epoch: 1 },
         ];
         // The compiler names any variant added later and missing here.
         let seen: std::collections::BTreeSet<usize> = calls
@@ -501,10 +500,9 @@ mod tests {
                 Call::ClipboardAnnounce { .. } => 25, Call::ClipboardProvide { .. } => 26, Call::ClipboardRead { .. } => 27,
                 Call::NetworkBehind { .. } => 28, Call::AiSession { .. } => 29, Call::Snapshot { .. } => 30,
                 Call::InputDone { .. } => 31,
-                Call::SharpTile { .. } => 32,
             })
             .collect();
-        assert_eq!(seen.len(), 33);
+        assert_eq!(seen.len(), 32);
         calls.iter().for_each(round_trip);
 
         let events = vec![
@@ -530,7 +528,6 @@ mod tests {
             PlatformEvent::Snapshot { id: "q1".into(), display: "1".into(), jpeg: Bytes(vec![0xff, 0xd8]), w: 1280, h: 720 },
             PlatformEvent::SnapshotFailed { id: "q2".into() },
             PlatformEvent::InputDone { id: "q3".into() },
-            PlatformEvent::SharpTile { epoch: 1, packet: Some(Bytes(vec![1, 2, 3])) },
         ];
         let seen: std::collections::BTreeSet<usize> = events
             .iter()
@@ -543,10 +540,9 @@ mod tests {
                 PlatformEvent::ClipboardRender { .. } => 14, PlatformEvent::ClipboardData { .. } => 15, PlatformEvent::ClipboardFailed { .. } => 16,
                 PlatformEvent::ClipboardAnnounced { .. } => 17, PlatformEvent::Snapshot { .. } => 18, PlatformEvent::SnapshotFailed { .. } => 19,
                 PlatformEvent::InputDone { .. } => 20,
-                PlatformEvent::SharpTile { .. } => 21,
             })
             .collect();
-        assert_eq!(seen.len(), 22);
+        assert_eq!(seen.len(), 21);
         events.iter().for_each(round_trip);
     }
 

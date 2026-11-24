@@ -8,7 +8,7 @@
 //! ([`resolve`]), whose key labels the host reports ([`labels`]).
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 
@@ -92,17 +92,25 @@ impl Decoder {
     }
 }
 
-/// The sequence of the last pointer move applied, which pointer reports carry (`cp.s`) so the
-/// browser can tell a report that predates its own moves.
+/// Information shared by the input injector and desktop capture thread.
 #[derive(Clone, Default)]
-pub struct AppliedMoves(Arc<AtomicU64>);
+pub struct AppliedInput {
+    sequence: Arc<AtomicU64>,
+    interaction: Arc<AtomicBool>,
+}
 
-impl AppliedMoves {
-    pub fn get(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
+impl AppliedInput {
+    pub fn move_sequence(&self) -> u64 {
+        self.sequence.load(Ordering::Acquire)
     }
-    fn set(&self, seq: u64) {
-        self.0.store(seq, Ordering::Release);
+
+    /// Coalesce clicks and keystrokes received between two screen captures.
+    pub fn take_interaction(&self) -> bool {
+        self.interaction.swap(false, Ordering::AcqRel)
+    }
+
+    fn set_move(&self, seq: u64) {
+        self.sequence.store(seq, Ordering::Release);
     }
 }
 
@@ -309,12 +317,12 @@ pub struct Injector<B: Backend> {
     /// The layout last reported.
     layout: Option<u64>,
     events: Sender<PlatformEvent>,
-    moves: AppliedMoves,
+    applied: AppliedInput,
 }
 
 impl<B: Backend> Injector<B> {
-    pub fn new(backend: B, events: Sender<PlatformEvent>, moves: AppliedMoves) -> Self {
-        Injector { backend, hands: Default::default(), shown: None, unknown: HashSet::new(), layout: None, events, moves }
+    pub fn new(backend: B, events: Sender<PlatformEvent>, applied: AppliedInput) -> Self {
+        Injector { backend, hands: Default::default(), shown: None, unknown: HashSet::new(), layout: None, events, applied }
     }
 
     fn held(&mut self, hand: Hand) -> &mut Held {
@@ -346,19 +354,21 @@ impl<B: Backend> Injector<B> {
         if hand == Hand::Ai && self.backend.secure_desktop() && !matches!(c, Command::ReleaseAll | Command::Done(_)) {
             return;
         }
+        let interaction = hand == Hand::Person && matches!(c,
+            Command::Button(..) | Command::Key(_, true) | Command::Char(..) | Command::Text(_));
         match c {
             Command::Move(x, y, seq) => {
                 self.use_display(hand);
                 self.backend.mouse_move(x, y);
                 if hand == Hand::Person {
-                    self.moves.set(seq);
+                    self.applied.set_move(seq);
                 }
             }
             Command::MoveBy(dx, dy, seq) => {
                 self.use_display(hand);
                 self.backend.mouse_move_by(dx, dy);
                 if hand == Hand::Person {
-                    self.moves.set(seq);
+                    self.applied.set_move(seq);
                 }
             }
             Command::Button(b, d) => self.button(hand, b, d),
@@ -391,11 +401,14 @@ impl<B: Backend> Injector<B> {
                 self.backend = make();
                 self.shown = None;
                 if hand == Hand::Person {
-                    self.moves.set(0);
+                    self.applied.set_move(0);
                 }
                 self.layout = None;
                 self.check_layout();
             }
+        }
+        if interaction {
+            self.applied.interaction.store(true, Ordering::Release);
         }
     }
 
@@ -514,12 +527,12 @@ impl<B: Backend> Drop for Injector<B> {
 
 /// Injects on a thread of its own, made by `make` on that thread. The thread owns no windows,
 /// so it can follow the input desktop onto the lock screen. It ends when the sender is dropped.
-pub fn spawn<B: Backend + 'static>(make: fn() -> B, events: Sender<PlatformEvent>, moves: AppliedMoves) -> Sender<(Hand, Command)> {
+pub fn spawn<B: Backend + 'static>(make: fn() -> B, events: Sender<PlatformEvent>, applied: AppliedInput) -> Sender<(Hand, Command)> {
     let (tx, rx) = channel::<(Hand, Command)>();
     std::thread::Builder::new()
         .name("input".into())
         .spawn(move || {
-            let mut injector = Injector::new(make(), events, moves);
+            let mut injector = Injector::new(make(), events, applied);
             for (hand, c) in rx {
                 injector.apply(hand, c, make);
             }

@@ -16,25 +16,11 @@ are the definition; this page explains how the messages fit together. The Go
 | `control` | browser and host | data channel `input`: reliable, ordered | `t` |
 | `move` | browser and host | data channel `move`: unordered, no retransmits | `t` |
 | `file` | browser and host | data channel `file`: reliable; text = messages, binary = bytes of the one transfer active in that direction | `t` |
-| `screen-tiles-v1` | browser and host | data channel: reliable, ordered | text or binary |
 | `ai` | AI client and host | data channel `ai`: reliable, ordered; MCP JSON-RPC in fragments (AI sessions) | JSON-RPC |
 | `tunnel:<port>` | AI client and host | data channel: reliable, ordered; the bytes of one TCP connection to a loopback port (AI sessions) | none |
 | `ipc` | Windows network service and agent | named pipe; length-prefixed bincode frames of `platform::Call` (service to agent) and `PlatformEvent` (agent to service), after an HMAC handshake; video frames and transfer bytes are raw frames | `t` |
 
-Peers that support lossless screen updates advertise `screen-tiles-v1` in the control-channel
-hello. The host opens an ordered, reliable data channel with that label only for a viewer in
-sharp mode that advertises the capability. On that channel the browser sends `allow` to use
-sharp mode or `video` to use the H.264 track. The host can switch a sharp session whose link
-stays narrow to tiles, and sends `video` when it returns to H.264. Older peers keep using the
-original video track and data channels.
-
-Each binary update starts with a little-endian header: the sequence number, capture epoch and
-screen revision (three u32 values), then the screen width and height and the tile's x and y
-(four u16 values). The header is followed by a single PNG. A tile is 64 × 64 pixels, or smaller
-at an edge of the screen. The epoch and revision identify the canvas to update. After applying
-an update, the browser replies with its sequence number as four binary bytes. The host uses
-these acknowledgements to bound the number of outstanding bytes, and for changes that occurred
-while it was waiting it reads fresh pixels.
+Both picture modes use the H.264 video track.
 
 The server relays signaling between a browser and a host. It sets identity itself (`user` and
 `from` come from the login, never from the browser) and never reads `auth`: the host and the
@@ -77,7 +63,6 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `capture` | no "no display" state |
   | `desk` | no lock-screen note |
   | `ai` | no AI seat: AI clients cannot use the computer |
-  | `screen-tiles-v1` | no lossless tiles; the H.264 track only |
 - A newer peer sends a new message or field only when the other side's version or capabilities
   show that it is understood. Receivers ignore unknown fields.
 - To add a message or field, add it to `messages.json` with the new `since`, bump

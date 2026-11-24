@@ -44,11 +44,10 @@ pub mod caps {
     pub const CHARS: &str = "chars";
     pub const CAPTURE: &str = "capture";
     pub const DESK: &str = "desk";
-    pub const SCREEN_TILES: &str = "screen-tiles-v1";
     /// It takes AI clients (docs/architecture.md, "AI control").
     pub const AI: &str = "ai";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, AI, SCREEN_TILES];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, AI];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of
