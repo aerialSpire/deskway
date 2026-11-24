@@ -38,8 +38,9 @@ pub const CLOSE_PANELS: UserEventCode = unsafe { UserEventCode::from_unchecked(1
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ToPanel {
     Status(Status),
-    /// This computer is not signed in: the panel offers to sign it in.
-    SignedOut,
+    /// This computer is not signed in: the panel offers to sign it in, and names the computer
+    /// signed out here, if any, so the same account signing in takes it back.
+    SignedOut(Option<crate::config::Kept>),
     /// Deskway is being installed again or removed: the panel quits.
     Exit,
 }
@@ -106,7 +107,7 @@ fn signed_in() -> Config {
         if let Ok(cfg) = Config::load() {
             return cfg;
         }
-        PANELS.signed_out();
+        PANELS.signed_out(Config::kept());
         std::thread::sleep(Duration::from_secs(2));
     }
 }
@@ -127,14 +128,15 @@ impl Panels {
     }
 
     /// Said once, not every time the sign-in is looked for.
-    fn signed_out(&self) {
+    fn signed_out(&self, kept: Option<crate::config::Kept>) {
         let mut latest = self.latest.lock().unwrap();
-        if matches!(*latest, Some(ToPanel::SignedOut)) {
+        if matches!(&*latest, Some(ToPanel::SignedOut(k)) if *k == kept) {
             return;
         }
-        *latest = Some(ToPanel::SignedOut);
+        let m = ToPanel::SignedOut(kept);
+        *latest = Some(m.clone());
         drop(latest);
-        self.send(&ToPanel::SignedOut);
+        self.send(&m);
     }
 
     /// Sent outside the lock; a panel that stopped reading is dropped.
@@ -355,8 +357,9 @@ mod tests {
     fn panel_messages_round_trip() {
         let exit = serde_json::to_string(&ToPanel::Exit).unwrap();
         assert!(matches!(serde_json::from_str::<ToPanel>(&exit).unwrap(), ToPanel::Exit));
-        let out = serde_json::to_string(&ToPanel::SignedOut).unwrap();
-        assert!(matches!(serde_json::from_str::<ToPanel>(&out).unwrap(), ToPanel::SignedOut));
+        let kept = crate::config::Kept { server: "https://s.example".into(), id: "H1".into(), user: Some("me".into()) };
+        let out = serde_json::to_string(&ToPanel::SignedOut(Some(kept.clone()))).unwrap();
+        assert!(matches!(serde_json::from_str::<ToPanel>(&out).unwrap(), ToPanel::SignedOut(Some(k)) if k == kept));
         let st = Status { prevent_sleep: true, ..Status::default() };
         let back: ToPanel = serde_json::from_str(&serde_json::to_string(&ToPanel::Status(st)).unwrap()).unwrap();
         assert!(matches!(back, ToPanel::Status(s) if s.prevent_sleep));

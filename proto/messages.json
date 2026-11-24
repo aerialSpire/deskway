@@ -75,7 +75,8 @@
         "admin": { "type": "boolean", "optional": false, "meaning": "with administrator rights" },
         "ts": { "type": "integer", "optional": false, "meaning": "the latest switch's time: a new switch is signed later than it" },
         "name": { "type": "string", "optional": true, "meaning": "the AI client using the computer now, its device name; absent: none" },
-        "since": { "type": "integer", "optional": true, "meaning": "unix seconds: since when it uses it" }
+        "since": { "type": "integer", "optional": true, "meaning": "unix seconds: since when it uses it" },
+        "refused": { "type": "boolean", "optional": true, "status": "current", "since": 4, "meaning": "the computer refused the latest switch, as no device it trusts signed it; it takes it once one does. Absent: not refused" }
       }
     },
     "AuditQuery": {
@@ -483,7 +484,8 @@
             "displays": { "type": "array", "items": "Display", "optional": false, "meaning": "attached displays" },
             "holder": { "type": "Holder", "optional": true, "meaning": "the session holding the computer, established or still connecting; absent: nobody" },
             "ai_session": { "type": "Holder", "optional": true, "status": "current", "since": 4, "meaning": "the AI client's session on the AI seat, beside the holder; absent: none" },
-            "ai_state": { "type": "string", "enum": ["off", "on", "stopped"], "optional": true, "status": "current", "since": 4, "meaning": "what AI clients may do here now; absent: a host before version 4" }
+            "ai_state": { "type": "string", "enum": ["off", "on", "stopped"], "optional": true, "status": "current", "since": 4, "meaning": "what AI clients may do here now; absent: a host before version 4" },
+            "ai_refused": { "type": "integer", "optional": true, "status": "current", "since": 4, "meaning": "the time of the newest AI switch it refused, as no device it trusts signed it; absent: none" }
           }
         },
         {

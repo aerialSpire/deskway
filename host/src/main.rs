@@ -61,16 +61,20 @@ fn agent() -> Result<ureq::Agent> {
     Ok(ureq::AgentBuilder::new().tls_connector(Arc::new(native_tls::TlsConnector::new()?)).build())
 }
 
-/// Signs this computer in and saves its device token. `name` is the one chosen, or "" for
-/// none: the server is told the name shown for it.
-pub fn enroll_with(server: &str, user: &str, password: &str, name: &str) -> Result<config::Config> {
+/// Signs this computer in. `name` is the one chosen, or "" for none: the server is told the name
+/// shown for it. `back` is the computer signed out here (`Config::kept`): when the same account
+/// signs in at the same server, the server answers with its id and no token, and `Config::settle`
+/// gives it back as it was. Otherwise the answer is a new computer, waiting for approval. Nothing
+/// is saved here: the caller settles it where the computer keeps its sign-in.
+pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: Option<&config::Kept>) -> Result<config::Config> {
     let mut server = server.trim().trim_end_matches('/').to_string();
     if !server.starts_with("http://") && !server.starts_with("https://") {
         server = format!("https://{server}");
     }
+    let back = back.filter(|k| k.server == server).map(|k| k.id.as_str());
     let res = agent()?
         .post(&format!("{server}/api/host/enroll"))
-        .send_json(serde_json::json!({ "user": user, "password": password, "name": shown_name(name), "os": std::env::consts::OS }));
+        .send_json(serde_json::json!({ "user": user, "password": password, "name": shown_name(name), "os": std::env::consts::OS, "back": back, "shows_code": true }));
     let body: serde_json::Value = match res {
         Ok(r) => r.into_json()?,
         Err(ureq::Error::Status(401, _)) => bail!(t("err.wrong_password")),
@@ -79,10 +83,11 @@ pub fn enroll_with(server: &str, user: &str, password: &str, name: &str) -> Resu
         Err(ureq::Error::Status(429, _)) => bail!(t("err.too_many")),
         Err(e) => return Err(anyhow!(tf("err.cant_reach_server", &[("e", e.to_string())]))),
     };
-    let cfg = config::Config {
+    Ok(config::Config {
         server,
         id: body["id"].as_str().with_context(|| t("err.bad_response"))?.into(),
-        token: body["token"].as_str().with_context(|| t("err.bad_response"))?.into(),
+        // Given back, the computer keeps the token it has.
+        token: body["token"].as_str().unwrap_or_default().into(),
         name: name.to_string(),
         auto_lock: false,
         clip_share: false,
@@ -91,13 +96,13 @@ pub fn enroll_with(server: &str, user: &str, password: &str, name: &str) -> Resu
         account: Some(config::Account { user: user.trim().to_string(), display: String::new() }),
         #[cfg(target_os = "macos")]
         login_item_setup_pending: true,
-    };
-    cfg.save()?;
-    Ok(cfg)
+    })
 }
 
-/// Removes this computer from the server.
-pub fn leave(cfg: &config::Config) -> Result<()> {
+/// Withdraws a sign-in that was never put to use (the service's elevated step was declined):
+/// the server forgets the computer it just added. Signing out never does this; only removing
+/// the computer from the account does.
+pub fn withdraw(cfg: &config::Config) -> Result<()> {
     agent()?
         .post(&format!("{}/api/host/leave?id={}", cfg.server, cfg.id))
         .set("Authorization", &format!("Bearer {}", cfg.token))
@@ -110,7 +115,7 @@ fn enroll_command(args: &[String]) -> Result<()> {
     let server = flag(args, "--server").with_context(|| need("--server"))?;
     let user = flag(args, "--user").with_context(|| need("--user"))?;
     let name = flag(args, "--name").unwrap_or_default();
-    let cfg = enroll_with(&server, &user, &read_password()?, &name)?;
+    let cfg = config::Config::settle(enroll_with(&server, &user, &read_password()?, &name, config::Config::kept().as_ref())?)?;
     println!("{}", tf("cli.enrolled", &[("name", shown_name(&cfg.name))]));
     Ok(())
 }

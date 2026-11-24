@@ -39,9 +39,9 @@ The Deskway Host panel opens when installation finishes. To open it later, choos
 
 1. Under **Sign in this computer**, enter the **Server address**, the **Account** and the
    **Password**, then click **Sign in**.
-2. The panel shows **Waiting for approval on a signed-in device**. Your approved browser shows
-   the request "A new computer wants to join" with the computer's name and address. Approve it
-   there, or on the **My devices** page.
+2. The panel shows **Waiting for approval on a signed-in device** with a six-digit code. Your
+   approved browser shows the request "A new computer wants to join" with the computer's name,
+   address and code. Approve it there, or on the **My devices** page, only if the codes match.
 3. The panel shows **Online**. The computer now appears in the browser's list of computers.
 
 ## 4. Allow your phones and other computers
@@ -65,7 +65,7 @@ you can remove devices from it there.
 | **Start with Windows** | On by default. When off, the host doesn't run after a restart and shows as offline |
 | **Keep this computer awake** | Prevents idle sleep while Deskway Host runs. The display may still turn off |
 | **Lock when disconnected** | Locks Windows when a remote session ends |
-| **Sign out** | Removes this computer from the account. It must be signed in and approved again to be controlled |
+| **Sign out** | Stops this computer using the account. The account keeps it: signing in again with the same account brings it back as it was. Removing it on **My devices** takes it off the account |
 
 The person at the computer can always see when it is being controlled, and can end any session
 from the on-screen notice or from the panel.

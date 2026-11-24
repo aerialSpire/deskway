@@ -191,7 +191,7 @@ fn panel_state(status: Option<&Status>, extras: Value) -> Value {
     let s = status.unwrap_or(&none);
     let mut state = json!({
         "name": crate::shown_name(&s.name), "auto_lock": s.auto_lock,
-        "online": s.online, "waiting": s.waiting, "controller": s.controller, "paired": s.paired,
+        "online": s.online, "waiting": s.waiting, "approval_code": s.approval_code, "controller": s.controller, "paired": s.paired,
         "ai_client": s.ai_client, "ai_state": s.ai_state,
         "pair_qr": s.pair_url.as_deref().map(qr_svg), "devices": s.devices, "max_devices": crate::auth::MAX_CONTROLLERS,
         "asks": s.asks, "problem": s.problem, "prevent_sleep": s.prevent_sleep,

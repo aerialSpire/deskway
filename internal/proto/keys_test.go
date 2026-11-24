@@ -8,7 +8,8 @@ import (
 	"deskway/internal/proto"
 )
 
-// The six digits match the golden vectors, for a browser (code-v1) and an AI client (code-v2).
+// The six digits match the golden vectors, for a browser (code-v1), an AI client (code-v2) and
+// a computer waiting for approval (computer-code-v1).
 func TestCodesMatchTheVectors(t *testing.T) {
 	b, err := os.ReadFile("../../proto/vectors.json")
 	if err != nil {
@@ -26,18 +27,25 @@ func TestCodesMatchTheVectors(t *testing.T) {
 	}
 	checked := 0
 	for _, v := range all.Vectors {
-		if v.Format != "deskway-code-v1" && v.Format != "deskway-code-v2" {
-			continue
-		}
 		key, _ := v.Inputs["key"].(string)
 		role, _ := v.Inputs["role"].(string)
-		if got := (proto.BrowserKey{Key: key, Role: role}).Code(); got != v.Code {
+		id, _ := v.Inputs["id"].(string)
+		var got string
+		switch v.Format {
+		case "deskway-code-v1", "deskway-code-v2":
+			got = (proto.BrowserKey{Key: key, Role: role}).Code()
+		case "deskway-computer-code-v1":
+			got = proto.ComputerCode(id)
+		default:
+			continue
+		}
+		if got != v.Code {
 			t.Errorf("%s: %s, want %s", v.Format, got, v.Code)
 		}
 		checked++
 	}
-	if checked != 2 {
-		t.Fatalf("checked %d code vectors, want 2", checked)
+	if checked != 3 {
+		t.Fatalf("checked %d code vectors, want 3", checked)
 	}
 }
 

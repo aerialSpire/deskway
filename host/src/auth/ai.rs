@@ -42,6 +42,11 @@ pub(super) struct Ai {
     switch: Option<Switch>,
     /// Stop was pressed while the switch of this time was in force.
     stopped: Option<i64>,
+    /// The newest switch, refused because no device trusted here signed it: taken as soon as
+    /// its signer is trusted (added here, or endorsed in the log), and reported meanwhile so
+    /// the browser can say why the switch did not take. Not kept: the server sends it again.
+    #[serde(skip)]
+    refused: Option<Value>,
 }
 
 impl Ai {
@@ -91,6 +96,18 @@ impl Trust {
         self.ai.state()
     }
 
+    /// The time of the newest switch refused because no device trusted here signed it.
+    pub fn ai_refused(&self) -> Option<i64> {
+        self.ai.refused.as_ref().and_then(|v| v["ts"].as_i64())
+    }
+
+    /// Trust changed: a switch refused before may count now.
+    pub(super) fn retry_switch(&mut self) {
+        if let Some(v) = self.ai.refused.take() {
+            self.take_switch(&v);
+        }
+    }
+
     /// Stop, pressed here: AI control ends until a newer switch. Nothing to do when it is not on.
     pub fn stop_ai(&mut self) {
         if let (AiState::On { .. }, Some(s)) = (self.ai.state(), self.ai.switch) {
@@ -107,8 +124,10 @@ impl Trust {
             return;
         }
         if !self.signed_by(&self.trusted, v, &sha256(ai_v1(&self.host_id, ai, admin, ts).as_bytes())) {
+            self.ai.refused = Some(v.clone());
             return;
         }
+        self.ai.refused = None;
         self.ai.switch = Some(Switch { ts, ai, admin });
         self.save_ai();
     }

@@ -48,6 +48,9 @@ type DeviceRecord struct {
 	LastSeen  int64  `json:"last_seen,omitempty"`
 	Pending   bool   `json:"pending,omitempty"` // enrolled, not yet let in by an approved browser
 	EnrollIP  string `json:"enroll_ip,omitempty"`
+	// ShowsCode: it said at enrollment that it shows its six digits while waiting
+	// (proto.ComputerCode); an older one does not, and its approval shows none.
+	ShowsCode bool `json:"shows_code,omitempty"`
 	// AI is the latest signed AI switch for this computer: kept apart from the account's
 	// log, whose oldest entries go once it is full, and passed on with it.
 	AI *proto.AiSwitch `json:"ai,omitempty"`

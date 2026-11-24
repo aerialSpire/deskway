@@ -45,7 +45,7 @@
   "status.online": "線上",
   "status.mac_permissions": "需要 macOS 權限",
   "status.controlled": "{name} 正在遠端控制",
-  "status.waiting": "等待在已登入的裝置上核准",
+  "status.waiting": "等待在已登入的裝置上核准，只核准確認碼為 {code} 的請求",
   "status.connecting": "正在連線到伺服器",
   "status.service_connecting": "正在連線到 Deskway Host 服務",
   "status.service_starting": "正在啟動 Deskway Host，請在跳出的視窗中確認",

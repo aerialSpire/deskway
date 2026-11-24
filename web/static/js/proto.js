@@ -36,7 +36,7 @@ export const TYPES = Object.freeze({
   ICEServer: { urls: '[s]', username: 's?', credential: 's?' },
   Display: { id: 's', x: 'i', y: 'i', w: 'i', h: 'i', primary: 'b' },
   Device: { id: 's', name: 's', os: 's', online: 'b', last_seen: 'i?', controller: 'Controller?', displays: '[Display]?', version: 'i?', caps: '[s]?', ai: 'AiView?', here: 'b?', tools: '[s]?' },
-  AiView: { state: 's:off|on|stopped', admin: 'b', ts: 'i', name: 's?', since: 'i?' },
+  AiView: { state: 's:off|on|stopped', admin: 'b', ts: 'i', name: 's?', since: 'i?', refused: 'b?' },
   Controller: { device: 'b', name: 's', connecting: 'b' },
   AuditQuery: { since: 'i?', until: 'i?', tool: 's?', client: 's?', failed: 'b?', offset: 'i?', limit: 'i' },
   AuditCall: { at: 'i', client: 's', device: 's', session: 's', tool: 's', args: 's', result: 's', detail: 's', ms: 'i?' },

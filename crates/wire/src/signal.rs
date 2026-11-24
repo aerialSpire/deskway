@@ -20,6 +20,8 @@ wire_enum! {
             "ai_session" ai: Option<Holder>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "ai_state" ai_state: Option<AiState>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "ai_refused" ai_refused: Option<i64>,
         },
         "thumbs" => Thumbs { "on" on: bool },
         "thumb" => Thumb { "screen" screen: String, "data" data: String },

@@ -116,22 +116,18 @@ impl InProcess {
         self.error.clear();
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let res = crate::enroll_with(&server, &user, &password, "").map_err(|e| e.to_string());
+            let res = crate::enroll_with(&server, &user, &password, "", Config::kept().as_ref()).and_then(Config::settle).map_err(|e| format!("{e:#}"));
             let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Enrolled(res)));
         });
     }
 
+    /// Signs out here only: the server keeps this computer, offline, for the same account to
+    /// take back (`Config::sign_out`).
     fn leave(&mut self) {
         self.quit();
-        let Some(cfg) = self.cfg.clone() else { return };
-        let proxy = self.proxy.clone();
-        std::thread::spawn(move || {
-            // Local sign-out proceeds even if the server cannot be reached.
-            if let Err(e) = crate::leave(&cfg) {
-                eprintln!("could not remove this computer from the server: {e}");
-            }
-            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Left));
-        });
+        if self.cfg.is_some() {
+            let _ = self.proxy.send_event(UiEvent::Backend(BackendEvent::Left));
+        }
     }
 }
 

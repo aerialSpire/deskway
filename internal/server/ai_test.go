@@ -271,19 +271,22 @@ func TestTheAccountSeesTheSwitchAsTheComputerHoldsItAndWhoUsesIt(t *testing.T) {
 	on := &proto.AiView{State: proto.AIOn, TS: 5}
 	claude := &proto.Holder{Session: "A1", Name: "Claude", Since: 9}
 	for _, c := range []struct {
-		name   string
-		sw     *proto.AiView
-		state  string
-		holder *proto.Holder
-		want   *proto.AiView
+		name    string
+		sw      *proto.AiView
+		state   string
+		refused int64
+		holder  *proto.Holder
+		want    *proto.AiView
 	}{
-		{"never set, an old computer", nil, "", nil, nil},
-		{"never set, the computer says off", nil, proto.AIOff, nil, &proto.AiView{State: proto.AIOff}},
-		{"on, as signed", on, "", nil, on},
-		{"stopped at the computer", on, proto.AIStopped, nil, &proto.AiView{State: proto.AIStopped, TS: 5}},
-		{"in use", on, proto.AIOn, claude, &proto.AiView{State: proto.AIOn, TS: 5, Name: "Claude", Since: 9}},
+		{"never set, an old computer", nil, "", 0, nil, nil},
+		{"never set, the computer says off", nil, proto.AIOff, 0, nil, &proto.AiView{State: proto.AIOff}},
+		{"on, as signed", on, "", 0, nil, on},
+		{"stopped at the computer", on, proto.AIStopped, 0, nil, &proto.AiView{State: proto.AIStopped, TS: 5}},
+		{"in use", on, proto.AIOn, 0, claude, &proto.AiView{State: proto.AIOn, TS: 5, Name: "Claude", Since: 9}},
+		{"refused: not signed by a device it trusts", on, proto.AIOff, 5, nil, &proto.AiView{State: proto.AIOff, TS: 5, Refused: true}},
+		{"an older switch was refused, not this one", on, proto.AIOn, 4, nil, &proto.AiView{State: proto.AIOn, TS: 5}},
 	} {
-		got := aiView(c.sw, c.state, c.holder)
+		got := aiView(c.sw, c.state, c.refused, c.holder)
 		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
 			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
 		}

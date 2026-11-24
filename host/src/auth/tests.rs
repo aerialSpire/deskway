@@ -598,3 +598,16 @@ fn the_ai_switch_is_the_newest_a_trusted_browser_signed_for_this_computer() {
     t.set_log(&log, &phone.switch("H1", true, false, 14));
     assert_eq!(t.ai_state(), on, "stop while off holds nothing back");
 }
+
+#[test]
+fn a_switch_from_a_device_not_trusted_yet_is_reported_and_taken_once_it_is() {
+    let mut t = Trust::open(dir("ai-refused"), "H1", "https://node.example").unwrap();
+    let phone = DeviceKey::new();
+    let laptop = DeviceKey::new();
+    let log = json!([phone.add_entry(None, 1)]);
+    t.set_log(&log, &laptop.switch("H1", true, false, 10));
+    assert_eq!((t.ai_state(), t.ai_refused()), (AiState::Off, Some(10)), "refused, and said so");
+    // The phone it trusts endorses the laptop: the switch it refused takes, with no new one.
+    t.set_log(&json!([phone.add_entry(None, 1), laptop.add_entry(Some(&phone), 2)]), &Value::Null);
+    assert_eq!((t.ai_state(), t.ai_refused()), (AiState::On { admin: false }, None));
+}

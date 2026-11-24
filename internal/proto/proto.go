@@ -113,6 +113,9 @@ type AiView struct {
 	TS    int64  `json:"ts"`
 	Name  string `json:"name,omitempty"`
 	Since int64  `json:"since,omitempty"`
+	// The computer refused the latest switch: no device it trusts signed it. It takes it once
+	// one does (added at the computer, or endorsed by a device it trusts).
+	Refused bool `json:"refused,omitempty"`
 }
 
 // Holder is the session holding a computer (established or still connecting), as its host
@@ -163,6 +166,7 @@ type Msg struct {
 	Holder     *Holder         `json:"holder,omitempty"`     // status, and a host's busy bye
 	AIHolder   *Holder         `json:"ai_session,omitempty"` // status: the AI client on the AI seat
 	AIState    string          `json:"ai_state,omitempty"`   // status: off, on or stopped
+	AIRefused  int64           `json:"ai_refused,omitempty"` // status: the time of the newest switch it refused
 	Controller *Controller     `json:"controller,omitempty"` // a busy bye to a browser
 	Host       string          `json:"host,omitempty"`       // attached, presence: online or away
 	From       string          `json:"from,omitempty"`       // pairing: the account's display name, set by the server

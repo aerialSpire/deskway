@@ -522,33 +522,25 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
 }
 
 /// Signs the installed service in with the sign-in a person made in their panel, kept in their
-/// own folder (`from`): it goes into the service's folder, which the service is waiting on.
-/// Whatever tied the computer to an earlier account goes first. Administrator.
+/// own folder (`from`): it is settled in the service's folder, which the service is waiting on
+/// (`Config::settle_in`: the computer signed out there comes back, or a new one starts clean).
+/// Administrator.
 pub fn sign_in(from: &std::path::Path) -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
-    let data = crate::service::machine_dir();
-    let sign_in = std::fs::read(from.join("host.json")).context("read the sign-in")?;
-    serde_json::from_slice::<crate::config::Config>(&sign_in).context("the sign-in is damaged")?;
-    crate::config::use_dir(data.clone());
-    crate::config::Config::sign_out()?;
-    crate::config::write_private(&data.join("host.json"), &sign_in)
+    let new = crate::config::Config::load_from(from).context("read the sign-in")?;
+    crate::config::Config::settle_in(&crate::service::machine_dir(), new).map(drop)
 }
 
-/// Signs the installed service out: the server forgets this computer (when it can be reached),
-/// what tied it to the account goes, and the services start again, waiting for a sign-in.
-/// Administrator.
+/// Signs the installed service out: the services start again, waiting for a sign-in. The
+/// server and the service's folder keep this computer for the same account to take back
+/// (`Config::sign_out`). Administrator.
 pub fn sign_out() -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
     crate::config::use_dir(crate::service::machine_dir());
-    if let Ok(cfg) = crate::config::Config::load() {
-        if let Err(e) = crate::leave(&cfg) {
-            eprintln!("could not remove this computer from the server: {e:#}");
-        }
-    }
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     stop_and_wait(&m, AGENT_SERVICE);
     stop_and_wait(&m, NET_SERVICE);

@@ -39,7 +39,7 @@ export function showNextApproval() {
     showDeviceRequest(a, deny);
   } else {
     const actions = [{ label: t('common.deny'), run: deny }, { label: t('common.approve'), primary: true, run: () => answerDevice(a, null, true) }];
-    dialog(t('approve.computerTitle'), t('approve.computerText', { label: a.label, ip: a.ip }), actions).dataset.approval = a.id;
+    dialog(t('approve.computerTitle'), a.code ? t('approve.computerCodeText', { label: a.label, ip: a.ip, code: a.code }) : t('approve.computerText', { label: a.label, ip: a.ip }), actions).dataset.approval = a.id;
   }
 }
 

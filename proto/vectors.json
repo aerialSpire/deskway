@@ -206,6 +206,17 @@
       "sha256": "9e7b9c1305c2d9847ce4c2613810f9a2d445c806c31fdbd79769ae5bfe369ec2"
     },
     {
+      "format": "deskway-computer-code-v1",
+      "status": "current",
+      "inputs": {
+        "id": "0123456789abcdef0123456789abcdef"
+      },
+      "string": "deskway-computer-code-v1\n0123456789abcdef0123456789abcdef",
+      "code": "351899",
+      "signed": "nothing: the six digits are the first 4 bytes of sha256(string), big endian, mod 1000000, zero padded",
+      "sha256": "9d05051bc2d2aa556c259e5a560b466ea7e262b2950ffd0e165b454a4255871a"
+    },
+    {
       "format": "deskway-ai-v1",
       "status": "current",
       "inputs": {

@@ -138,5 +138,6 @@ impl Trust {
         self.resume.retain(|_, r| set.iter().any(|c| c.id == r.controller));
         self.trusted = set;
         self.keys_required = keys;
+        self.retry_switch();
     }
 }

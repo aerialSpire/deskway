@@ -33,11 +33,9 @@ The following are not covered:
   an account controls the whole computer. The panel signs in as the person (into their own
   folder), and then an elevated copy (`sign-in --from`) moves that sign-in to where the service
   expects it. The password never appears on the elevated command line, and if the person
-  declines the elevation prompt, the computer that the server has just added is removed again.
-  Signing out (`sign-out`, elevated) notifies the server, removes everything that tied the
-  computer to the account (its sign-in, host key, trusted and blocked devices, pairing state, AI
-  switch, and the record of what AI clients did, which the next account must not be able to
-  read), and restarts the services, which then wait for a new sign-in. The installer only
+  declines the elevation prompt, a computer that the server has just added is removed again.
+  Signing out (`sign-out`, elevated) restarts the services, which then wait for a new sign-in,
+  and keeps the computer (see "Signing out keeps the computer" below). The installer only
   installs.
 - **The installer is not code-signed.** An attacker who can already write to the folder you run
   it from could replace the file before you approve the UAC prompt.
@@ -148,6 +146,35 @@ the computer does not cause the list to be adopted again.
 As a result, new computers need no QR code. The QR code and **Request control** are for adding a
 device at a computer that already trusts other devices.
 
+### Signing out keeps the computer
+
+Signing out at a computer only stops it using the account. The server keeps the computer
+(offline), and its folder keeps the sign-in aside (`signed-out.json`) together with its host key,
+the devices it trusts and its AI switch.
+
+Signing in again names the computer kept there (`back`: its id, which is not secret). When the
+account password is right and the account owns that computer, the server answers with the same
+id and no token, and the computer takes back its own sign-in: still approved, trusting what it
+trusted before. The password and an id give nothing that a new computer would not get; the token
+never leaves the computer (on Windows it stays in the service's folder, and the panel only learns
+the id).
+
+Any other answer means a new computer: another account, another server, or this computer removed
+from the account in the meantime. Then everything that tied it to the earlier account is removed
+first (its sign-in, host key, trusted and blocked devices, the `adopted` marker, pairing state, AI
+switch, and the record of what AI clients did, which the next account must not be able to read),
+so it adopts the new account's devices on first use. Only removing a computer from the account
+(**My devices**) ends it: its token stops working.
+
+### Approving a computer
+
+A computer waiting for approval shows six digits derived from its id
+(`SHA-256("deskway-computer-code-v1\n" + id)`, in the same way as for a device's key),
+and the approval on the website shows the same digits. Someone who has the password can sign in a
+computer of their own under the same name; the digits tell the person's own computer apart from
+it. A computer says at enrollment that it shows the digits (`shows_code`); for an older one that
+does not, the approval shows none.
+
 ### Device checks can be turned off
 
 A trusted device can turn device checks off. The computer then accepts the account password, as
@@ -250,7 +277,10 @@ connects and after every change.
   is kept separate from the log so that it never pushes entries out of it. The computer accepts a
   switch only from a browser it trusts and only if it is newer than every switch it has seen, and
   stores it (`ai.json`). So the server can hold a switch back, but cannot make a computer accept
-  an older one. Stop, pressed at the computer, ends AI control there until a
+  an older one. A switch it refuses because no device it trusts signed it is reported
+  (`status.ai_refused`, its time, and `AiView.refused` on the website, which says what to do) and
+  accepted as soon as its signer is trusted, by being added at the computer or endorsed in the
+  log. Stop, pressed at the computer, ends AI control there until a
   browser signs a newer switch. It does not depend on the server, which could hold back an
   "off". On Windows, `ai.json` is in the service's protected folder; on a Mac it is in the
   signed-in person's own folder (see R6 below).
