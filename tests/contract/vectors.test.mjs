@@ -35,8 +35,9 @@ const BUILDERS = {
   'deskway-paired-v1': (i) => auth.pairedMessage(i.host, i.cred, i.hostKey),
 };
 
-// Current formats only deskway and the server use: the web client neither builds nor checks them.
-const NOT_WEB = new Set(['deskway-ai-login-v1']);
+// Current formats only the host, deskway and the server use: the web client neither builds nor
+// checks them (a computer's code reaches the page already made, with its approval).
+const NOT_WEB = new Set(['deskway-ai-login-v1', 'deskway-computer-code-v1']);
 
 for (const v of all.vectors) {
   const build = BUILDERS[v.format];

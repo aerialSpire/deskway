@@ -45,7 +45,7 @@
   "status.online": "Online",
   "status.mac_permissions": "macOS permissions needed",
   "status.controlled": "{name} is in control",
-  "status.waiting": "Waiting for approval on a signed-in device",
+  "status.waiting": "Waiting for approval on a signed-in device. Approve only the request showing code {code}",
   "status.connecting": "Connecting to the server",
   "status.service_connecting": "Connecting to the Deskway Host service",
   "status.service_starting": "Starting Deskway Host. Confirm in the window that opens",

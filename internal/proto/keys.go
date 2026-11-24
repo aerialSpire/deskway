@@ -47,6 +47,18 @@ func (k BrowserKey) Code() string {
 	if k.Role == RoleAI {
 		s = "deskway-code-v2\n" + RoleAI + "\n" + k.Key
 	}
+	return sixDigits(s)
+}
+
+// ComputerCode is the six digits a computer waiting for approval shows, made from its id; the
+// approval shows the same, so a person approves the computer in front of them and not another
+// one by the same name.
+func ComputerCode(id string) string {
+	return sixDigits("deskway-computer-code-v1\n" + id)
+}
+
+// sixDigits is the first four bytes of the text's SHA-256, big-endian, modulo 10^6, zero-padded.
+func sixDigits(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return fmt.Sprintf("%06d", binary.BigEndian.Uint32(h[:4])%1_000_000)
 }

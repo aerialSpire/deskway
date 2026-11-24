@@ -264,6 +264,9 @@ fn challenge_produces_the_signed_formats() {
     let v = vector(&all, "deskway-code-v2");
     assert_eq!(challenge::code_v2(s(v, "role"), s(v, "key")), v["string"].as_str().unwrap(), "code-v2");
     assert_eq!(challenge::key_code(Role::Ai, s(v, "key")), v["code"].as_str().unwrap(), "code-v2 digits");
+    let v = vector(&all, "deskway-computer-code-v1");
+    assert_eq!(challenge::computer_code_v1(s(v, "id")), v["string"].as_str().unwrap(), "computer-code-v1");
+    assert_eq!(challenge::computer_code(s(v, "id")), v["code"].as_str().unwrap(), "computer-code-v1 digits");
 
     let v = vector(&all, "deskway-ai-v1");
     let i = &v["inputs"];

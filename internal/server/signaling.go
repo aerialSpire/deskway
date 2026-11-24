@@ -294,7 +294,7 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 	if len(m.Displays) > 0 && len(m.Displays) <= 4096 {
 		s.displays[c.deviceID] = m.Displays
 	}
-	c.holder, c.aiHolder, c.aiState = holder, ai, state
+	c.holder, c.aiHolder, c.aiState, c.aiRefused = holder, ai, state, m.AIRefused
 	s.mu.Unlock()
 	s.sessions.Status(c, holder, ai)
 	s.broadcastDevices()

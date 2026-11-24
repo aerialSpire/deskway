@@ -22,14 +22,20 @@ func (s *Server) deviceTokenOK(id string, r *http.Request) bool {
 	return s.store.DeviceTokenOK(id, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 }
 
-// handleEnroll adds a computer with the account password. It gets its id and token, and waits
-// until an approved browser lets it in.
+// handleEnroll signs a computer in with the account password. A new computer gets its id and
+// token, and waits until an approved browser lets it in. One that signed out of this account
+// names itself (`back`, its id) and is taken back as it is: approved, with its AI switch and
+// the token it already holds. The answer then carries only the id, so the password and an id
+// give nothing a new computer would not; only removing a computer makes it new.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		User     string `json:"user"`
 		Password string `json:"password"`
 		Name     string `json:"name"`
 		OS       string `json:"os"`
+		Back     string `json:"back"`
+		// It shows its six digits while waiting, so its approval may ask to compare them.
+		ShowsCode bool `json:"shows_code"`
 	}
 	if !decodeBody(w, r, 4096, &body) {
 		return
@@ -43,10 +49,15 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	if user == "" {
 		return
 	}
+	if owner, _ := s.store.DeviceOwner(body.Back); body.Back != "" && owner == user {
+		log.Printf("server: computer %.8s signed in again for %s", body.Back, user)
+		writeJSON(w, map[string]string{"id": body.Back})
+		return
+	}
 	id, token := randomHex(16), randomHex(32)
 	// It stays invisible until an approved browser lets it in, so a stolen password
 	// cannot plant a fake computer in the list for the owner to type into.
-	err := s.store.Enroll(id, &DeviceRecord{Owner: user, Name: body.Name, OS: body.OS, TokenHash: hashToken(token), LastSeen: time.Now().Unix(), Pending: true, EnrollIP: clientIP(r)}, maxPendingPerUser, maxComputersPerUser)
+	err := s.store.Enroll(id, &DeviceRecord{Owner: user, Name: body.Name, OS: body.OS, TokenHash: hashToken(token), LastSeen: time.Now().Unix(), Pending: true, EnrollIP: clientIP(r), ShowsCode: body.ShowsCode}, maxPendingPerUser, maxComputersPerUser)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -56,7 +67,8 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"id": id, "token": token})
 }
 
-// handleLeave removes a computer when it signs out; only its own token can do this.
+// handleLeave withdraws a computer's sign-in that was never put to use (its elevated step was
+// declined); only its own token can do this. Signing out keeps a computer.
 func (s *Server) handleLeave(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	if !s.deviceTokenOK(id, r) {
@@ -149,7 +161,7 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 		if h := s.hosts[d.ID]; h != nil {
 			d.Online, d.Version, d.Caps, d.Tools = true, h.version, h.caps, h.tools
 			holders[i] = h.holder
-			d.AI = aiView(d.AI, h.aiState, h.aiHolder)
+			d.AI = aiView(d.AI, h.aiState, h.aiRefused, h.aiHolder)
 		}
 		d.Displays = s.displays[d.ID]
 		d.Here = c.here[d.ID]
@@ -165,9 +177,10 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 
 // aiView is AI clients on an online computer as its account sees it: the switch the server
 // keeps (signed), with what the computer itself says it allows now (stopped there, or a switch
-// it has not taken) and the AI client using it. Separate from the controller: an AI client is
+// it has not taken, or refused: `refused`, the time of the newest switch it refused) and the AI
+// client using it. Separate from the controller: an AI client is
 // beside the person, never someone to take over from.
-func aiView(sw *proto.AiView, state string, holder *proto.Holder) *proto.AiView {
+func aiView(sw *proto.AiView, state string, refused int64, holder *proto.Holder) *proto.AiView {
 	if sw == nil && state == "" && holder == nil {
 		return nil
 	}
@@ -178,6 +191,7 @@ func aiView(sw *proto.AiView, state string, holder *proto.Holder) *proto.AiView 
 	if state != "" {
 		v.State = state
 	}
+	v.Refused = sw != nil && refused != 0 && refused == sw.TS
 	if holder != nil {
 		v.Name, v.Since = holder.Name, holder.Since
 	}

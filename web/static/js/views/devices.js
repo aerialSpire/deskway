@@ -185,7 +185,10 @@ function aiSettings(d) {
   };
   const ai = toggle(t('devices.allowAI'), t('devices.allowAISub'), on, { 'data-ai': d.id }, { title: t('devices.aiOnTitle', { name: d.name }), text: t('devices.aiOnText') }, (yes) => set(yes, false));
   const rights = on ? toggle(t('devices.allowAdmin'), t('devices.allowAdminSub'), admin, { 'data-ai-admin': d.id }, { title: t('devices.adminOnTitle', { name: d.name }), text: t('devices.adminOnText') }, (yes) => set(true, yes)) : null;
-  return h('div', { class: 'device-settings' }, ai, rights);
+  // The computer did not take the latest switch: no device it trusts signed it. It takes it by
+  // itself once one does, so the person is told what to do there instead of trying again here.
+  const refused = d.ai && d.ai.refused ? h('p', { class: 'device-note', 'data-ai-refused': d.id }, t('devices.aiRefused', { name: d.name })) : null;
+  return h('div', { class: 'device-settings' }, ai, rights, refused);
 }
 
 function confirmRemove(r, name) {

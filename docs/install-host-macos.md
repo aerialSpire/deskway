@@ -47,8 +47,9 @@ after an update.
 
 1. Under **Sign in this computer**, enter the **Server address**, the **Account** and the
    **Password**, then click **Sign in**.
-2. The panel shows **Waiting for approval on a signed-in device**. Approve the request "A new
-   computer wants to join" in your approved browser, or on its **My devices** page.
+2. The panel shows **Waiting for approval on a signed-in device** with a six-digit code. Approve
+   the request "A new computer wants to join" in your approved browser, or on its **My devices**
+   page, only if it shows the same code.
 3. The panel shows **Online**. The Mac appears in the browser's list of computers.
 
 ## 4. Allow your phones and other computers
@@ -104,8 +105,9 @@ Quit Deskway Host (**Quit** in its menu bar menu), download the new release's DM
 
 ## Uninstalling
 
-Click **Sign out** in the panel, quit Deskway Host, and move `Deskway.app` from Applications to
-the Trash. To remove its settings too, delete `~/Library/Application Support/Deskway`.
+Remove the Mac on **My devices** in the browser, quit Deskway Host, and move `Deskway.app` from
+Applications to the Trash. (**Sign out** in the panel keeps the Mac on the account: signing in
+again with the same account brings it back as it was.) To remove its settings too, delete `~/Library/Application Support/Deskway`.
 
 ## Building from source
 

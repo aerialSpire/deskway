@@ -99,7 +99,7 @@ impl Config {
 
     /// The config kept in `dir` (the service's, read by the installer window).
     pub fn load_from(dir: &Path) -> Result<Config> {
-        Ok(serde_json::from_slice(&std::fs::read(dir.join(FILE))?)?)
+        Config::load_from_file(&dir.join(FILE))
     }
 
     pub fn save(&self) -> Result<()> {
@@ -125,13 +125,69 @@ impl Config {
         write_private(&dir.join(FILE), &serde_json::to_vec_pretty(self)?)
     }
 
-    /// Signs this computer out here: removes everything that ties it to its account (`ACCOUNT`),
-    /// in the folder in use. Settings of the computer itself stay.
+    /// Signs this computer out here: it stops using its account until someone signs in again.
+    /// The server keeps it, and so does this folder: the sign-in moves aside (`KEPT`), and the
+    /// devices it trusts, its host key and its AI switch stay, so the same account signing in
+    /// again takes this computer back as it was (`settle`). Only removing it from the account
+    /// makes it a new computer.
     pub fn sign_out() -> Result<()> {
         Config::sign_out_in(&dir()?)
     }
 
     fn sign_out_in(dir: &Path) -> Result<()> {
+        let _write = CONFIG_WRITE.lock().unwrap();
+        match std::fs::rename(dir.join(FILE), dir.join(KEPT)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).context("keep the sign-in"),
+            _ => Ok(()),
+        }
+    }
+
+    /// The computer signed out here, if it was: what to tell the server to take it back.
+    pub fn kept() -> Option<Kept> {
+        Config::kept_in(&dir().ok()?)
+    }
+
+    pub fn kept_in(dir: &Path) -> Option<Kept> {
+        let c = Config::load_from_file(&dir.join(KEPT)).ok()?;
+        Some(Kept { server: c.server, id: c.id, user: c.account.map(|a| a.user) })
+    }
+
+    /// Takes a sign-in `enroll_with` made, in `dir`. When the server answered with the id of the
+    /// computer kept here, it is that computer again: its sign-in comes back with what it trusts.
+    /// Otherwise it is a new computer, and whatever tied this one to its earlier account goes
+    /// first (`forget_in`), so the next account neither inherits its trust nor reads its audit.
+    pub fn settle_in(dir: &Path, new: Config) -> Result<Config> {
+        let kept = Config::load_from_file(&dir.join(KEPT)).ok().filter(|k| k.id == new.id && k.server == new.server);
+        let cfg = match kept {
+            Some(mut k) => {
+                k.account = new.account;
+                // Signing out took the login item away; signing in sets it up again.
+                #[cfg(target_os = "macos")]
+                {
+                    k.login_item_setup_pending = new.login_item_setup_pending;
+                }
+                k
+            }
+            None => {
+                anyhow::ensure!(!new.token.is_empty(), "the computer signed out here is gone; sign in again");
+                Config::forget_in(dir)?;
+                new
+            }
+        };
+        let _write = CONFIG_WRITE.lock().unwrap();
+        cfg.write_to(dir)?;
+        let _ = std::fs::remove_file(dir.join(KEPT));
+        Ok(cfg)
+    }
+
+    /// `settle_in`, in the folder in use.
+    pub fn settle(new: Config) -> Result<Config> {
+        Config::settle_in(&dir()?, new)
+    }
+
+    /// Removes everything that ties this computer to an account (`ACCOUNT`), in `dir`. Settings
+    /// of the computer itself stay.
+    pub fn forget_in(dir: &Path) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
         for f in ACCOUNT {
             match std::fs::remove_file(dir.join(f)) {
@@ -141,12 +197,29 @@ impl Config {
         }
         Ok(())
     }
+
+    fn load_from_file(path: &Path) -> Result<Config> {
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    }
 }
 
-/// What ties a computer to its account: the sign-in, its host key, the devices it trusts or
-/// blocks, a pairing under way, the AI switch, and the record of what AI clients did there,
-/// which the next account must not read.
-const ACCOUNT: &[&str] = &[FILE, "host-key", "controllers.json", "blocked.json", "pairing.json", "ai.json", "audit.jsonl", "audit.old.jsonl"];
+/// A computer signed out here, as its sign-in names it: none of it is secret. The token stays in
+/// the kept sign-in, which only this computer reads.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Kept {
+    pub server: String,
+    pub id: String,
+    pub user: Option<String>,
+}
+
+/// The sign-in of a computer signed out here, kept for the same account to take it back.
+const KEPT: &str = "signed-out.json";
+
+/// What ties a computer to its account: the sign-in (in use or kept), its host key, the devices
+/// it trusts or blocks and whether it took the account's list on first use, a pairing under
+/// way, the AI switch, and the record of what AI clients did there, which the next account must
+/// not read.
+const ACCOUNT: &[&str] = &[FILE, KEPT, "host-key", "controllers.json", "blocked.json", "adopted", "pairing.json", "ai.json", "audit.jsonl", "audit.old.jsonl"];
 
 #[cfg(test)]
 mod tests {
@@ -180,14 +253,45 @@ mod tests {
     }
 
     #[test]
-    fn signing_out_removes_what_ties_the_computer_to_its_account_and_keeps_its_settings() {
-        let d = temp("sign-out");
+    fn forgetting_removes_what_ties_the_computer_to_its_account_and_keeps_its_settings() {
+        let d = temp("forget");
         for f in ACCOUNT.iter().chain(["settings.json", "ipc.key"].iter()) {
             std::fs::write(d.join(f), "x").unwrap();
         }
-        Config::sign_out_in(&d).unwrap();
+        Config::forget_in(&d).unwrap();
         assert!(ACCOUNT.iter().all(|f| !d.join(f).exists()), "every account file is gone");
         assert!(d.join("settings.json").exists() && d.join("ipc.key").exists(), "the computer's own files stay");
+        Config::forget_in(&d).unwrap();
+    }
+
+    fn sign_in(id: &str, token: &str, user: &str) -> Config {
+        serde_json::from_value(serde_json::json!({"server": "https://s.example", "id": id, "token": token, "name": "", "account": {"user": user}})).unwrap()
+    }
+
+    #[test]
+    fn signing_out_keeps_the_computer_for_the_server_to_give_back_and_a_new_one_starts_clean() {
+        let d = temp("keep");
+        Config::settle_in(&d, sign_in("H1", "t1", "me")).unwrap();
+        std::fs::write(d.join("controllers.json"), "trusted").unwrap();
+        Config::update_in(&d, |c| c.auto_lock = true).unwrap();
+
         Config::sign_out_in(&d).unwrap();
+        assert!(Config::load_from(&d).is_err(), "signed out");
+        assert_eq!(Config::kept_in(&d), Some(Kept { server: "https://s.example".into(), id: "H1".into(), user: Some("me".into()) }));
+
+        // The server gave this computer back: its token, settings and trust return.
+        let back = Config::settle_in(&d, sign_in("H1", "", "me")).unwrap();
+        assert_eq!((back.token.as_str(), back.auto_lock), ("t1", true));
+        assert_eq!(std::fs::read_to_string(d.join("controllers.json")).unwrap(), "trusted");
+        assert_eq!(Config::kept_in(&d), None);
+
+        // Another computer (another account, or this one removed): nothing of the old one stays.
+        Config::sign_out_in(&d).unwrap();
+        let new = Config::settle_in(&d, sign_in("H2", "t2", "other")).unwrap();
+        assert_eq!((new.id.as_str(), new.token.as_str(), new.auto_lock), ("H2", "t2", false));
+        assert!(!d.join("controllers.json").exists() && Config::kept_in(&d).is_none());
+
+        // Given back, but nothing is kept here any more: refused, nothing written.
+        assert!(Config::settle_in(&temp("keep-none"), sign_in("H1", "", "me")).is_err());
     }
 }

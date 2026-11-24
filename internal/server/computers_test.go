@@ -54,6 +54,64 @@ func TestNewComputerStaysHiddenUntilApproved(t *testing.T) {
 	}
 }
 
+// The approval shows a computer's six digits only when it said it shows them too: an older
+// computer has none to compare.
+func TestTheApprovalShowsTheCodeOnlyOfAComputerThatShowsIt(t *testing.T) {
+	for _, shows := range []bool{true, false} {
+		f := newFixture(t)
+		f.signedIn("me")
+		res := f.do(f.browser(), "POST", "/api/host/enroll", map[string]any{"user": "me", "password": testPassword, "name": "PC", "os": "macos", "shows_code": shows})
+		var dev struct{ ID string }
+		if err := json.NewDecoder(res.Body).Decode(&dev); err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if shows {
+			want = proto.ComputerCode(dev.ID)
+		}
+		if list := f.pending(); len(list) != 1 || list[0].Code != want {
+			t.Errorf("shows %v: approvals %+v, want code %q", shows, list, want)
+		}
+	}
+}
+
+// A computer signing in again names itself: the same account takes it back as it was, any
+// other account, or a computer removed meanwhile, gets a new one.
+func TestSigningInAgainTakesTheSameComputerBack(t *testing.T) {
+	f := newFixture(t)
+	first := f.signedIn("me")
+	f.addAccount("other")
+	enroll := func(user, back string) (id, token string) {
+		t.Helper()
+		res := f.do(f.browser(), "POST", "/api/host/enroll", map[string]string{"user": user, "password": testPassword, "name": "PC", "os": "macos", "back": back})
+		want(t, "enroll "+user, res.StatusCode, http.StatusOK)
+		var dev struct{ ID, Token string }
+		if err := json.NewDecoder(res.Body).Decode(&dev); err != nil {
+			t.Fatal(err)
+		}
+		return dev.ID, dev.Token
+	}
+	id, token := enroll("me", "")
+	want(t, "approve", f.status(first, "POST", "/api/approvals", map[string]any{"kind": "device", "id": id, "allow": true}), http.StatusNoContent)
+
+	back, none := enroll("me", id)
+	if back != id || none != "" {
+		t.Fatalf("taken back as %q with token %q", back, none)
+	}
+	if !f.s.store.DeviceTokenOK(id, token) || !f.s.store.CanAccess(f.id("me"), id) || len(f.pending()) != 0 {
+		t.Fatalf("the computer did not come back as it was")
+	}
+	if other, tok := enroll("other", id); other == id || tok == "" {
+		t.Fatalf("another account took the computer: %q", other)
+	}
+	if _, err := f.s.store.RemoveDevice(f.id("me"), id); err != nil {
+		t.Fatal(err)
+	}
+	if again, tok := enroll("me", id); again == id || tok == "" {
+		t.Fatalf("a removed computer came back")
+	}
+}
+
 func TestDeniedComputerLosesItsToken(t *testing.T) {
 	f := newFixture(t)
 	first := f.signedIn("me")

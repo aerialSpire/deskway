@@ -71,6 +71,8 @@ type conn struct {
 	holder   *proto.Holder
 	aiHolder *proto.Holder
 	aiState  string
+	// The time of the newest AI switch it refused, as no device it trusts signed it; 0: none.
+	aiRefused int64
 	// Browsers and AI clients: where they run (locate), the id computers answer it and auditreq
 	// by, and the computers that said they are where it runs (here.go, audit.go).
 	where []string

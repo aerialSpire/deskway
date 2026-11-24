@@ -11,6 +11,18 @@ Notable changes to Deskway are recorded here. The format follows
 - First public release: the Deskway server, web client, Deskway Host for Windows and macOS
   (Apple silicon and Intel), and the `deskway` CLI for AI clients.
 
+### Changed
+
+- Signing out of Deskway Host keeps the computer on the account. Signing in again with the same
+  account brings it back approved, with its trusted devices and AI setting; only removing it on
+  **My devices** takes it off.
+
 ### Fixed
 
 - Restore the **Request control** and **Take over** prompts after a full-screen connection attempt ends.
+- Deskway Host reconnects by itself when its connection to the server dies without notice (for
+  example a router dropping the mapping), instead of staying offline until it is signed in again.
+- A computer waiting for approval shows a six-digit code, and the approval shows the same code, so
+  a computer signed in by someone else under the same name can be told apart.
+- **My devices** says why a computer did not take the AI setting (it does not trust the device
+  that signed it yet), and the computer takes it by itself once it does.

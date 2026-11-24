@@ -591,7 +591,11 @@ func (s *Store) Approvals(user string, ttl time.Duration) []proto.Approval {
 	}
 	for id, d := range s.Devices {
 		if d.Owner == user && d.Pending {
-			list = append(list, proto.Approval{Kind: "device", ID: id, Label: d.Name, IP: d.EnrollIP, Created: d.LastSeen})
+			a := proto.Approval{Kind: "device", ID: id, Label: d.Name, IP: d.EnrollIP, Created: d.LastSeen}
+			if d.ShowsCode {
+				a.Code = proto.ComputerCode(id)
+			}
+			list = append(list, a)
 		}
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Created < list[j].Created })

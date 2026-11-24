@@ -4,7 +4,9 @@
 //!
 //! Signing in: the person's own sign-in is made here, in their folder, then an elevated copy
 //! (`sign-in --from`) puts it where the service waits for it; the password never reaches the
-//! elevated command line. Declined, the computer the server just added is taken away again.
+//! elevated command line. The service names the computer signed out there, so the same account
+//! takes it back; its token never leaves the service's folder. Declined, a computer the server
+//! just added is taken away again.
 
 use std::sync::{Arc, Mutex};
 
@@ -24,8 +26,8 @@ pub enum BackendEvent {
     Exit,
     /// An elevated command finished: what it was, and whether it worked.
     Admin(&'static str, bool),
-    /// The service says this computer is not signed in.
-    SignedOut,
+    /// The service says this computer is not signed in, and which one is kept there.
+    SignedOut(Option<crate::config::Kept>),
     /// Signing in finished: why not, if it did not.
     SignedIn(Result<(), String>),
 }
@@ -43,6 +45,8 @@ pub struct Service {
     at_login: bool,
     /// The service says this computer is not signed in.
     signed_out: bool,
+    /// The computer the service keeps signed out, for the same account to take back.
+    kept: Option<crate::config::Kept>,
     /// Signing in or out is under way; and why the last one did not happen.
     busy: bool,
     error: String,
@@ -50,7 +54,7 @@ pub struct Service {
 
 impl Service {
     pub fn new(proxy: EventLoopProxy<UiEvent>, at_login: bool) -> Service {
-        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, busy: false, error: String::new() }
+        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new() }
     }
 
     fn send(&self, r: PanelRequest) {
@@ -76,17 +80,19 @@ impl Service {
     fn sign_in(&mut self, server: String, user: String, password: String) {
         self.busy = true;
         self.error.clear();
-        let proxy = self.proxy.clone();
+        let (proxy, kept) = (self.proxy.clone(), self.kept.clone());
         std::thread::spawn(move || {
             let done = (|| -> Result<(), String> {
-                let cfg = crate::enroll_with(&server, &user, &password, "").map_err(|e| e.to_string())?;
+                let cfg = crate::enroll_with(&server, &user, &password, "", kept.as_ref()).map_err(|e| e.to_string())?;
                 let mine = crate::config::dir().map_err(|e| e.to_string())?;
+                cfg.save().map_err(|e| e.to_string())?;
                 let ok = install::elevate(&format!("sign-in --from \"{}\"", mine.display())).map(|code| code == 0).unwrap_or(false);
-                if !ok {
-                    let _ = crate::leave(&cfg);
+                // A computer given back has no new token: there is nothing to withdraw.
+                if !ok && !cfg.token.is_empty() {
+                    let _ = crate::withdraw(&cfg);
                 }
                 // The service holds it now, or nobody does: no copy is left in the person's folder.
-                let _ = Config::sign_out();
+                let _ = Config::forget_in(&mine);
                 if ok { Ok(()) } else { Err(t("err.not_done")) }
             })();
             let _ = proxy.send_event(UiEvent::Backend(BackendEvent::SignedIn(done)));
@@ -105,7 +111,7 @@ impl Backend for Service {
                     for m in rx {
                         let (event, exit) = match m {
                             ToPanel::Status(s) => (UiEvent::Status(Some(s)), false),
-                            ToPanel::SignedOut => (UiEvent::Backend(BackendEvent::SignedOut), false),
+                            ToPanel::SignedOut(kept) => (UiEvent::Backend(BackendEvent::SignedOut(kept)), false),
                             ToPanel::Exit => (UiEvent::Backend(BackendEvent::Exit), true),
                         };
                         if proxy.send_event(event).is_err() || exit {
@@ -197,8 +203,9 @@ impl Backend for Service {
                 }
                 true
             }
-            BackendEvent::SignedOut => {
+            BackendEvent::SignedOut(kept) => {
                 self.signed_out = true;
+                self.kept = kept;
                 self.running = true;
                 self.checked = true;
                 self.starting = false;

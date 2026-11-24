@@ -11,7 +11,7 @@ use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,7 @@ use peer::state::End;
 use crate::session::{self, SessionEvent, SessionUpdate};
 use crate::settings::{PanelRequest, Settings};
 
+mod alive;
 mod registry;
 mod seats;
 
@@ -46,6 +47,8 @@ pub struct Status {
     pub online: bool,
     /// Signed in, but an approved browser has not let this computer in yet.
     pub waiting: bool,
+    /// While waiting: the six digits the approval shows too (`challenge::computer_code`).
+    pub approval_code: Option<String>,
     pub controller: Option<String>,
     /// The AI client using this computer (its device name), beside the controller.
     pub ai_client: Option<String>,
@@ -301,6 +304,7 @@ impl Host {
         (self.notify)(Status {
             online: self.online,
             waiting: self.waiting,
+            approval_code: self.waiting.then(|| wire::challenge::computer_code(&self.cfg.id)),
             controller: self.sessions.of(Seat::Desk).controller(),
             ai_client: self.sessions.of(Seat::Ai).controller(),
             ai_state: self.ai_state().as_str().to_string(),
@@ -358,7 +362,8 @@ impl Host {
         crate::power::ai_session(self.sessions.of(Seat::Ai).current().is_some());
         if self.replaced.is_empty() {
             let (holder, ai) = (self.sessions.of(Seat::Desk).holder(), self.sessions.of(Seat::Ai).holder());
-            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()) });
+            let ai_refused = self.trust.as_ref().and_then(Trust::ai_refused);
+            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused });
         }
         self.report();
     }
@@ -390,7 +395,7 @@ impl Host {
         if session.is_empty() || session.len() > 64 {
             return;
         }
-        let nonce = self.nonces.issue(session, std::time::Instant::now());
+        let nonce = self.nonces.issue(session, Instant::now());
         self.send(&Wire::Nonce { session: session.to_string(), nonce });
     }
 
@@ -408,7 +413,7 @@ impl Host {
         let force = m["force"].as_bool().unwrap_or(false);
         // The nonce issued for this session is used up by this offer, whatever its fate.
         let nonce = m["auth"]["nonce"].as_str().unwrap_or_default().to_string();
-        let nonce_ok = self.nonces.take(&session, &nonce, std::time::Instant::now());
+        let nonce_ok = self.nonces.take(&session, &nonce, Instant::now());
         if !(self.can_host)() {
             eprintln!("session refused: this computer cannot host one now");
             return self.bye(&session, Reason::Permissions);
@@ -800,19 +805,16 @@ fn connect(cfg: &Config) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
     let mut req = format!("{base}/ws/host?id={}", cfg.id).into_client_request()?;
     req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.token).parse().context("token header")?);
     let (ws, _) = tungstenite::connect(req)?;
-    // A short read timeout lets one thread both read and drain the outgoing queue.
-    let timeout = Some(Duration::from_millis(20));
-    match ws.get_ref() {
-        MaybeTlsStream::Plain(s) => {
-            s.set_read_timeout(timeout)?;
-            s.set_nodelay(true)?;
-        }
-        MaybeTlsStream::NativeTls(s) => {
-            s.get_ref().set_read_timeout(timeout)?;
-            s.get_ref().set_nodelay(true)?;
-        }
-        _ => {}
-    }
+    let tcp = match ws.get_ref() {
+        MaybeTlsStream::Plain(s) => s,
+        MaybeTlsStream::NativeTls(s) => s.get_ref(),
+        _ => return Ok(ws),
+    };
+    // A short read timeout lets one thread both read and drain the outgoing queue. A write
+    // that cannot go out for long means the network is gone, not busy.
+    tcp.set_read_timeout(Some(Duration::from_millis(20)))?;
+    tcp.set_write_timeout(Some(alive::WRITE_TIMEOUT))?;
+    tcp.set_nodelay(true)?;
     Ok(ws)
 }
 
@@ -846,12 +848,22 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Que
     let hello = Wire::Hello { version: wire::PROTOCOL_VERSION, caps: session::desk::caps(host.view_only), tools: Some(tools) };
     ws.send(WsMessage::text(serde_json::to_string(&hello)?))?;
     host.send_status();
+    let mut alive = alive::Alive::new(Instant::now());
     loop {
         match ws.read() {
-            Ok(WsMessage::Text(t)) => host.on_message(t.as_str()),
-            Ok(_) => {}
+            Ok(m) => {
+                alive.heard(Instant::now());
+                if let WsMessage::Text(t) = m {
+                    host.on_message(t.as_str());
+                }
+            }
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(e) => return Err(e.into()),
+        }
+        match alive.due(Instant::now()) {
+            alive::Due::Nothing => {}
+            alive::Due::Ping => ws.send(WsMessage::Ping(Default::default()))?,
+            alive::Due::Gone => anyhow::bail!("the server said nothing for {}s", alive::SILENT.as_secs()),
         }
         q.drain_local(host);
         while let Ok(e) = q.platform.try_recv() {
@@ -951,9 +963,9 @@ pub fn run(p: Params, control: Receiver<Control>) {
             }
         }
         // Sleeps on the control queue so the local panel stays responsive while offline.
-        let wake = std::time::Instant::now() + delay;
+        let wake = Instant::now() + delay;
         while !host.quit {
-            let left = wake.saturating_duration_since(std::time::Instant::now());
+            let left = wake.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }

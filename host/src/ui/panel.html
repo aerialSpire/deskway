@@ -442,7 +442,7 @@ window.render = (s) => {
   let text = t('status.online'), dot = 'ok';
   if (s.mac && (!s.mac.screen || !s.mac.accessibility)) { text = t('status.mac_permissions'); dot = 'warn'; }
   else if (s.controller) { text = t('status.controlled', { name: s.controller }); dot = 'warn'; }
-  else if (s.waiting) { text = t('status.waiting'); dot = 'warn'; }
+  else if (s.waiting) { text = t('status.waiting', { code: s.approval_code || '' }); dot = 'warn'; }
   else if (!s.online) { text = t('status.connecting'); dot = ''; }
   renderDevices(s);
   renderAdding(s);

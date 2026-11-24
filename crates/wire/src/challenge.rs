@@ -95,15 +95,31 @@ pub fn code_v2(role: &str, key: &str) -> String {
     format!("deskway-code-v2\n{role}\n{key}")
 }
 
+/// What a computer's six digits are made from while it waits for approval: its id, which the
+/// server gave it. The computer shows them and so does the approval, so a person approves the
+/// computer in front of them and not another one by the same name.
+pub fn computer_code_v1(id: &str) -> String {
+    format!("deskway-computer-code-v1\n{id}")
+}
+
 /// Six digits made from a device's key (and an AI client's role). The device and whoever
 /// approves it compute them on their own, so a person can see they are looking at the same
 /// request.
 pub fn key_code(role: crate::types::Role, key: &str) -> String {
-    let h = sha256(match role {
+    six_digits(&match role {
         crate::types::Role::Browser => code_v1(key),
         crate::types::Role::Ai => code_v2("ai", key),
-    }
-    .as_bytes());
+    })
+}
+
+/// The six digits of a computer waiting for approval (`computer_code_v1`).
+pub fn computer_code(id: &str) -> String {
+    six_digits(&computer_code_v1(id))
+}
+
+/// The first four bytes of the text's SHA-256, big-endian, modulo 10^6, zero-padded.
+fn six_digits(text: &str) -> String {
+    let h = sha256(text.as_bytes());
     format!("{:06}", u32::from_be_bytes(h[..4].try_into().unwrap()) % 1_000_000)
 }
 
