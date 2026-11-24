@@ -240,9 +240,9 @@ impl Backend for Log {
     }
 }
 
-fn injector(log: &Log) -> (Injector<Log>, Receiver<PlatformEvent>, AppliedMoves) {
+fn injector(log: &Log) -> (Injector<Log>, Receiver<PlatformEvent>, AppliedInput) {
     let (tx, rx) = channel();
-    let moves = AppliedMoves::default();
+    let moves = AppliedInput::default();
     (Injector::new(log.clone(), tx, moves.clone()), rx, moves)
 }
 
@@ -308,7 +308,7 @@ fn a_new_session_lifts_what_is_held_starts_fresh_and_reports_the_layout() {
     assert!(matches!(rx.try_recv(), Ok(PlatformEvent::LayoutChanged { .. })), "the first key reports the layout");
     inj.apply(P, Command::Reset, with_layout);
     assert!(log.take().contains(&"key ShiftLeft false".to_string()));
-    assert_eq!(moves.get(), 0, "the applied move sequence starts again");
+    assert_eq!(moves.move_sequence(), 0, "the applied move sequence starts again");
     match rx.try_recv() {
         Ok(PlatformEvent::LayoutChanged { name, labels, shift }) => {
             assert_eq!(name, "fr-FR");
@@ -351,9 +351,9 @@ fn moves_record_the_applied_sequence() {
     let log = Log::default();
     let (mut inj, _rx, moves) = injector(&log);
     inj.apply(P, Command::Move(0.25, 0.5, 3), none);
-    assert_eq!(moves.get(), 3);
+    assert_eq!(moves.move_sequence(), 3);
     inj.apply(P, Command::MoveBy(4.0, -1.0, 4), none);
-    assert_eq!(moves.get(), 4);
+    assert_eq!(moves.move_sequence(), 4);
     assert_eq!(log.take(), vec!["move 0.25 0.5", "by 4 -1"]);
 }
 
@@ -433,7 +433,7 @@ fn moves_follow_each_hands_display_and_only_the_persons_count() {
     inj.apply(A, Command::Move(0.1, 0.1, 0), none);
     inj.apply(A, Command::Move(0.2, 0.2, 0), none);
     assert_eq!(log.take(), vec!["display A", "display B", "display A", "move 0.5 0.5", "display B", "move 0.1 0.1", "move 0.2 0.2"]);
-    assert_eq!(moves.get(), 7, "the AI client's moves leave the person's sequence alone");
+    assert_eq!(moves.move_sequence(), 7, "the AI client's moves leave the person's sequence alone");
 }
 
 /// On a secure desktop (UAC), the AI client's input is held back where it would land; the
@@ -453,4 +453,18 @@ fn an_ai_clients_input_never_lands_on_a_secure_desktop() {
     assert_eq!(log.take(), vec!["key Enter true"], "the person answers it");
     inj.apply(A, Command::ReleaseAll, none);
     assert_eq!(log.take(), vec!["key ShiftLeft false"], "letting go still works");
+}
+
+#[test]
+fn only_personal_discrete_inputs_request_a_video_response_and_bursts_coalesce() {
+    let (mut inj, _rx, applied) = injector(&Log::default());
+    inj.apply(P, Command::Move(0.4, 0.5, 1), none);
+    inj.apply(P, Command::Wheel(0.0, 1.0), none);
+    inj.apply(Hand::Ai, Command::Text("hello".into()), none);
+    assert!(!applied.take_interaction());
+    inj.apply(P, Command::Button(0, true), none);
+    inj.apply(P, Command::Button(0, false), none);
+    inj.apply(P, Command::Text("hello".into()), none);
+    assert!(applied.take_interaction());
+    assert!(!applied.take_interaction());
 }

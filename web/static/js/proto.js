@@ -21,7 +21,6 @@ export const CAPS = Object.freeze({
   CAPTURE: 'capture',
   DESK: 'desk',
   AI: 'ai',
-  SCREEN_TILES: 'screen-tiles-v1',
 });
 
 const FORMAT = 's:text|html|image|files';

@@ -18,8 +18,7 @@
     { "name": "chars", "who": "host", "since": 2, "meaning": "The host resolves characters with modifiers through its own layout (kc)." },
     { "name": "capture", "who": "host", "since": 2, "meaning": "The host reports when nothing can be captured (capture)." },
     { "name": "desk", "who": "host", "since": 2, "meaning": "The host reports which input desktop is active (desk): lock screen, secure prompts." },
-    { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
-    { "name": "screen-tiles-v1", "who": "host", "since": 4, "meaning": "The host opens the screen-tiles-v1 channel for lossless RGB updates after a sharp viewer advertises the same capability." }
+    { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." }
   ],
   "types": {
     "View": {

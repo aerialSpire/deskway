@@ -19,6 +19,9 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Keep a complete picture during scrolling and window changes on slow connections.
+- Reduce the delay before clicks and keystrokes become visible when video backs up.
+
 - Restore the **Request control** and **Take over** prompts after a full-screen connection attempt ends.
 - Deskway Host reconnects by itself when its connection to the server dies without notice (for
   example a router dropping the mapping), instead of staying offline until it is signed in again.

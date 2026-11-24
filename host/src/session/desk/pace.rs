@@ -6,10 +6,11 @@
 //!
 //! Pure: the session feeds it the queued bytes and its bitrate, and tells the encoder on change.
 
-/// About a quarter of a second of sending is queued before encoding waits; never less than a
-/// large frame, which is queued whole the moment it is sent.
-fn allowance(bitrate: u32) -> usize {
-    (bitrate as usize / 8 / 4).max(128 * 1024)
+use std::time::Duration;
+
+/// The TWCC estimate is shared with control, retransmissions and protocol overhead.
+pub(super) fn video_budget(estimate: u32, ceiling: u32) -> u32 {
+    (u64::from(estimate) * 4 / 5).clamp(1, u64::from(ceiling.max(1))) as u32
 }
 
 #[derive(Default)]
@@ -18,20 +19,11 @@ pub struct Pace {
 }
 
 impl Pace {
-    /// `queued`: bytes waiting to leave this computer; `bitrate`: what the session sends at.
-    /// Some(behind) when that changed: encoding waits from a full queue, and resumes once half
-    /// of it has gone, so one frame does not flip it back and forth.
-    pub fn update(&mut self, queued: usize, bitrate: u32) -> Option<bool> {
-        self.update_limit(queued, allowance(bitrate))
-    }
-
-    /// Sharp video can wait for the previous frame instead of accumulating frames in the pacer.
-    pub fn update_sharp(&mut self, queued: usize, bitrate: u32) -> Option<bool> {
-        self.update_limit(queued, (bitrate as usize / 8 / 3).max(4 * 1024))
-    }
-
-    fn update_limit(&mut self, queued: usize, limit: usize) -> Option<bool> {
-        let behind = if self.behind { queued > limit / 2 } else { queued > limit };
+    // These thresholds gate the next encode. One large access unit may exceed the budget.
+    pub fn update(&mut self, queued: usize, bitrate: u32, oldest: Duration) -> Option<bool> {
+        let millis = if self.behind { 50 } else { 100 };
+        let limit = u64::from(bitrate) * millis / 8000;
+        let behind = queued != 0 && (queued as u64 > limit || oldest > Duration::from_millis(millis));
         (behind != self.behind).then(|| {
             self.behind = behind;
             behind
@@ -48,22 +40,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encoding_waits_while_the_queue_is_full_and_resumes_when_half_has_gone() {
-        let mut p = Pace::default();
-        let rate = 4_000_000; // a quarter second is 125 000 bytes; the floor of 128 KiB holds
-        assert_eq!(p.update(0, rate), None);
-        assert_eq!(p.update(100_000, rate), None, "less than the allowance is normal");
-        assert_eq!(p.update(140_000, rate), Some(true));
-        assert_eq!(p.update(200_000, rate), None);
-        assert_eq!(p.update(80_000, rate), None, "still more than half");
-        assert_eq!(p.update(60_000, rate), Some(false));
-        assert!(!p.behind());
-    }
-
-    #[test]
-    fn a_faster_link_may_queue_more_bytes_for_the_same_time() {
-        let mut p = Pace::default();
-        assert_eq!(p.update(1_000_000, 40_000_000), None, "a quarter second at 40 Mbit/s is 1.25 MB");
-        assert_eq!(p.update(1_300_000, 40_000_000), Some(true));
+    fn the_queue_budget_scales_with_bandwidth_and_resumes_at_half() {
+        let mut pace = Pace::default();
+        let rate = video_budget(200_000, 6_000_000);
+        assert_eq!(rate, 160_000);
+        assert_eq!(pace.update(2000, rate, Duration::ZERO), None);
+        assert_eq!(pace.update(2001, rate, Duration::ZERO), Some(true));
+        assert_eq!(pace.update(1001, rate, Duration::ZERO), None);
+        assert_eq!(pace.update(1000, rate, Duration::ZERO), Some(false));
+        assert_eq!(pace.update(1, rate, Duration::from_millis(101)), Some(true));
+        assert_eq!(pace.update(0, rate, Duration::from_secs(1)), Some(false));
+        assert_eq!(video_budget(500_000, 200_000), 200_000);
     }
 }

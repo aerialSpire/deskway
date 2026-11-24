@@ -488,18 +488,6 @@ impl Capturer for Duplication {
         Ok(&self.nv12)
     }
 
-    fn rgb(&mut self, pointer: &Pointer, draw_cursor: bool) -> anyhow::Result<Still> {
-        read_frame(self)?;
-        if draw_cursor {
-            draw_pointer(&mut self.frame, self.w, self.h, pointer);
-        }
-        let mut rgb = Vec::with_capacity(self.w * self.h * 3);
-        for pixel in self.frame.chunks_exact(4) {
-            rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
-        }
-        Ok(Still { rgb, w: self.w, h: self.h })
-    }
-
     fn cursor_shape(&self, pointer: &Pointer) -> Option<CursorShape> {
         let (w, h, hx, hy, rgba) = pointer_rgba(pointer)?;
         Some(CursorShape { w, h, hx, hy, rgba })

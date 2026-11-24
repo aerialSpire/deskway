@@ -181,8 +181,6 @@ platform! {
     fn autostart(on: bool) => AutoStart;
     /// The language of the notes shown at this computer: a catalog code, or None for the system's.
     fn language(code: Option<String>) => Language, keep language;
-    /// One lossless tile from this session's capture epoch. Zero switches back to video.
-    fn sharp_tile(session: String, epoch: u32) => SharpTile, held session;
     }
 }
 
@@ -266,8 +264,6 @@ pub enum PlatformEvent {
     ClipboardFailed { gen: u64, id: String, why: ClipboardError },
     /// A line for the person at this computer about a transfer.
     TransferNote(Option<crate::transfer::Note>),
-    /// One lossless tile; no packet means this capture cannot supply RGB.
-    SharpTile { epoch: u32, packet: Option<Bytes> },
 }
 
 /// What the person at the computer is looking at. Windows shows the lock screen, the sign-in

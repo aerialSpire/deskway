@@ -57,9 +57,9 @@ fn obeyed(owner: Option<&str>, ai: Option<&str>, call: &Call) -> Option<Hand> {
 impl Local {
     /// Starts the pipelines. They report through `events`, and end when this is dropped.
     pub fn new(events: Sender<PlatformEvent>) -> Local {
-        // Pointer reports carry the last move the injector applied.
-        let moves = input::AppliedMoves::default();
-        let video = video::spawn::<super::NativeCapture, super::NativeEncoder>(events.clone(), moves.clone());
+        // Capture observes applied input independently of the session transport.
+        let applied = input::AppliedInput::default();
+        let video = video::spawn::<super::NativeCapture, super::NativeEncoder>(events.clone(), applied.clone());
         let to_video = Mutex::new(video.clone());
         let displays = super::DisplayWatch::start(move || {
             let _ = to_video.lock().unwrap().send(video::Command::DisplaysChanged);
@@ -67,7 +67,7 @@ impl Local {
         let clipboard = Arc::new(super::NativeClipboard::start(events.clone()));
         Local {
             video,
-            input: input::spawn(super::NativeInput::new, events.clone(), moves),
+            input: input::spawn(super::NativeInput::new, events.clone(), applied),
             files: transfer::spawn(super::NativeFiles::new, clipboard.clone(), events.clone()),
             clipboard,
             events,
@@ -160,9 +160,6 @@ impl Forward for Local {
             }
             Call::Bitrate { bps, .. } => {
                 let _ = self.video.send(video::Command::Bitrate(bps));
-            }
-            Call::SharpTile { epoch, .. } => {
-                let _ = self.video.send(video::Command::SharpTile(epoch));
             }
             Call::ViewConstraints { w, h, max_w, max_h, fps, level, .. } => {
                 let _ = self.video.send(video::Command::View(video::Constraints { w, h, max_w, max_h, fps, level }));

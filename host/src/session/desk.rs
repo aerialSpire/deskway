@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use str0m::bwe::{Bitrate, BweKind};
-use str0m::channel::{ChannelConfig, ChannelData, ChannelId};
+use str0m::channel::{ChannelData, ChannelId};
 use str0m::media::{MediaTime, Mid, Pt};
 use str0m::{Event, Rtc};
 
@@ -16,7 +16,7 @@ use super::{send, send_message, Cx, Role};
 use crate::clipboard::{self, Act, Out};
 use crate::platform::{Bytes, Platform, PlatformEvent};
 use crate::video::size::ProfileLevelId;
-use crate::video::{SHARP_FPS, START_BITRATE};
+use crate::video::START_BITRATE;
 use peer::state::Signal;
 use wire::control::Control;
 use wire::types::View;
@@ -24,13 +24,8 @@ use wire::types::View;
 pub(crate) mod channels;
 mod media;
 mod pace;
-mod screen;
 
 use channels::{FileQueue, Incoming};
-
-const MIN_BITRATE: u32 = 300_000;
-const SHARP_TILE_BITRATE: u32 = 350_000;
-const NARROW_LINK_TIME: Duration = Duration::from_millis(1500);
 
 /// The capabilities this host announces in both hellos (signaling and control): the one place
 /// they are gathered, as the union of each module's list. A view-only host takes no input
@@ -38,7 +33,7 @@ const NARROW_LINK_TIME: Duration = Duration::from_millis(1500);
 pub fn caps(view_only: bool) -> Vec<String> {
     use wire::caps::*;
     // What the session and video side report: pointer, displays, capture, input desktop.
-    let session: &[&str] = &[CURSOR, DISPLAYS, CAPTURE, DESK, SCREEN_TILES];
+    let session: &[&str] = &[CURSOR, DISPLAYS, CAPTURE, DESK];
     let clipboard: &[&str] = &[CLIPBOARD];
     let (control, input): (&[&str], &[&str]) = if view_only { (&[], &[]) } else { (&[INPUT, FILES], crate::input::CAPS) };
     control.iter().chain(input).chain(clipboard).chain(session).map(|c| c.to_string()).collect()
@@ -102,8 +97,6 @@ pub struct Desk {
     ceiling: u32,
     sent_bitrate: u32,
     estimated_bitrate: u32,
-    narrow_since: Option<Instant>,
-    screen: screen::Screen,
     /// Whether what this computer sends is queuing up, and the encoder waits.
     pace: pace::Pace,
     connected: bool,
@@ -139,8 +132,6 @@ impl Desk {
             ceiling: START_BITRATE,
             sent_bitrate: START_BITRATE,
             estimated_bitrate: START_BITRATE,
-            narrow_since: None,
-            screen: screen::Screen::default(),
             pace: pace::Pace::default(),
             connected: false,
             needs_first_idr: true,
@@ -194,26 +185,12 @@ impl Desk {
             }
             // The browser's goodbye, with its reason.
             Incoming::Control(Control::End { reason, .. }) if control => return cx.signal(Signal::PeerEnded(reason)),
-            // The optional lossless channel is opened only for a browser that advertises it.
-            Incoming::Control(Control::Hello { caps, .. }) if control => {
-                self.screen.supported = caps.iter().any(|s| s == wire::caps::SCREEN_TILES);
-                self.open_screen_channel(cx);
-            }
             Incoming::Control(Control::ChooseDisplay { id }) if !id.is_empty() => self.platform.choose_display(&self.id, id),
             Incoming::Control(Control::LocalCursor { on }) => self.platform.local_cursor(&self.id, on),
             Incoming::Control(Control::View { w, h, max_w, max_h, fps }) => {
                 cx.log(format_args!("view {w}x{h}, decodes {max_w}x{max_h} at {fps}"));
-                let mode_changed = (self.view.4 == SHARP_FPS) != (fps == SHARP_FPS);
                 self.view = (w, h, max_w, max_h, fps);
                 self.platform.view_constraints(&self.id, w, h, max_w, max_h, fps, self.level);
-                if fps != SHARP_FPS {
-                    self.resume_video(cx);
-                    self.narrow_since = None;
-                }
-                if mode_changed {
-                    self.adjust_bitrate(cx);
-                }
-                self.open_screen_channel(cx);
             }
             // The browser lost the picture while no display was attached.
             Incoming::Control(Control::CaptureKeyframe {}) if control => self.platform.keyframe(&self.id),
@@ -228,32 +205,12 @@ impl Desk {
     }
 
     fn adjust_bitrate(&mut self, cx: &Cx) {
-        let sharp = self.view.4 == SHARP_FPS;
-        let min = if sharp { 40_000 } else { MIN_BITRATE };
-        let target = (u64::from(self.estimated_bitrate) * 85 / 100).clamp(min as u64, self.ceiling.max(min) as u64) as u32;
-        if target.abs_diff(self.sent_bitrate) > self.sent_bitrate / 10 {
+        let target = pace::video_budget(self.estimated_bitrate, self.ceiling);
+        // Apply reductions promptly; ignore small upward oscillations.
+        if target < self.sent_bitrate || target.saturating_sub(self.sent_bitrate) > self.sent_bitrate / 10 {
             cx.log(format_args!("bitrate {} kbps", target / 1000));
             self.sent_bitrate = target;
             self.platform.bitrate(&self.id, target);
-        }
-    }
-
-    fn open_screen_channel(&mut self, cx: &mut Cx) {
-        if self.view.4 == SHARP_FPS && self.screen.supported && self.screen.channel.is_none() {
-            let id = cx.rtc.direct_api().create_data_channel(ChannelConfig {
-                label: wire::caps::SCREEN_TILES.into(),
-                ..ChannelConfig::default()
-            });
-            self.screen.channel = Some(id);
-        }
-    }
-
-    fn resume_video(&mut self, cx: &mut Cx) {
-        if self.screen.active() {
-            self.screen.stop();
-            self.platform.sharp_tile(self.id.clone(), 0);
-            self.needs_first_idr = true;
-            cx.rtc.bwe().set_bitrate(Bitrate::bps(0), Bitrate::bps(self.ceiling as u64));
         }
     }
 
@@ -276,7 +233,7 @@ impl Desk {
     fn write_frame(&mut self, cx: &mut Cx, data: Vec<u8>) {
         // A capture started before DTLS can still have delta frames on the way when we request
         // the first keyframe. They cannot start a new decoder.
-        if !self.connected || self.screen.active() || (self.needs_first_idr && !media::has_idr(&data)) {
+        if !self.connected || (self.needs_first_idr && !media::has_idr(&data)) {
             return;
         }
         let (Some(m), Some(payload)) = (self.mid, self.pt) else { return };
@@ -332,19 +289,6 @@ impl Role for Desk {
     }
 
     fn channel_data(&mut self, cx: &mut Cx, d: ChannelData) -> bool {
-        if self.screen.channel == Some(d.id) {
-            match (d.binary, d.data.as_slice()) {
-                (true, data) => self.screen.ack(data),
-                (false, b"allow") => self.screen.allowed = true,
-                (false, b"video") => {
-                    self.screen.allowed = false;
-                    self.narrow_since = None;
-                    self.resume_video(cx);
-                }
-                _ => {}
-            }
-            return false;
-        }
         if self.file_ch == Some(d.id) {
             self.on_file_channel(cx.rtc, &d);
             return false;
@@ -367,12 +311,6 @@ impl Role for Desk {
                 self.estimated_bitrate = estimate.as_u64().min(u64::from(u32::MAX)) as u32;
                 self.adjust_bitrate(cx);
             }
-            Event::ChannelClose(id) if self.screen.channel == Some(id) => {
-                self.screen.channel = None;
-                self.screen.supported = false;
-                self.screen.allowed = false;
-                self.resume_video(cx);
-            }
             Event::ChannelBufferedAmountLow(id) if self.file_ch == Some(id) => self.files.flush(cx.rtc, self.file_ch),
             _ => {}
         }
@@ -381,14 +319,6 @@ impl Role for Desk {
     fn platform(&mut self, cx: &mut Cx, e: PlatformEvent) {
         match e {
             PlatformEvent::Frame(Bytes(data)) => self.write_frame(cx, data),
-            PlatformEvent::SharpTile { epoch, packet } if self.screen.epoch == epoch && self.screen.active() => {
-                if let Some(Bytes(data)) = packet {
-                    self.screen.receive(data);
-                } else {
-                    self.screen.allowed = false;
-                    self.resume_video(cx);
-                }
-            }
             PlatformEvent::Capturing { list, current } => {
                 self.platform.pointer_display(&self.id, current.clone());
                 let msg = serde_json::to_string(&channels::displays_message(&list, &current.id)).expect("displays serialize");
@@ -398,11 +328,7 @@ impl Role for Desk {
             PlatformEvent::EncodedSize { w, h, max_bitrate } => {
                 cx.log(format_args!("encoding {w}x{h}, up to {} kbps", max_bitrate / 1000));
                 self.ceiling = max_bitrate;
-                if self.screen.active() {
-                    // The agent can restart independently of its network service.
-                    self.screen.start(self.estimated_bitrate);
-                    return;
-                }
+                self.adjust_bitrate(cx);
                 cx.rtc.bwe().set_bitrate(Bitrate::bps(0), Bitrate::bps(self.ceiling as u64));
             }
             PlatformEvent::FileMessage(t) => {
@@ -483,44 +409,14 @@ impl Role for Desk {
     /// drains. While behind, the queue is looked at often, so encoding resumes as soon as it does.
     fn before_wait(&mut self, cx: &mut Cx, queued: usize) -> Option<Instant> {
         let now = Instant::now();
-        let sharp = self.view.4 == SHARP_FPS;
-        let (rtp_queued, rtp_wait) = if sharp && !self.screen.active() {
-            self.mid.and_then(|mid| {
-                let mut api = cx.rtc.direct_api();
-                let info = api.stream_tx_by_mid(mid, None)?.queue_info()?;
-                Some((info.byte_size(), info.first_unsent().map_or(Duration::ZERO, |t| now.saturating_duration_since(t))))
-            }).unwrap_or_default()
-        } else {
-            (0, Duration::ZERO)
-        };
-        if self.screen.timed_out(now) {
-            self.screen.allowed = false;
-            self.resume_video(cx);
-        }
-        if self.screen.active() {
-            if cx.active() && self.screen.pump(cx.rtc, queued, now) {
-                self.platform.sharp_tile(self.id.clone(), self.screen.epoch);
-            }
-            return Some(now + Duration::from_millis(50));
-        }
-        self.screen.pump(cx.rtc, queued, now);
-        let narrow = sharp && self.screen.allowed && self.cleanup.started && cx.active()
-            && (self.estimated_bitrate <= SHARP_TILE_BITRATE || rtp_wait >= Duration::from_millis(500));
-        if narrow {
-            let since = *self.narrow_since.get_or_insert(now);
-            if now - since >= NARROW_LINK_TIME {
-                self.screen.start(self.estimated_bitrate);
-                cx.rtc.bwe().set_bitrate(Bitrate::bps(0), Bitrate::bps(0));
-                return Some(now);
-            }
-        } else {
-            self.narrow_since = None;
-        }
-        let behind = if sharp {
-            self.pace.update_sharp(queued.saturating_add(rtp_queued), self.sent_bitrate)
-        } else {
-            self.pace.update(queued, self.sent_bitrate)
-        };
+        let rtp = self.mid.and_then(|mid| {
+            let mut api = cx.rtc.direct_api();
+            let info = api.stream_tx_by_mid(mid, None)?.queue_info()?;
+            Some((info.byte_size(), info.first_unsent()))
+        });
+        let (rtp_bytes, oldest) = rtp.unwrap_or_default();
+        let age = oldest.map_or(Duration::ZERO, |t| now.saturating_duration_since(t));
+        let behind = self.pace.update(queued.saturating_add(rtp_bytes), self.sent_bitrate, age);
         if let Some(behind) = behind {
             cx.log(format_args!("{}", if behind { "network behind: encoding waits" } else { "network caught up" }));
             self.platform.network_behind(&self.id, behind);

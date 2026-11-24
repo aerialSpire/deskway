@@ -335,7 +335,7 @@ pub struct ScreenCapture {
 }
 
 impl ScreenCapture {
-    fn start(wanted: Option<&str>, draw_cursor: bool, rgb: bool) -> Result<Self> {
+    fn start(wanted: Option<&str>, draw_cursor: bool) -> Result<Self> {
         ensure!(
             CGPreflightScreenCaptureAccess(),
             "Screen Recording permission required"
@@ -372,14 +372,9 @@ impl ScreenCapture {
             config.setHeight(height);
             config.setMinimumFrameInterval(CMTime::new(1, FPS as i32));
             config.setQueueDepth(4);
-            if rgb {
-                config.setPixelFormat(kCVPixelFormatType_32BGRA);
-                config.setColorSpaceName(objc2_core_graphics::kCGColorSpaceSRGB);
-            } else {
-                config.setPixelFormat(NV12);
-                config.setColorMatrix(kCGDisplayStreamYCbCrMatrix_ITU_R_709_2);
-                config.setColorSpaceName(kCGColorSpaceITUR_709);
-            }
+            config.setPixelFormat(NV12);
+            config.setColorMatrix(kCGDisplayStreamYCbCrMatrix_ITU_R_709_2);
+            config.setColorSpaceName(kCGColorSpaceITUR_709);
             let cursor_enabled = draw_cursor
                 && std::env::var_os("DESKWAY_CAPTURE_CURSOR").as_deref() != Some("0".as_ref());
             config.setShowsCursor(cursor_enabled);
@@ -494,11 +489,7 @@ impl Capturer for ScreenCapture {
     const CURSOR_IN_STREAM: bool = true;
 
     fn open(wanted: Option<&str>, draw_cursor: bool) -> Result<Self> {
-        autoreleasepool(|_| Self::start(wanted, draw_cursor, false))
-    }
-
-    fn open_rgb(wanted: Option<&str>, draw_cursor: bool) -> Result<Self> {
-        autoreleasepool(|_| Self::start(wanted, draw_cursor, true))
+        autoreleasepool(|_| Self::start(wanted, draw_cursor))
     }
 
     fn display(&self) -> &DisplayInfo {
@@ -601,26 +592,6 @@ impl Capturer for ScreenCapture {
             self.scaled_ready = true;
         }
         Ok(scaled)
-    }
-
-    fn rgb(&mut self, _: &Cursor, _: bool) -> Result<Still> {
-        let buffer = &self.latest.as_ref().context("no screen frame")?.0;
-        ensure!(CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_32BGRA, "not a BGRA screen");
-        check(unsafe { CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly) }, "lock screen pixels")?;
-        let locked = LockedPixels(buffer);
-        let base = CVPixelBufferGetBaseAddress(locked.0).cast::<u8>();
-        let stride = CVPixelBufferGetBytesPerRow(locked.0);
-        let (w, h) = self.size;
-        ensure!(!base.is_null() && stride >= w * 4, "invalid screen stride");
-        // Read only the screen pixels; each row may include padding.
-        let data = unsafe { std::slice::from_raw_parts(base, stride * h) };
-        let mut rgb = Vec::with_capacity(w * h * 3);
-        for row in data.chunks_exact(stride) {
-            for p in row[..w * 4].chunks_exact(4) {
-                rgb.extend_from_slice(&[p[2], p[1], p[0]]);
-            }
-        }
-        Ok(Still { rgb, w, h })
     }
 
     fn cursor_position(&self, cursor: &Cursor) -> (f64, f64, bool) {
