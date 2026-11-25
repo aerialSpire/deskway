@@ -1,10 +1,9 @@
 # Design standard
 
 Every Deskway surface uses the same visual language: the browser client (`web/static`) and the
-host's panel, setup window and in-session bar (`host/src/ui`). All values come from a single
-file, `web/static/design.css`, which holds the tokens and the shared components. The host embeds
-that file at build time rather than keeping a copy. `tests/unit/design.test.mjs` fails on any
-value defined outside it.
+host's panel, setup window and in-session bar (`host/src/ui`). The shared components and their
+style tokens live in `web/static/design.css`. The host embeds that file at build time.
+`tests/unit/design.test.mjs` checks that page and component styles use those tokens.
 
 ## Tokens (`design.css`, `:root`)
 
@@ -26,6 +25,14 @@ or shadow is written as a literal anywhere else.
 
 There is one font stack per language (`--font-zh-hans`, `--font-zh-hant`, `--font-en`), selected
 by the document's `lang` attribute, and `--font-mono` for codes.
+
+## Deskway mark
+
+`host/src/icon.rs` draws the shared D formed by a screen and a circle. The browser favicon,
+standard manifest icons and README use the three-colour mark on a transparent background.
+The Windows app and tray icons and the macOS app icon use the white mark on a rounded blue
+gradient tile. The macOS menu bar uses a monochrome template with one opacity per region.
+The maskable and Apple touch icons use the gradient to the edges for system cropping.
 
 ## Components (`design.css`)
 

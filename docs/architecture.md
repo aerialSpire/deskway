@@ -56,9 +56,9 @@ peer/              what a WebRTC peer needs whatever it is for: net.rs, the netw
 ```
 main.rs            command line only
 product.rs         the program's name as people see it (Deskway Host), also for build.rs
-icon.rs            Deskway Host's icon (a monitor) and, for the tests that write the browser
-                   client's icons, Deskway's (a window with a pointer); build.rs makes the
-                   program file's .ico from it
+icon.rs            the shared Deskway D mark for the host, browser client and README. build.rs
+                   makes the Windows .ico, the mac-icon example draws the macOS iconset, and
+                   the icon test writes and checks the browser and README PNGs
 config.rs          the host's config (host.json) and where it lives; private writes
 settings.rs        what the panel asks (PanelRequest) and the settings the host carries out:
                    saved first, then applied (keep-awake, language, the signaling host)
