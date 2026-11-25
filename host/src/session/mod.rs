@@ -9,6 +9,7 @@
 //! browser with the picture, input, clipboard and files; `ai`, an AI client's MCP requests.
 
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -21,6 +22,7 @@ use serde::Serialize;
 use str0m::bwe::Bitrate;
 use str0m::change::SdpOffer;
 use str0m::channel::{ChannelData, ChannelId};
+use str0m::crypto::{from_feature_flags, CryptoProvider};
 use str0m::{Candidate, Event, Input, Output, Rtc};
 
 use crate::platform::PlatformEvent;
@@ -452,7 +454,11 @@ fn run<R: Role>(p: Params, role: R, rx: Receiver<SessionEvent>, tx: Sender<Sessi
 /// delays the answer.
 fn start<R: Role>(p: Params, role: R, tx: &Sender<SessionEvent>) -> Result<(Session<R>, Rtc, Net<SessionEvent>)> {
     let Params { session, sdp, stun, turn, out, updates, sign, greeting } = p;
-    let mut builder = Rtc::builder();
+    let provider = CryptoProvider::get_default().cloned().unwrap_or_else(from_feature_flags);
+    // str0m's builder panics when its provider cannot generate a certificate. Use the same
+    // provider here so a certificate failure takes the session's usual startup error path.
+    let cert = provider.dtls_provider.generate_certificate().context("generate DTLS certificate")?;
+    let mut builder = Rtc::builder().set_crypto_provider(Arc::new(provider)).set_dtls_cert(cert);
     if let Some(b) = role.bandwidth() {
         builder = builder.enable_bwe(Some(Bitrate::bps(b as u64)));
     }

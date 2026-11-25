@@ -638,6 +638,7 @@ js/proto.js          message types and constants (checked against proto/messages
 js/auth-messages.js  the strings that are signed, MACed or hashed; pure, checked against
                      proto/vectors.json
 js/auth.js           device key, signing, host-key pinning
+js/browser-sign-in.js  device key registration for a waiting or signed-in browser
 js/pwa.js            the offline shell's worker and the browser's install prompt
 js/windows.js        each computer in a window of its own, when the device chose so (?computer=
                      <id>; the windows find each other over a BroadcastChannel)
@@ -678,6 +679,6 @@ style.css            the client's page and session layout, in those tokens only
   test doubles). Each area names the areas it depends on, and `manage` runs last. Several runs
   can proceed in parallel, because the ports are parameters. Opt-in areas run only when named:
   `clipboard-host` (which uses the real clipboard) and `relay` (which uses a fresh account and a
-  relay-only host).
+  relay-only host), and `first-use` (which runs its own fresh server and Windows hosts).
 - A rule enforced by the server or the host is tested in Go or Rust; e2e tests check only what
   the page shows.

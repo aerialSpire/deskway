@@ -5,19 +5,25 @@ import { $app, h, loading } from '../dom.js';
 import { separateHomeScreenApp } from '../env.js';
 import { t, currentLang, setLanguage } from '../i18n.js';
 import { api, socket, signedOut } from '../net.js';
-import { ensurePasskey, storedPasskey, deviceLabel } from '../auth.js';
+import { ensurePasskey, reportPasskey, storedPasskey, deviceLabel } from '../auth.js';
 import { keyCode } from '../auth-messages.js';
+import { browserSignIn } from '../browser-sign-in.js';
 import { state, setView, currentSession } from '../state.js';
 import { closeDialogs } from '../dialogs.js';
 import { ownComputer } from '../windows.js';
 import { languagePicker, topbar, heading, codeBox } from './common.js';
 
+const signIn = browserSignIn({
+  // Not through api(): a 401 here is the answer asked for.
+  getSession: () => fetch('/api/me'),
+  ensurePasskey, reportPasskey, keyCode,
+});
+
 // Finds out who is signed in, then shows the computers, or the sign-in page.
 export async function start() {
   let res;
   try {
-    // Not through api(): a 401 here is the answer asked for, not a sign-out.
-    res = await fetch('/api/me');
+    res = await signIn.current();
   } catch {
     // Not signed out: the server is unreachable. Saying "sign in" here would be wrong.
     showUnreachable();
@@ -121,9 +127,7 @@ function showWaiting(serverCode, userName, password) {
     note ? h('p', { class: 'hint' }, note) : null);
   const prepare = (name) => {
     step.replaceChildren(loading(t('wait.preparing')));
-    ensurePasskey(name)
-      .then(async (rec) => showCode(await keyCode(rec.key)))
-      .catch(() => showCode(serverCode, t('wait.noKey')));
+    signIn.waiting(name, serverCode).then(({ code, noKey }) => showCode(code, noKey ? t('wait.noKey') : undefined));
   };
   // A device with no key yet is named first, with the name its kind gives it filled in: the
   // one approving it, and its computers, see that name.

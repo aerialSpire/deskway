@@ -41,7 +41,9 @@ must choose its own password before it can do anything else. On the account's ve
 sign-in it must also choose its super password.
 
 Signing in with the initial password approves the account's first browser. No other device
-exists that could approve it, and the password came from the admin.
+exists that could approve it, and the password came from the admin. The browser registers its
+device key on sign-in, so a newly approved computer can trust that browser from its first
+connection.
 
 After sign-in, the page asks for a new password and, the first time, for the super password.
 Until both are set, nothing else is available: neither the computers nor the account page.

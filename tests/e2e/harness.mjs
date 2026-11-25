@@ -42,6 +42,9 @@ export function words(key, params, { lang = 'en', texts = WEB_TEXTS } = {}) {
 // in English, and `q` the same quoted for an expression evaluated on the page.
 export const t = (key, params) => words(key, params);
 export const q = (key, params) => JSON.stringify(t(key, params));
+// A value from outside the test (a computer's id or name) as a literal in an expression evaluated on the page:
+// JSON, with every character that could end a script or a line written as its escape.
+export const lit = (value) => JSON.stringify(value).replace(/[<>\/\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 // The longest fixed part of a text with placeholders: what the page shows whatever fills them.
 export const fixed = (key, opts) => words(key, undefined, opts).split(/\{\w+\}/).map((x) => x.trim()).reduce((a, b) => (b.length > a.length ? b : a));
@@ -78,6 +81,7 @@ export function options(argv = process.argv) {
     // Optional: the server's executable and data file, for restarting it during a session.
     serverExe: arg('server-exe'),
     serverState: arg('server-state'),
+    browserArgs: argv.filter((v) => v.startsWith('--browser-arg=')).map((v) => v.slice('--browser-arg='.length)),
     port: Number(arg('devtools-port') || 9333),
     areas: arg('areas') ? arg('areas').split(',').map((x) => x.trim()).filter(Boolean) : null,
   };
@@ -376,6 +380,7 @@ export class Harness {
     this.browser = spawn(this.opts.browser, [
       '--headless=new', `--remote-debugging-port=${this.opts.port}`, `--user-data-dir=${this.profile}`,
       '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--autoplay-policy=no-user-gesture-required',
+      ...this.opts.browserArgs,
       // The browser is a desktop with a mouse and no touch screen, whatever machine runs the
       // tests (a touch screen there would change pointer media queries and maxTouchPoints);
       // phone pages switch to touch by emulation. Blink values: pointer fine = 4, hover = 2.
@@ -515,9 +520,11 @@ export class Harness {
 
   // The test host's panel pipe (dev mode names it after its config folder), used here the way
   // the person sitting at the computer uses the panel.
-  panelPipe() {
-    const hash = createHash('sha256').update(this.opts.hostHome).digest('hex').slice(0, 8);
+  panelPipe(home = this.opts.hostHome) {
+    const hash = createHash('sha256').update(home).digest('hex').slice(0, 8);
     const sock = pipeConnect(`\\\\.\\pipe\\deskway-ui-dev-${hash}`);
+    let error = null;
+    sock.on('error', (err) => { error = err; });
     let buf = Buffer.alloc(0);
     const statuses = [];
     sock.on('data', (d) => {
@@ -538,7 +545,7 @@ export class Harness {
       head.writeUInt32LE(body.length, 0);
       sock.write(Buffer.concat([head, body]));
     };
-    return { statuses, send, close: () => sock.destroy() };
+    return { statuses, send, get error() { return error; }, close: () => sock.destroy() };
   }
 
   // ---- the server ----

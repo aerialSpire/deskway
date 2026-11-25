@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"deskway/internal/proto"
 )
 
 // The admin's members (docs/accounts.md): only the admin manages them; a member starts with an
@@ -89,8 +91,8 @@ func TestTheAdminCreatesAndListsMembers(t *testing.T) {
 }
 
 // The first browser of a new account is let in by its initial password; until the account has
-// chosen its own password (and, the first time, its super password) every request but that
-// choice answers 428.
+// chosen its own password (and, the first time, its super password) its only other action
+// is registering its key.
 func TestAFirstSignInChoosesItsOwnPasswords(t *testing.T) {
 	f := newFixture(t)
 	admin := f.signedIn("me")
@@ -105,6 +107,16 @@ func TestAFirstSignInChoosesItsOwnPasswords(t *testing.T) {
 	if !must.Super {
 		t.Fatal("the first time the super password is to be chosen too")
 	}
+	key := proto.BrowserKey{Cred: "Y3JlZDE", Alg: -7, Key: "a2V5MQ==", Name: "iPhone"}
+	want(t, "the first browser reports its key before choosing", f.status(first, "POST", "/api/login/device", key), http.StatusOK)
+	checkKey := func() {
+		t.Helper()
+		l, _ := f.s.store.DeviceLog(id)
+		if len(l) != 1 || l[0].Op != proto.OpAdd || l[0].Cred != key.Cred || l[0].By != "" {
+			t.Fatalf("expected one unsigned add for the first browser: %+v", l)
+		}
+	}
+	checkKey()
 	for _, c := range []struct{ method, path string }{
 		{"GET", "/api/devices"}, {"POST", "/api/password"}, {"POST", "/api/super-password"},
 		{"POST", "/api/approvals"}, {"PATCH", "/api/me"}, {"GET", "/ws/client"},
@@ -122,6 +134,8 @@ func TestAFirstSignInChoosesItsOwnPasswords(t *testing.T) {
 	want(t, "the initial one again", choose(first, map[string]string{"new": initial, "super_password": "my super password"}), http.StatusConflict)
 	want(t, "chosen", choose(first, map[string]string{"new": "my own password", "super_password": "my super password"}), http.StatusOK)
 	want(t, "me after choosing", f.status(first, "GET", "/api/me", nil), http.StatusOK)
+	want(t, "the signed-in browser reports its key again", f.status(first, "POST", "/api/login/device", key), http.StatusOK)
+	checkKey()
 	want(t, "choosing again", choose(first, map[string]string{"new": "another password"}), http.StatusConflict)
 	if f.s.store.MustChange(id) || !f.s.store.PasswordOK(id, "my own password") || !f.s.store.CheckSuper(id, "my super password") {
 		t.Fatal("the choice was not kept")
