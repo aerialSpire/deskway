@@ -29,7 +29,7 @@ img, svg { -webkit-user-drag: none; }
 .heading .title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .heading .count { flex: none; color: var(--quiet); white-space: nowrap; }
 .heading-end { flex: none; margin-left: auto; margin-right: calc(-1 * var(--s3)); align-self: center; }
-.heading > .status { margin-top: var(--s1); }
+.heading > .computer-status { margin-top: var(--s1); }
 /* The way back sits on the title's baseline. Its hit area extends into the left gutter. */
 .title-back { position: relative; display: inline-block; margin-right: var(--s2); padding: 0; border: 0; background: transparent; color: inherit; vertical-align: baseline; }
 .title-back svg { display: block; width: .4em; height: .66em; }
@@ -153,7 +153,9 @@ img, svg { -webkit-user-drag: none; }
 .card-open:focus-visible { outline: none; }
 .card-open:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
 .card-body .dropdown { z-index: 1; margin: calc(-1 * var(--s2)) calc(-1 * var(--s3)) calc(-1 * var(--s2)) 0; }
-.card-body .status { margin-top: 0; font-size: var(--fs-small); white-space: nowrap; overflow: hidden; }
+.card-body .computer-status { font-size: var(--fs-small); }
+.card-body .status { white-space: nowrap; overflow: hidden; }
+.computer-update { color: var(--quiet); overflow-wrap: anywhere; }
 
 /* Loading (design.css .loading): shown until the first real answer, so nothing claims "none"
    or "failed" early. */
@@ -540,7 +542,7 @@ img, svg { -webkit-user-drag: none; }
   .thumb { padding: var(--s2); }
   .card-body { padding: var(--s2) var(--s3) var(--s3); }
   .card-open { font-size: var(--fs-small); }
-  .card-body .status { font-size: var(--fs-caption); }
+  .card-body .computer-status { font-size: var(--fs-caption); }
   .preview { margin-top: var(--s5); padding: var(--s2); }
 }
 @media (orientation: landscape) and (max-height: 500px) {

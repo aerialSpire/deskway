@@ -173,19 +173,43 @@ func TestHellosCarryVersionAndHostCaps(t *testing.T) {
 		t.Fatalf("first message: %v", m)
 	}
 	h := f.hostSocket(f.srv.URL, "pc1")
-	h.send(proto.Msg{Type: proto.TypeHello, Version: proto.Version, Caps: []string{"input", "files"}, Tools: []string{"run", "", strings.Repeat("x", 65), "screenshot"}})
+	older := proto.MinVersion - 1
+	h.send(proto.Msg{Type: proto.TypeHello, Version: older, Caps: []string{"input", "files"}, Tools: []string{"run", "", strings.Repeat("x", 65), "screenshot"}})
 	for {
 		d := b.next(proto.TypeDevices)
-		if len(d.Devices) == 1 && d.Devices[0].Online && d.Devices[0].Version == proto.Version && len(d.Devices[0].Caps) == 2 {
+		if len(d.Devices) == 1 && d.Devices[0].Online && d.Devices[0].Version == older && len(d.Devices[0].Caps) == 2 {
 			if got := d.Devices[0].Tools; len(got) != 2 || got[0] != "run" || got[1] != "screenshot" {
 				t.Fatalf("tools: %v (empty and too long names are dropped)", got)
 			}
 			break
 		}
 	}
-	// Offline, the computer still says which AI tools it carried out when it was last connected.
-	if got := f.s.store.DevicesFor(f.id("me"))[0].Tools; len(got) != 2 || got[1] != "screenshot" {
-		t.Fatalf("kept tools: %v", got)
+	h.close()
+	for {
+		m := b.next(proto.TypeDevices)
+		if d := m.Devices[0]; !d.Online {
+			if d.Version != older || len(d.Tools) != 2 || len(d.Caps) != 0 {
+				t.Fatalf("offline computer: %+v", d)
+			}
+			break
+		}
+	}
+	var saved Store
+	if err := readState(f.data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.Devices["pc1"].Version; got != older {
+		t.Fatalf("saved version: %d; want %d", got, older)
+	}
+
+	// A freshly upgraded host is online before its new hello can arrive.
+	h = f.hostSocket(f.srv.URL, "pc1")
+	if d := b.next(proto.TypeDevices).Devices[0]; !d.Online || d.Version != 0 {
+		t.Fatalf("online before hello: %+v", d)
+	}
+	h.send(proto.Msg{Type: proto.TypeHello, Version: proto.Version})
+	if d := b.next(proto.TypeDevices).Devices[0]; !d.Online || d.Version != proto.Version {
+		t.Fatalf("online after hello: %+v", d)
 	}
 }
 

@@ -6,7 +6,7 @@
 // trailing ? marks an optional field.
 
 export const PROTOCOL_VERSION = 4;
-export const MIN_VERSION = 3;
+export const MIN_VERSION = PROTOCOL_VERSION - 1;
 
 // Capabilities a host announces; the browser offers a feature only when its cap is there.
 export const CAPS = Object.freeze({

@@ -1,8 +1,7 @@
 {
-  "protocol_version": 4,
-  "min_version": 3,
   "notes": [
     "The single definition of every Deskway message. Go (internal/proto), Rust (crates/wire) and JS (web/static/js/proto.js) are checked against it by contract tests. docs/protocol.md is the readable version.",
+    "version.json defines the current protocol version. The minimum supported host version is current minus one.",
     "Field types: string, integer, number, boolean, object, array (with items), map (object with arbitrary keys, with values), any, or the name of an entry in types. enum restricts a string.",
     "status: current = on the wire today (possibly with new fields, which carry their own status); new = introduced by protocol version 2.",
     "Receivers ignore fields they do not know. Senders only send what the peer's version and caps allow."
@@ -60,11 +59,11 @@
         "last_seen": { "type": "integer", "optional": true, "meaning": "unix seconds" },
         "controller": { "type": "Controller", "optional": true, "meaning": "who holds it now (established or still connecting), as this browser sees it; absent: nobody" },
         "displays": { "type": "array", "items": "Display", "optional": true, "meaning": "attached displays, while online" },
-        "version": { "type": "integer", "optional": true, "status": "current", "since": 2, "meaning": "the host's protocol version from its hello, while online" },
+        "version": { "type": "integer", "optional": true, "status": "current", "since": 2, "meaning": "protocol version from the current signaling hello while online, or the last saved version while offline; absent when unknown" },
         "caps": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 2, "meaning": "the host's capabilities from its hello, while online" },
         "ai": { "type": "AiView", "optional": true, "meaning": "AI clients on this computer; absent: the switch was never set" },
         "here": { "type": "boolean", "optional": true, "status": "current", "since": 4, "meaning": "this computer said it is the one this browser or AI client runs on (locate); absent: it did not" },
-        "tools": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 4, "meaning": "the AI tools the computer carries out, from its hello, while online; absent: an older computer, which did not say" }
+        "tools": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 4, "meaning": "the AI tools the computer last reported in its hello; absent when none were reported" }
       }
     },
     "AiView": {

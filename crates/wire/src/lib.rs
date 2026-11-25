@@ -27,9 +27,9 @@ mod tests;
 
 /// The protocol version this build speaks. Version 1 is everything before `hello` existed.
 pub const PROTOCOL_VERSION: u32 = 4;
-/// The oldest peer version this build talks to; older peers are asked to update.
+/// The oldest host protocol supported by this release.
 #[cfg(any(test, feature = "contract"))]
-pub const MIN_VERSION: u32 = 3;
+pub const MIN_VERSION: u32 = PROTOCOL_VERSION - 1;
 
 /// Capability names a host can announce in its `hello`. Which ones a given host announces
 /// depends on its platform and settings (a view-only host leaves out `input`).

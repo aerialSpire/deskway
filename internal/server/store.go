@@ -57,6 +57,8 @@ type DeviceRecord struct {
 	// Tools are the AI tools it carried out when it last connected: whether it takes AI
 	// control shows while it is offline too.
 	Tools []string `json:"tools,omitempty"`
+	// Version is the last protocol version the computer reported; 0 means unknown.
+	Version int `json:"version,omitempty"`
 }
 
 // BrowserRecord is one browser an account signs in from. Its key is the hash of the
@@ -99,17 +101,7 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{path: path, lock: lock, Users: map[string]*User{}, Devices: map[string]*DeviceRecord{}, Browsers: map[string]*BrowserRecord{}}
-	raw, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		err = json.Unmarshal(raw, s)
-		if err != nil {
-			err = fmt.Errorf("parse %s: %w", path, err)
-		}
-	case errors.Is(err, os.ErrNotExist):
-		err = nil
-	}
-	if err != nil {
+	if err := readState(path, s); err != nil && !errors.Is(err, os.ErrNotExist) {
 		lock.Close()
 		return nil, err
 	}
@@ -127,6 +119,17 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+func readState(path string, s *Store) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(raw, s); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	return nil
 }
 
 // Close releases the state file for another process. The store must not change after it.

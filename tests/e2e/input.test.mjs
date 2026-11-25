@@ -3,6 +3,7 @@
 // let go under Command on a Mac, characters with modifiers (kc), the computer's key labels on
 // the on-screen keyboard, pointer reports in move order, and Pointer Lock.
 import { sleep, keyboardOf, click, centre } from './harness.mjs';
+import { PROTOCOL_VERSION } from '../../web/static/js/proto.js';
 
 export const area = {
   name: 'input',
@@ -15,7 +16,7 @@ export const area = {
     const recorded = () => a.v(`JSON.stringify(s.recorded().map((e) => e.t === 'k' ? e.c + (e.d ? '+' : '-') : e.t === 'sync' ? 'sync:' + Object.keys(e.mods).filter((k) => e.mods[k]).join('+') : e.t))`);
     const fresh = () => a.v(`(s.releaseAll(), s.clearRecorded(), s.focus())`);
     // The computer says what it can do, as its hello does.
-    await a.v(`s.fromHost({ t: 'hello', version: 3, caps: ['input', 'relmouse', 'layout', 'chars'] })`);
+    await a.v(`s.fromHost({ t: 'hello', version: ${PROTOCOL_VERSION}, caps: ['input', 'relmouse', 'layout', 'chars'] })`);
 
     // ---- sync ----
     await fresh();
@@ -148,7 +149,7 @@ export const area = {
       h.check('leaving Pointer Lock (Esc) ends the mode and hides the drawn pointer', await a.v(`!s.info().locked && s.el.lockBtn.getAttribute('aria-pressed') === 'false' && s.el.cursor.hidden`));
     }
     await a.v(`s.hideToolbar()`);
-    await a.v(`s.fromHost({ t: 'hello', version: 3, caps: ['input'] })`);
+    await a.v(`s.fromHost({ t: 'hello', version: ${PROTOCOL_VERSION}, caps: ['input'] })`);
     h.check('a computer without relative moves offers no Pointer Lock', await a.v(`s.el.lockBtn.hidden`));
     await a.v(`(s.releaseAll(), s.stopRecording())`);
   },

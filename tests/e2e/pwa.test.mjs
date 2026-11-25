@@ -3,6 +3,7 @@
 // menu's way to install (the browser's prompt, or Safari's steps), and the Home Screen app's
 // first sign-in and device name.
 import { sleep, t, q } from './harness.mjs';
+import { PROTOCOL_VERSION } from '../../web/static/js/proto.js';
 
 export const area = {
   name: 'pwa',
@@ -28,7 +29,7 @@ export const area = {
     h.check('the shell keeps the page and its files, never the API', kept.some((x) => x.endsWith('/style.css')) && !kept.some((x) => x.startsWith('/api/') || x.startsWith('/ws/')), JSON.stringify(kept));
 
     // A new version: a notice with "Reload" on the pages; never during a session.
-    const newer = `d.serverSays({ type: 'hello', version: 3, caps: [], build: 'newer-build' })`;
+    const newer = `d.serverSays({ type: 'hello', version: ${PROTOCOL_VERSION}, caps: [], build: 'newer-build' })`;
     await h.sessionOn(p);
     await p.v(newer);
     await sleep(300);

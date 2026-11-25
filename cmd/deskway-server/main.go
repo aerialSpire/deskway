@@ -22,9 +22,20 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "admin" {
-		adminCommand(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "admin":
+			adminCommand(os.Args[2:])
+			return
+		case "upgrade-check":
+			os.Exit(upgradeCheckCommand(os.Args[2:]))
+		}
+	}
+	flag.Usage = func() {
+		fmt.Fprintln(flag.CommandLine.Output(), "Usage: deskway-server [flags]")
+		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin NAME [-data FILE]")
+		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
+		flag.PrintDefaults()
 	}
 	var (
 		listen    = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
@@ -119,6 +130,25 @@ func main() {
 		log.Fatal(err)
 	}
 	log.Printf("stopped")
+}
+
+func upgradeCheckCommand(args []string) int {
+	flags := flag.NewFlagSet("upgrade-check", flag.ExitOnError)
+	dataPath := flags.String("data", "deskway-data/state.json", "state file")
+	flags.Parse(args)
+	if flags.NArg() != 0 {
+		flags.Usage()
+		return 2
+	}
+	ready, err := server.UpgradeCheck(*dataPath, os.Stdout)
+	if err != nil {
+		log.Print(err)
+		return 2
+	}
+	if !ready {
+		return 1
+	}
+	return 0
 }
 
 // adminCommand makes the server's first account, the admin (docs/accounts.md):

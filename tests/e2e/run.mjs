@@ -11,6 +11,7 @@
 // --host-exe and --home let the tests open pairing windows on the test host, as its owner would.
 // On macOS, --areas host-restart starts and restarts a host with that separate test profile.
 // --server-exe and --server-state add the check that a server restart keeps the session.
+// --areas previous-protocol uses a fresh account with a previous-version host.
 // Several runs can go side by side with their own --devtools-port and server --url.
 // On Windows, run --areas first-use alone. It starts its own server and three hosts with fresh state.
 // It needs --browser, --url http://localhost:PORT, --server-exe and --host-exe.
@@ -27,7 +28,7 @@ const AREAS = ['auth', 'session', 'transfer', 'clipboard', 'keyboard', 'input', 
 // Run only when named. clipboard-host uses the real clipboard of the computer running the
 // tests; relay needs a fresh member account and a host started for it; first-use runs its
 // own local server and Windows hosts.
-const OPT_IN = ['clipboard-host', 'relay', 'host-restart', 'first-use'];
+const OPT_IN = ['clipboard-host', 'relay', 'host-restart', 'first-use', 'previous-protocol'];
 const opts = options();
 const modules = Object.fromEntries(await Promise.all([...AREAS, ...OPT_IN].map(async (name) => [name, (await import(`./${name}.test.mjs`)).area])));
 const wanted = new Set();
