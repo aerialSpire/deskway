@@ -2,6 +2,8 @@ package server
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 )
@@ -30,6 +32,16 @@ func TestTheStateFileHasOneOwner(t *testing.T) {
 		t.Fatalf("open after close: %v", err)
 	}
 	s.Close()
+}
+
+func TestFailedAdminCreationLeavesNoStateFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if _, err := CreateAdmin(path, "x"); !errors.Is(err, errBadName) {
+		t.Fatalf("invalid admin name: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state file after failed admin creation: %v", err)
+	}
 }
 
 // The admin is the first account and only the first; it starts with an initial password.

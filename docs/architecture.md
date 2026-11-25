@@ -548,7 +548,9 @@ The source of truth is the viewer's constraints.
   | `members.go` | the admin's members: list, create, reset, remove |
   | `browsers.go` | approvals, browser keys, the device log, the device-check policy |
   | `aiclients.go` | AI clients' sign-in without the password and the 10-minute window in which an account accepts new ones |
-  | `clientprograms.go` | AI client program lookup, release fetching and verification, and listing and download responses |
+  | `clientprograms.go` | AI client program lookup, cache and HTTP responses |
+  | `release.go` | release stamp, checksum parsing and verified downloads shared by AI client distribution and server upgrades |
+  | `selfupgrade.go` | atomic replacement of the server executable from a verified release archive |
   | `computers.go` | enroll, leave, rename, remove, the device list and who holds each computer as each browser sees it; at most `maxComputersPerUser` per account |
   | `previews.go` | previews |
   | `signaling.go` | the sockets, routed through `sessions.go` |

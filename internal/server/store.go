@@ -96,6 +96,18 @@ type Store struct {
 // OpenStore takes the state file's lock, then loads path or creates it with fresh secrets. It
 // fails with ErrLocked while another process has it open.
 func OpenStore(path string) (*Store, error) {
+	s, err := openStore(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.saveLocked(); err != nil {
+		s.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func openStore(path string) (*Store, error) {
 	lock, err := lockState(path)
 	if err != nil {
 		return nil, err
@@ -113,10 +125,6 @@ func OpenStore(path string) (*Store, error) {
 	}
 	if s.TURNSecret == "" {
 		s.TURNSecret = randomHex(32)
-	}
-	if err := s.saveLocked(); err != nil {
-		lock.Close()
-		return nil, err
 	}
 	return s, nil
 }
@@ -246,6 +254,17 @@ func (s *Store) CheckSuper(user, password string) bool {
 // the admin command, members by the admin.
 
 var errHasAccounts = errors.New("this server has accounts already; its admin makes the others")
+
+// CreateAdmin initializes the first account on disk. The state file is first saved
+// with the account, so a failed first install can retry creating the admin.
+func CreateAdmin(path, name string) (string, error) {
+	s, err := openStore(path)
+	if err != nil {
+		return "", err
+	}
+	defer s.Close()
+	return s.CreateAdmin(name)
+}
 
 // CreateAdmin makes the server's first account, the admin, and returns its initial password.
 // It refuses once any account exists.

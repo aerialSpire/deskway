@@ -124,13 +124,13 @@ func TestReleaseProgramDistribution(t *testing.T) {
 
 func TestReleaseProgramFailuresAndRetry(t *testing.T) {
 	for _, c := range []struct {
-		reason clientFailure
+		reason releaseFailure
 		status int
 		body   string
 	}{
-		{clientDownloadFailed, http.StatusBadGateway, "upstream error"},
-		{clientChecksumFailed, http.StatusOK, "wrong binary"},
-		{clientStorageFailed, http.StatusOK, releaseBody},
+		{releaseDownloadFailed, http.StatusBadGateway, "upstream error"},
+		{releaseChecksumFailed, http.StatusOK, "wrong binary"},
+		{releaseStorageFailed, http.StatusOK, releaseBody},
 	} {
 		t.Run(string(c.reason), func(t *testing.T) {
 			dir := t.TempDir()
@@ -153,7 +153,7 @@ func TestReleaseProgramFailuresAndRetry(t *testing.T) {
 				}
 			})
 			path := p.releasePath(releaseProgram)
-			if c.reason == clientStorageFailed {
+			if c.reason == releaseStorageFailed {
 				// A directory at the destination makes the atomic installation fail.
 				if err := os.MkdirAll(path, 0o755); err != nil {
 					t.Fatal(err)
@@ -168,14 +168,14 @@ func TestReleaseProgramFailuresAndRetry(t *testing.T) {
 			res := f.do(me, "GET", "/api/ai/clients?details=1", nil)
 			var details struct {
 				Files  []ClientFile
-				Errors map[string]clientFailure
+				Errors map[string]releaseFailure
 			}
 			if err := json.NewDecoder(res.Body).Decode(&details); err != nil || details.Files == nil || len(details.Files) != 0 ||
 				len(details.Errors) != 1 || details.Errors[releaseProgram] != c.reason {
 				t.Fatalf("program details: %+v, %v", details, err)
 			}
 			want(t, "the failed program is unavailable", f.status(me, "GET", "/download/"+releaseProgram, nil), http.StatusNotFound)
-			if c.reason == clientStorageFailed {
+			if c.reason == releaseStorageFailed {
 				if err := os.Rename(path, filepath.Join(dir, "blocked")); err != nil {
 					t.Fatal(err)
 				}

@@ -3,30 +3,19 @@ package server
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"maps"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
 
-// clientReleaseStamp is set by the release workflow. A source build serves local files.
-var clientReleaseStamp string
-
-const (
-	clientFetchTimeout = 30 * time.Second
-	clientFetchRetry   = time.Minute
-	maxClientFileSize  = 128 << 20
-)
+const clientFetchRetry = time.Minute
 
 // The program for each system, by the names the prompt and the downloads use.
 var clientFiles = [...]struct{ OS, Arch, File string }{
@@ -50,7 +39,7 @@ type clientPrograms struct {
 	hashes          map[string]string
 
 	mu         sync.Mutex
-	failures   map[string]clientFailure // Last fetch failure for each unavailable program.
+	failures   map[string]releaseFailure // Last fetch failure for each unavailable program.
 	fileHashes map[string]clientFileHash
 }
 
@@ -59,14 +48,6 @@ type clientFileHash struct {
 	mod  time.Time
 	sum  string
 }
-
-type clientFailure string
-
-const (
-	clientDownloadFailed clientFailure = "download"
-	clientChecksumFailed clientFailure = "checksum"
-	clientStorageFailed  clientFailure = "storage"
-)
 
 // ServeClients configures program distribution and starts fetching before serving HTTP.
 // Files placed directly in dir take priority over the release cache.
@@ -88,31 +69,18 @@ func (s *Server) serveClients(p *clientPrograms, fetch bool, retry time.Duration
 func newClientPrograms(dir, stamp string) (*clientPrograms, error) {
 	p := &clientPrograms{
 		dir:        dir,
-		failures:   map[string]clientFailure{},
+		failures:   map[string]releaseFailure{},
 		fileHashes: map[string]clientFileHash{},
 	}
 	if stamp == "" {
 		return p, nil
 	}
-	b, err := base64.StdEncoding.DecodeString(stamp)
+	release, err := parseReleaseStamp(stamp)
 	if err != nil {
 		return p, err
 	}
-	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-	if len(lines) < 3 || lines[0] == "" || lines[1] == "" {
-		return p, errors.New("missing repository, tag or hashes")
-	}
-	hashes := make(map[string]string)
-	for _, line := range lines[2:] {
-		sum, name, _ := strings.Cut(line, " *")
-		digest, err := hex.DecodeString(sum)
-		if name == "" || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != sum {
-			return p, fmt.Errorf("invalid SHA-256 for %s", name)
-		}
-		hashes[name] = sum
-	}
-	p.hashes = hashes
-	p.releaseURL = "https://github.com/" + lines[0] + "/releases/download/" + url.PathEscape(lines[1])
+	p.hashes = release.hashes
+	p.releaseURL = releaseAssetURL(release.repo, release.tag)
 	return p, nil
 }
 
@@ -186,7 +154,7 @@ func (p *clientPrograms) openClientFile(path string) (*clientProgramFile, error)
 }
 
 func (p *clientPrograms) fetchMissing(ctx context.Context, retry time.Duration) {
-	client := &http.Client{Timeout: clientFetchTimeout}
+	client := &http.Client{Timeout: releaseFetchTimeout}
 	for {
 		retryNeeded := false
 		for _, c := range clientFiles {
@@ -197,7 +165,7 @@ func (p *clientPrograms) fetchMissing(ctx context.Context, retry time.Duration) 
 				return
 			}
 			f, openErr := p.open(c.File)
-			var failure clientFailure
+			var failure releaseFailure
 			if f != nil {
 				f.Close()
 			} else if openErr == nil {
@@ -227,52 +195,29 @@ func (p *clientPrograms) fetchMissing(ctx context.Context, retry time.Duration) 
 	}
 }
 
-func (p *clientPrograms) fetch(ctx context.Context, client *http.Client, name string) (clientFailure, error) {
-	asset := p.releaseURL + "/" + name
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset, nil)
-	if err != nil {
-		return clientDownloadFailed, err
-	}
-	res, err := client.Do(req)
-	if err != nil {
-		return clientDownloadFailed, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return clientDownloadFailed, fmt.Errorf("download %s: HTTP %s", asset, res.Status)
-	}
+func (p *clientPrograms) fetch(ctx context.Context, client *http.Client, name string) (releaseFailure, error) {
 	path := p.releasePath(name)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return clientStorageFailed, err
+		return releaseStorageFailed, err
 	}
 	tmp, err := os.CreateTemp(dir, ".download-*")
 	if err != nil {
-		return clientStorageFailed, err
+		return releaseStorageFailed, err
 	}
 	defer os.Remove(tmp.Name())
-	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(res.Body, maxClientFileSize+1))
+	failure, err := downloadRelease(ctx, client, p.releaseURL+"/"+name, tmp, maxReleaseAssetSize, p.hashes[name])
 	closeErr := tmp.Close()
 	if err != nil {
-		if _, disk := errors.AsType[*os.PathError](err); disk {
-			return clientStorageFailed, err
-		}
-		return clientDownloadFailed, fmt.Errorf("download %s: %w", asset, err)
+		return failure, err
 	}
 	if closeErr != nil {
-		return clientStorageFailed, closeErr
-	}
-	if n > maxClientFileSize {
-		return clientDownloadFailed, fmt.Errorf("download %s exceeds %d bytes", asset, maxClientFileSize)
-	}
-	if actual, expected := hex.EncodeToString(h.Sum(nil)), p.hashes[name]; actual != expected {
-		return clientChecksumFailed, fmt.Errorf("SHA-256 mismatch: got %s, want %s", actual, expected)
+		return releaseStorageFailed, closeErr
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		return clientStorageFailed, err
+		return releaseStorageFailed, err
 	}
 	delete(p.fileHashes, path)
 	return "", nil
@@ -282,7 +227,7 @@ func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
 	details := r.URL.Query().Get("details") == "1"
 	p := s.programs
 	list := []ClientFile{}
-	failures := map[string]clientFailure{}
+	failures := map[string]releaseFailure{}
 	if details && p != nil {
 		p.mu.Lock()
 		maps.Copy(failures, p.failures)
@@ -295,7 +240,7 @@ func (s *Server) handleClients(w http.ResponseWriter, r *http.Request) {
 			list = append(list, ClientFile{c.OS, c.Arch, c.File, f.info.Size(), f.sum})
 			delete(failures, c.File)
 		} else if details && err != nil {
-			failures[c.File] = clientStorageFailed
+			failures[c.File] = releaseStorageFailed
 		}
 	}
 	w.Header().Set("Cache-Control", "no-store")
