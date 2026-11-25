@@ -13,6 +13,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Changed
 
+- Deskway Host and the web client now share a D mark formed by a screen and a circle.
 - Signing out of Deskway Host keeps the computer on the account. Signing in again with the same
   account brings it back approved, with its trusted devices and AI setting; only removing it on
   **My devices** takes it off.
