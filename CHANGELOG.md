@@ -19,6 +19,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Connect to the first computer you add without needing to request control, and turn on AI for it from the same browser.
 - Keep a complete picture during scrolling and window changes on slow connections.
 - Reduce the delay before clicks and keystrokes become visible when video backs up.
 

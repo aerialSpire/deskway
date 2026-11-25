@@ -218,3 +218,30 @@ func TestBrowserKeyApprovalAndRemovalAreLogged(t *testing.T) {
 	}
 	want(t, "removed device is signed out", f.status(second, "GET", "/api/me", nil), http.StatusUnauthorized)
 }
+
+func TestSuperApprovalOfAWaitingKeyIsLoggedOnce(t *testing.T) {
+	f := newFixture(t)
+	store, user := f.s.store, f.id("me")
+	const id = "waiting"
+	now := time.Now().Unix()
+	if _, err := store.AskApproval(id, user, "", "Browser", "", "123456", now, maxPendingPerUser); err != nil {
+		t.Fatal(err)
+	}
+	key := proto.BrowserKey{Cred: "Y3JlZDE", Alg: -7, Key: "a2V5MQ==", Name: "iPhone"}
+	if _, ok := store.AttachKey(id, "", key, now); !ok {
+		t.Fatal("waiting key was not attached")
+	}
+	if l, _ := store.DeviceLog(user); len(l) != 0 {
+		t.Fatalf("waiting key was logged before approval: %+v", l)
+	}
+	// Both sign-ins can have observed the pending browser before either approves it.
+	for range 2 {
+		if err := store.ApproveWithSuper(id, user, "Browser", "", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l, _ := store.DeviceLog(user)
+	if len(l) != 1 || l[0].Op != proto.OpAdd || l[0].Cred != key.Cred || l[0].By != "" {
+		t.Fatalf("expected one unsigned add for the approved browser: %+v", l)
+	}
+}

@@ -78,6 +78,7 @@ export function options(argv = process.argv) {
     // Optional: the server's executable and data file, for restarting it during a session.
     serverExe: arg('server-exe'),
     serverState: arg('server-state'),
+    browserArgs: argv.filter((v) => v.startsWith('--browser-arg=')).map((v) => v.slice('--browser-arg='.length)),
     port: Number(arg('devtools-port') || 9333),
     areas: arg('areas') ? arg('areas').split(',').map((x) => x.trim()).filter(Boolean) : null,
   };
@@ -376,6 +377,7 @@ export class Harness {
     this.browser = spawn(this.opts.browser, [
       '--headless=new', `--remote-debugging-port=${this.opts.port}`, `--user-data-dir=${this.profile}`,
       '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--autoplay-policy=no-user-gesture-required',
+      ...this.opts.browserArgs,
       // The browser is a desktop with a mouse and no touch screen, whatever machine runs the
       // tests (a touch screen there would change pointer media queries and maxTouchPoints);
       // phone pages switch to touch by emulation. Blink values: pointer fine = 4, hover = 2.
@@ -515,9 +517,11 @@ export class Harness {
 
   // The test host's panel pipe (dev mode names it after its config folder), used here the way
   // the person sitting at the computer uses the panel.
-  panelPipe() {
-    const hash = createHash('sha256').update(this.opts.hostHome).digest('hex').slice(0, 8);
+  panelPipe(home = this.opts.hostHome) {
+    const hash = createHash('sha256').update(home).digest('hex').slice(0, 8);
     const sock = pipeConnect(`\\\\.\\pipe\\deskway-ui-dev-${hash}`);
+    let error = null;
+    sock.on('error', (err) => { error = err; });
     let buf = Buffer.alloc(0);
     const statuses = [];
     sock.on('data', (d) => {
@@ -538,7 +542,7 @@ export class Harness {
       head.writeUInt32LE(body.length, 0);
       sock.write(Buffer.concat([head, body]));
     };
-    return { statuses, send, close: () => sock.destroy() };
+    return { statuses, send, get error() { return error; }, close: () => sock.destroy() };
   }
 
   // ---- the server ----

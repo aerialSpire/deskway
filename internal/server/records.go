@@ -512,12 +512,12 @@ func (s *Store) letInLocked(id, user, label, ip string, now int64) error {
 		rec = &BrowserRecord{Owner: user, Label: label, IP: ip, Created: now}
 		s.Browsers[id] = rec
 	}
+	if !rec.Approved && rec.Key != nil {
+		s.appendLogLocked(user, rec.Key.AddEntry(proto.Proof{TS: now}))
+	}
 	rec.Approved, rec.Pickup, rec.Code, rec.LastSeen = true, false, "", now
 	if u := s.Users[user]; u != nil {
 		u.HadBrowser = true
-	}
-	if rec.Key != nil {
-		s.appendLogLocked(user, rec.Key.AddEntry(proto.Proof{TS: now}))
 	}
 	return s.saveLocked()
 }

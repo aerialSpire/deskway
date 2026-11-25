@@ -59,19 +59,26 @@ export function deviceLabel() {
 
 // Not through api(): this also runs while the device waits for approval, not signed in yet,
 // where a 401 is no sign-out.
-async function attachPasskey(rec) {
-  await fetch('/api/login/device', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cred: rec.cred, alg: rec.alg, key: rec.key, name: rec.name || deviceLabel() }) }).catch(() => {});
+export async function reportPasskey(rec) {
+  const res = await fetch('/api/login/device', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cred: rec.cred, alg: rec.alg, key: rec.key, name: rec.name || deviceLabel() }) });
+  // The browser cookie can outlive its key. The server keeps the key it already knows.
+  if (!res.ok && res.status !== 404) throw new Error('device key registration failed');
+  return res.ok;
 }
 
-// This device's key: made once, silently, and told to the server so the account's other
-// devices can approve it. No prompt, no fingerprint, works in every current browser. A new key
-// takes `name`, the one chosen for this device.
-export async function ensurePasskey(name = deviceLabel()) {
+// This device's key is made once, silently. A new key takes the chosen name. Tabs share
+// the same key, including when two of them first sign in at the same time.
+let provisioning;
+export function ensurePasskey(name = deviceLabel()) {
+  const prepare = () => loadOrCreatePasskey(name);
+  provisioning ??= (navigator.locks ? navigator.locks.request('deskway.passkey', prepare) : prepare())
+    .finally(() => { provisioning = null; });
+  return provisioning;
+}
+
+async function loadOrCreatePasskey(name) {
   const have = storedPasskey();
-  if (have && await privateKey()) {
-    await attachPasskey(have);
-    return have;
-  }
+  if (have && await privateKey()) return have;
   if (!window.crypto || !crypto.subtle || !window.indexedDB) throw new Error('nokey');
   const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
   const spki = await crypto.subtle.exportKey('spki', pair.publicKey);
@@ -81,7 +88,6 @@ export async function ensurePasskey(name = deviceLabel()) {
   // Ask the browser to keep the key through storage pressure and tracking prevention; the
   // devices page says so when it refused.
   await keyPersisted(true);
-  await attachPasskey(rec);
   return rec;
 }
 

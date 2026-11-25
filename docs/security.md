@@ -60,10 +60,11 @@ and nothing is shared between accounts. See docs/accounts.md.
 A new account, and an account whose password has been reset, gets a generated initial password:
 four groups of four characters from an alphabet without look-alike characters (about 79 bits,
 from `crypto/rand`). It is returned once to the admin, and only its bcrypt hash is stored. While
-an account's password is an initial one, every request from the account is answered with 428,
-except the request that chooses its own password (`POST /api/initial-password`). That request
-refuses the initial password itself as the new password and, if the account has no super
-password yet, requires one as well.
+an account's password is an initial one, its approved browser can register its device key
+and choose its new password (`POST /api/initial-password`). Its other signed-in pages and
+actions require the new password and answer with 428 until it is chosen. The new password
+has to differ from the initial one. If the account has no super password yet, it must choose
+one as well.
 
 ### The first browser
 
@@ -123,7 +124,9 @@ offers only UDP relays, so no allocation can escape the limit.
 - Each browser generates its own ECDSA P-256 key with WebCrypto, once and without a prompt. The
   private key is stored in IndexedDB as a non-extractable key. The public key and a random id
   (`cred`) are kept in localStorage, and the browser sends both to the server
-  (`POST /api/login/device`).
+  (`POST /api/login/device`). A waiting browser sends its key for comparison with the
+  approver. A signed-in browser registers its key before opening the computers and their
+  approval requests.
 - Every signature is plain ECDSA with SHA-256 over the 32-byte challenge, encoded as base64url
   r||s, with no `ad` and no `cd`. Computers also verify log entries and vouches that carry a
   WebAuthn passkey assertion (`ad`, `cd`, `sig`) the way a relying party would, but browsers do

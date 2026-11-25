@@ -12,6 +12,9 @@
 // On macOS, --areas host-restart starts and restarts a host with that separate test profile.
 // --server-exe and --server-state add the check that a server restart keeps the session.
 // Several runs can go side by side with their own --devtools-port and server --url.
+// On Windows, run --areas first-use alone. It starts its own server and three hosts with fresh state.
+// It needs --browser, --url http://localhost:PORT, --server-exe and --host-exe.
+// --browser-arg=FLAG forwards a browser startup flag. It can be repeated.
 import { Harness, options } from './harness.mjs';
 
 // In the order they run. Every area but panel needs auth, which signs in `h.a` (the first
@@ -22,8 +25,9 @@ import { Harness, options } from './harness.mjs';
 const AREAS = ['auth', 'session', 'transfer', 'clipboard', 'keyboard', 'input', 'takeover', 'lifecycle', 'devices', 'members', 'touch', 'security', 'i18n', 'layout', 'panel', 'pwa', 'ai', 'manage'];
 
 // Run only when named. clipboard-host uses the real clipboard of the computer running the
-// tests; relay needs a fresh member account and a host started for it, so it runs alone.
-const OPT_IN = ['clipboard-host', 'relay', 'host-restart'];
+// tests; relay needs a fresh member account and a host started for it; first-use runs its
+// own local server and Windows hosts.
+const OPT_IN = ['clipboard-host', 'relay', 'host-restart', 'first-use'];
 const opts = options();
 const modules = Object.fromEntries(await Promise.all([...AREAS, ...OPT_IN].map(async (name) => [name, (await import(`./${name}.test.mjs`)).area])));
 const wanted = new Set();
