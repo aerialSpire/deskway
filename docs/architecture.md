@@ -575,12 +575,17 @@ enrollments enable sleep prevention and register the per-user login item. On Win
 prevention is off by default. The panel applies the setting through the network service on
 Windows and in the app on macOS.
 
-The always-running part of Deskway (the network service on Windows, the app on macOS) holds the
-platform's keep-awake request while the setting is on. The display may still turn off, and
-closing a laptop's lid follows the system's setting. In addition, a session keeps both the
-system and the display awake, through a request held by the process that runs the platform. A
-single policy (`power.rs`, unit-tested) is applied over one native request per process:
-`PowerCreateRequest` on Windows and IOPM assertions on macOS.
+The always-running part of Deskway (the network service on Windows, the app on macOS) requests
+keep-awake while the setting is on. On battery below 15%, Deskway releases the setting's request
+and reapplies it on external power or at 15% or higher. The platform reads the power state on
+enable and when the OS reports a change. Turning the setting off unregisters the notifications.
+A failed read or registration is treated as external power. Deskway logs a registration failure
+once per enable. Deskway reissues the request when external power returns because Windows can end
+it on battery on Modern Standby devices. The display may still turn off, and the OS handles lid close.
+
+A desk session keeps the system and display awake, and an AI session keeps the system awake.
+The battery rule applies only to the setting and is table-tested in `power.rs`. Each process
+holds one native request using `PowerCreateRequest` on Windows or IOPM assertions on macOS.
 
 ## macOS host
 

@@ -2,7 +2,7 @@
 // test browser at its window size (380 × 700) and in a short window: every state in each
 // language, its layout, and what it sends to the host. Only the panel page is captured.
 import { readFileSync, readdirSync } from 'node:fs';
-import { sleep, LANGS, HOST_TEXTS } from './harness.mjs';
+import { sleep, lit, LANGS, HOST_TEXTS } from './harness.mjs';
 
 const root = new URL('../../', import.meta.url);
 const read = (p) => readFileSync(new URL(p, root), 'utf8');
@@ -46,7 +46,7 @@ export const area = {
       await p.metrics(380, 700, false, 1);
       await p.send('Page.navigate', { url: `data:text/html;charset=utf-8;base64,${Buffer.from(page()).toString('base64')}` });
       await p.until(`typeof window.render === 'function'`, `${lang}: panel page`);
-      const render = (s) => p.eval(`(() => { window.render(${JSON.stringify(s)}); return true; })()`);
+      const render = (s) => p.eval(`(() => { window.render(${lit({ keep_awake_min_battery: 15, ...s })}); return true; })()`);
       const sent = () => p.eval(`JSON.stringify(window.__sent || [])`).then(JSON.parse);
       const clearSent = () => p.eval(`window.__sent = []`);
       const layout = async (where) => {
@@ -75,6 +75,7 @@ export const area = {
 
       // Signed in: settings, then at most three devices, the one in control first.
       await render(base({ devices: [...devices(11), device(12, { controlling: true, name: 'Windows PC · Chrome' })] }));
+      h.check(`panel ${lang}: keep-awake shows the 15% battery threshold`, await p.eval(`document.querySelector('#prevent-sleep-note').textContent === ${lit(t['panel.prevent_sleep_note'].replace('{percent}', '15'))}`));
       const overview = await p.eval(`[...document.querySelectorAll('#overview .dev b')].map((b) => b.textContent)`);
       h.check(`panel ${lang}: the overview lists three devices, the one in control first, then the most recently used`, overview.length === 3 && overview[0] === 'Windows PC · Chrome' && overview[1] === 'Device 1 · Chrome', JSON.stringify(overview));
       h.check(`panel ${lang}: twelve devices: "see all" with the count`, await p.eval(`!document.querySelector('#see-all').hidden && document.querySelector('#see-all').textContent.includes('12')`));

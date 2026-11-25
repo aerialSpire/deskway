@@ -63,12 +63,23 @@ you can remove devices from it there.
 | Setting | What it does |
 |---|---|
 | **Start with Windows** | On by default. When off, the host doesn't run after a restart and shows as offline |
-| **Keep this computer awake** | Prevents idle sleep while Deskway Host runs. The display may still turn off |
+| **Keep this computer awake** | Requests that Windows prevent idle sleep while Deskway Host runs. The display may still turn off |
 | **Lock when disconnected** | Locks Windows when a remote session ends |
 | **Sign out** | Stops this computer using the account. The account keeps it: signing in again with the same account brings it back as it was. Removing it on **My devices** takes it off the account |
 
+On battery below 15%, Deskway releases the setting's keep-awake request. It requests keep-awake
+again on external power or at 15% or higher. Active sessions keep their own requests. On Modern
+Standby devices running on battery, Windows can end a keep-awake request on its own. Deskway
+reissues it when external power returns.
+
 The person at the computer can always see when it is being controlled, and can end any session
 from the on-screen notice or from the panel.
+
+### Keeping a laptop reachable with its lid closed
+
+In Windows, open **Control Panel → Hardware and Sound → Power Options → Choose what closing
+the lid does**. Set **When I close the lid** to **Do nothing** in the **Plugged in** column,
+then save changes.
 
 ## Updating
 

@@ -25,7 +25,7 @@
   "panel.autostart_confirm": "When this is off, Deskway Host won't run after this computer restarts: it shows as offline in your list and can't be reached remotely. The next time you open Deskway Host on this computer, it starts and Start with Windows turns back on.",
   "panel.autostart_off": "Turn off",
   "panel.prevent_sleep": "Keep this computer awake",
-  "panel.prevent_sleep_note": "The display may still turn off. A closed laptop lid follows the system setting.",
+  "panel.prevent_sleep_note": "On battery power, this setting pauses below {percent}%.",
   "mac.autostart": "Open at login",
   "panel.lock": "Lock when disconnected",
   "panel.pair": "Add a phone or computer",

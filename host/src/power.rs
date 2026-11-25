@@ -3,8 +3,8 @@
 //!
 //! Three reasons to stay awake, each held by the process that knows it:
 //! - the `prevent_sleep` setting, by the always-running part (the Windows network service, the
-//!   macOS app). The system stays awake; the display may still turn off, and a closed laptop
-//!   lid follows the system's own setting.
+//!   macOS app), except when running on battery below the threshold. The display may still
+//!   turn off, and a closed laptop lid follows the system's own setting.
 //! - a session in progress, by the process that runs the platform (the Windows agent, the macOS
 //!   app). The display stays on too: someone is watching it.
 //! - an AI client on the AI seat, by the always-running part, which holds the seats. The system
@@ -15,6 +15,10 @@
 use std::sync::Mutex;
 
 use anyhow::Result;
+
+use crate::platform::{PowerNotifications, PowerRequest, PowerState};
+
+pub const MIN_BATTERY_PERCENT: u8 = 15;
 
 /// What to ask of the operating system.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,10 +35,11 @@ impl Need {
     }
 }
 
-/// The policy: the setting and an AI client keep the system awake, a session the system and the
-/// display.
-pub fn need(prevent_sleep: bool, session: bool, ai: bool) -> Need {
-    Need { system: prevent_sleep || session || ai, display: session }
+/// A low battery suspends the setting. A desk session keeps the system and display awake,
+/// and an AI client keeps the system awake.
+pub fn need(prevent_sleep: bool, session: bool, ai: bool, power: PowerState) -> Need {
+    let low_battery = matches!(power, PowerState::Battery(percent) if percent < MIN_BATTERY_PERCENT);
+    Need { system: (prevent_sleep && !low_battery) || session || ai, display: session }
 }
 
 /// A native keep-awake request, active from creation until dropped.
@@ -47,12 +52,13 @@ pub struct Power<H> {
     prevent_sleep: bool,
     session: bool,
     ai: bool,
+    state: PowerState,
     held: Option<(Need, H)>,
 }
 
 impl<H: Hold> Power<H> {
     pub const fn new() -> Self {
-        Power { prevent_sleep: false, session: false, ai: false, held: None }
+        Power { prevent_sleep: false, session: false, ai: false, state: PowerState::External, held: None }
     }
 
     pub fn set_ai(&mut self, on: bool) -> Result<()> {
@@ -70,6 +76,15 @@ impl<H: Hold> Power<H> {
         self.apply()
     }
 
+    fn power_changed(&mut self, state: PowerState) -> Result<()> {
+        // The OS may have ended the request while on battery.
+        if matches!((self.state, state), (PowerState::Battery(_), PowerState::External)) {
+            self.held = None;
+        }
+        self.state = state;
+        self.apply()
+    }
+
     /// What is held now; less than wanted when the system refused.
     pub fn held(&self) -> Need {
         self.held.as_ref().map(|(n, _)| *n).unwrap_or_default()
@@ -78,7 +93,7 @@ impl<H: Hold> Power<H> {
     /// Replaces the request only when the need changed. A refused request holds nothing, and
     /// the next change tries again.
     fn apply(&mut self) -> Result<()> {
-        let want = need(self.prevent_sleep, self.session, self.ai);
+        let want = need(self.prevent_sleep, self.session, self.ai, self.state);
         if self.held() == want {
             return Ok(());
         }
@@ -90,32 +105,48 @@ impl<H: Hold> Power<H> {
     }
 }
 
-static POWER: Mutex<Power<crate::platform::PowerRequest>> = Mutex::new(Power::new());
+static POWER: Mutex<(Power<PowerRequest>, Option<PowerNotifications>)> = Mutex::new((Power::new(), None));
 
 /// The `prevent_sleep` setting, applied at once.
 pub fn prevent_sleep(on: bool) -> Result<()> {
-    POWER.lock().unwrap().set_prevent_sleep(on)
+    // Registration can call back immediately. Unregistering can wait for callbacks.
+    let notifications = if on {
+        PowerNotifications::register().map_err(|e| eprintln!("cannot register for power source notifications: {e:#}")).ok()
+    } else {
+        None
+    };
+    let mut guard = POWER.lock().unwrap();
+    let (power, active) = &mut *guard;
+    let previous = std::mem::replace(active, notifications);
+    power.state = active.as_ref().map_or(PowerState::External, PowerNotifications::state);
+    let result = power.set_prevent_sleep(on);
+    drop(guard);
+    drop(previous);
+    result
+}
+
+/// Read and apply each fresh snapshot under the same lock.
+pub fn power_source_changed() {
+    let (power, notifications) = &mut *POWER.lock().unwrap();
+    if let Some(notifications) = notifications {
+        if let Err(e) = power.power_changed(notifications.state()) {
+            eprintln!("cannot update the keep-awake request: {e:#}");
+        }
+    }
 }
 
 /// A session started or ended in this process.
 pub fn session(on: bool) {
-    if let Err(e) = POWER.lock().unwrap().set_session(on) {
+    if let Err(e) = POWER.lock().unwrap().0.set_session(on) {
         eprintln!("cannot keep the computer awake during the session: {e:#}");
     }
 }
 
 /// An AI client holds the AI seat, or no longer does.
 pub fn ai_session(on: bool) {
-    if let Err(e) = POWER.lock().unwrap().set_ai(on) {
+    if let Err(e) = POWER.lock().unwrap().0.set_ai(on) {
         eprintln!("cannot keep the computer awake for the AI client: {e:#}");
     }
-}
-
-/// Whether the setting's request is in force. The macOS panel shows it; the Windows panel runs
-/// in another process than the request.
-#[cfg(target_os = "macos")]
-pub fn awake() -> bool {
-    POWER.lock().unwrap().held().system
 }
 
 #[cfg(test)]
@@ -141,17 +172,23 @@ mod tests {
     }
 
     #[test]
-    fn the_setting_and_an_ai_client_keep_the_system_and_a_session_the_display_too() {
-        // (setting, session, AI client) -> need
-        for (p, s, a, want) in [
-            (false, false, false, Need::default()),
-            (true, false, false, Need { system: true, display: false }),
-            (false, true, false, Need { system: true, display: true }),
-            (true, true, false, Need { system: true, display: true }),
-            (false, false, true, Need { system: true, display: false }),
-            (false, true, true, Need { system: true, display: true }),
+    fn keep_awake_policy() {
+        use PowerState::{Battery, External};
+
+        // (setting, desk session, AI client, power) -> need
+        for (p, s, a, power, want) in [
+            (false, false, false, External, Need::default()),
+            (true, false, false, External, Need { system: true, display: false }),
+            (true, false, false, Battery(14), Need::default()),
+            (true, false, false, Battery(15), Need { system: true, display: false }),
+            (false, false, false, Battery(100), Need::default()),
+            (false, true, false, External, Need { system: true, display: true }),
+            (true, true, false, Battery(14), Need { system: true, display: true }),
+            (false, false, true, External, Need { system: true, display: false }),
+            (true, false, true, Battery(14), Need { system: true, display: false }),
+            (false, true, true, External, Need { system: true, display: true }),
         ] {
-            assert_eq!(need(p, s, a), want, "{p} {s} {a}");
+            assert_eq!(need(p, s, a, power), want, "{p} {s} {a} {power:?}");
         }
     }
 
