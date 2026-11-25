@@ -150,6 +150,7 @@ Releases are published by the **Release** workflow. It is started by hand from
 
 | File | What it is |
 |---|---|
+| `install-server.sh` | Server installer for Debian and Ubuntu with systemd |
 | `deskway-server-linux-amd64.tar.gz`, `deskway-server-linux-arm64.tar.gz` | The server for Linux on x86-64 and ARM64, with the license and the systemd unit template |
 | `DeskwayHost-Setup-windows-x64.exe` | Deskway Host installer for Windows (x64) |
 | `DeskwayHost-macos-universal.dmg` | Deskway Host for macOS (Apple silicon and Intel) |

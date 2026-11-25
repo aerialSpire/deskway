@@ -27,6 +27,11 @@ func main() {
 		case "admin":
 			adminCommand(os.Args[2:])
 			return
+		case "-supports-upgrade":
+			// The installer probes with a flag so older servers exit without starting.
+			return
+		case "upgrade":
+			os.Exit(upgradeCommand(os.Args[2:]))
 		case "upgrade-check":
 			os.Exit(upgradeCheckCommand(os.Args[2:]))
 		}
@@ -35,6 +40,7 @@ func main() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Usage: deskway-server [flags]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin NAME [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
+		fmt.Fprintln(flag.CommandLine.Output(), "       "+upgradeUsage)
 		flag.PrintDefaults()
 	}
 	var (
@@ -169,15 +175,10 @@ func adminCommand(args []string) {
 	if err := fs.Parse(args[1:]); err != nil {
 		log.Fatal(err)
 	}
-	store, err := server.OpenStore(*dataPath)
+	password, err := server.CreateAdmin(*dataPath, name)
 	if errors.Is(err, server.ErrLocked) {
 		log.Fatal("the server is running; stop it first")
 	}
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer store.Close()
-	password, err := store.CreateAdmin(name)
 	if err != nil {
 		log.Fatal(err)
 	}

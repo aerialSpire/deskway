@@ -1,8 +1,21 @@
 # Self-hosting the Deskway server
 
-These steps set up Deskway on a fresh Linux server. When you finish, your browsers, your
-computers (Deskway Host) and your AI clients all use one HTTPS address. Work through the steps in
-order. Most of them end with a way to confirm that the step worked.
+## Quick install
+
+On Debian or Ubuntu with systemd, point your domain's DNS A record to the server's public
+IPv4 address and [open the firewall ports](#open-the-firewall). With `curl` and
+`ca-certificates` installed, run this on the server with your own domain and admin name.
+
+```sh
+installer=$(curl -fsSL https://github.com/aerialSpire/deskway/releases/latest/download/install-server.sh) &&
+  printf '%s\n' "$installer" | sudo sh -s -- --domain desk.example.net --admin me
+```
+
+The installer looks up the domain's public IPv4 address in DNS for TURN, verifies the release
+archive, and checks that the installed service is running. Save the initial admin password
+when it appears, then follow [First sign-in](#7-first-sign-in-and-adding-people). Add
+`--version TAG` to select a release by tag. Use the [by-hand route](#install-by-hand) to build
+from source or customize the install.
 
 The examples use the following values. Replace them with your own:
 
@@ -42,13 +55,13 @@ sudo ufw allow 3478
 sudo ufw allow 49160:49359/udp
 ```
 
-`dig +short desk.example.net` should print the server's public IP address.
+`getent -s dns ahostsv4 desk.example.net.` should show the server's public IPv4 address.
 
-## 2. Download the server
+## Install by hand
 
-Each release includes the server for Linux on x86-64 and ARM64, together with the license and the
-systemd unit template. Download the one for your machine and check it against the release's
-checksums:
+### 2. Download the server
+
+Download the archive for your architecture and verify it before extracting it.
 
 ```sh
 sudo apt-get update && sudo apt-get install -y curl ca-certificates
@@ -58,36 +71,19 @@ arch=$(dpkg --print-architecture)   # amd64 or arm64
 base="https://github.com/aerialSpire/deskway/releases/download/$tag"
 curl -fLO "$base/deskway-server-linux-$arch.tar.gz"
 curl -fLO "$base/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf "deskway-server-linux-$arch.tar.gz"
-cd "deskway-server-linux-$arch"
+sha256sum --check --ignore-missing SHA256SUMS &&
+  tar -xzf "deskway-server-linux-$arch.tar.gz" &&
+  cd "deskway-server-linux-$arch"
 ```
 
-`sha256sum` should print `deskway-server-linux-amd64.tar.gz: OK` (or `arm64`), and
-`./deskway-server -h` should list the server's flags. The folder now holds `deskway-server`,
-`deskway.service` and `LICENSE`. Continue with step 4 from this folder.
+Check for `OK` beside the archive name before extracting it. Continue with step 4.
 
 To run the server in a container instead, see [Running in Docker](#running-in-docker).
 
-## 3. Or build the server from source
+### 3. Or build the server from source
 
-Skip this step if you downloaded the server in step 2.
-
-Building the server requires Go 1.26 or later, and the latest stable release is recommended. The
-Debian and Ubuntu packages are usually older, so install Go from [go.dev/dl](https://go.dev/dl/):
-
-```sh
-sudo apt-get update && sudo apt-get install -y git curl ca-certificates
-
-go_version=1.27.4   # any release from 1.26 on; the newest is listed at https://go.dev/dl/
-arch=$(dpkg --print-architecture)   # amd64 or arm64
-curl -fsSLO "https://go.dev/dl/go${go_version}.linux-${arch}.tar.gz"
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf "go${go_version}.linux-${arch}.tar.gz"
-rm "go${go_version}.linux-${arch}.tar.gz"
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
-export PATH=$PATH:/usr/local/go/bin
-```
+If you already downloaded a release, continue with step 4. To build from source, install Git
+and [Go 1.26 or later](https://go.dev/dl/).
 
 `go version` should print `go1.26` or later. Then build the server and gather the same files a
 release contains:
@@ -111,27 +107,22 @@ works from Windows or macOS too:
 GOOS=linux GOARCH=amd64 go build -o bin/deskway-server ./cmd/deskway-server
 ```
 
-## 4. Install it and create the admin account
+### 4. Install it and create the admin account
 
-Run these commands from the folder that holds `deskway-server` (step 2 or 3):
+From the folder with `deskway-server`, install it, create the system user and state directory,
+and create the admin account.
 
 ```sh
 sudo install -m 755 deskway-server /usr/local/bin/deskway-server
-
 sudo useradd --system --user-group --home-dir /var/lib/deskway --shell /usr/sbin/nologin deskway
 sudo install -d -m 700 -o deskway -g deskway /var/lib/deskway
-
 sudo -u deskway /usr/local/bin/deskway-server admin me -data /var/lib/deskway/state.json
 ```
 
-`admin` creates the server's first account and prints its initial password. The password is
-shown only once, so save it. The command works only while no account exists and the server is
-stopped, because it needs exclusive access to the state file. Accounts for other people are
-created later on the website.
+Save the initial password when it appears. The command requires a stopped server and an empty
+account list.
 
-`sudo ls /var/lib/deskway` should now show `state.json`.
-
-## 5. AI client programs (automatic for releases)
+### 5. AI client programs (automatic for releases)
 
 A released server downloads missing `deskway` programs for Windows x64 and both macOS
 architectures from its own GitHub release in the background at startup. It verifies each
@@ -166,7 +157,7 @@ After you sign in (step 7), **Add an AI client** lists the available programs an
 download, verification or storage errors. The server logs fetch failures and retries them
 in the background after a one-minute delay. Reopen the page to see the latest status.
 
-## 6. Start the service
+### 6. Start the service
 
 The folder from step 2 or 3 holds a hardened systemd unit template, `deskway.service`. From that
 folder, fill in your domain and IP address and install it:
@@ -314,44 +305,56 @@ server bind port 443.
 
 ## Upgrading
 
-1. Read the release notes for the version you are moving to.
-2. Download the new release (step 2) or build it (step 3).
-3. Before moving to the next protocol version, run the check with the current server binary
-   against its state file. The command reads the last saved snapshot while the server is
-   running and lists every account's computers.
+Read the release notes and [back up the server's data](#backup-and-restore) first. If the
+currently installed binary has `upgrade-check`, run it to check protocol readiness. It reads
+the last saved state while the service is running.
 
-   ```sh
-   sudo -u deskway /usr/local/bin/deskway-server upgrade-check -data /var/lib/deskway/state.json
-   ```
+```sh
+sudo -u deskway /usr/local/bin/deskway-server upgrade-check -data /var/lib/deskway/state.json
+```
 
-   Each row gives the last protocol version reported and its status relative to the binary
-   running the check. Exit status 0 means every approved computer is `current` or `newer`.
-   Computers still waiting for approval appear as `pending` and do not affect readiness. Exit status
-   1 flags `previous`, `older` and `unknown` computers. Bring computers with an unknown
-   version online to let them report it, then run the check again. Exit status 2 means the
-   check failed.
-4. Stop the service, back up its data and replace the binary:
+Exit status 0 means all approved computers report the current protocol or newer. Exit status 1
+flags `previous`, `older` and `unknown` computers. Bring computers with an unknown version
+online, update computers flagged by the check, and run it again before moving to the next
+protocol version. Computers marked `pending` do not affect readiness. Exit status 2 means the
+check failed.
 
-   ```sh
-   sudo systemctl stop deskway
-   sudo cp -a /var/lib/deskway /var/lib/deskway.bak-$(date +%F)
-   sudo install -m 755 deskway-server /usr/local/bin/deskway-server
-   ```
+### Automated upgrade
 
-   To switch to automatic fetching, move any manually placed programs out of `clients` before
-   starting the new server. Update any manually supplied programs you want to keep serving.
-   Start the service with `sudo systemctl start deskway`.
+For systemd installations, automated upgrades are available starting with the first released
+binary that includes `upgrade`. If you are on an earlier release or a source build,
+[upgrade by hand](#upgrade-by-hand) once to move to a supported release.
 
-5. Update Deskway Host on each computer: on Windows run the new `DeskwayHost-Setup-windows-x64.exe`
-   and choose **Update**; on macOS quit Deskway Host and replace `Deskway.app` in Applications.
-   The device list shows **Update available** for a computer you can still connect to and
-   **This computer needs an update** when its protocol is too old to connect. See the
-   [compatibility window](protocol.md#versions-and-capabilities).
+Rerun the installer to verify and replace the executable, enable the service, and restart it.
+Add `--version TAG` to pick a release.
 
-The released server automatically fetches the new release's AI client programs at startup.
-AI clients pick up the programs served by the server within an hour.
+```sh
+installer=$(curl -fsSL https://github.com/aerialSpire/deskway/releases/latest/download/install-server.sh) &&
+  printf '%s\n' "$installer" | sudo sh -s -- --domain desk.example.net
+```
 
-Browsers pick up the new web client on their own and show "A new version of Deskway is ready".
+You can also replace the executable and restart the service separately.
+
+```sh
+sudo /usr/local/bin/deskway-server upgrade && sudo systemctl restart deskway
+```
+
+Use `deskway-server upgrade -to TAG` to select a release.
+
+### Upgrade by hand
+
+Use step 2 to get the new release or step 3 to continue building from source. Stop the
+service, install the binary as in step 4, then start the service again.
+
+### After upgrading
+
+Update Deskway Host on each computer. On Windows, run the new
+`DeskwayHost-Setup-windows-x64.exe` and choose **Update**. On macOS, quit Deskway Host and
+replace `Deskway.app` in Applications. See the [compatibility window](protocol.md#versions-and-capabilities).
+
+The released server fetches the new release's AI client programs at startup. Update any
+manually supplied programs you want to keep serving. AI clients check for updates within an
+hour. Browsers pick up the new web client and show “A new version of Deskway is ready”.
 
 ## Backup and restore
 

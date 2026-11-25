@@ -165,7 +165,8 @@ jobs:
 
           cd "$RUNNER_TEMP/deskway-release"
           read -r -a client_files <<< "$AI_CLIENT_ASSETS"
-          files=(DeskwayHost-Setup-windows-x64.exe DeskwayHost-macos-universal.dmg "${client_files[@]}" deskway-server-linux-amd64.tar.gz deskway-server-linux-arm64.tar.gz)
+          cp "$GITHUB_WORKSPACE/scripts/install-server.sh" .
+          files=(install-server.sh DeskwayHost-Setup-windows-x64.exe DeskwayHost-macos-universal.dmg "${client_files[@]}" deskway-server-linux-amd64.tar.gz deskway-server-linux-arm64.tar.gz)
           sha256sum -- "${files[@]}" > SHA256SUMS
           assets=("${files[@]}" SHA256SUMS)
           expected='{}'
