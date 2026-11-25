@@ -25,7 +25,7 @@
   "panel.autostart_confirm": "关闭后，这台电脑重启后不会运行 Deskway Host，在列表里显示离线，远程连不上。下次在这台电脑上打开 Deskway Host 时会启动它，开机自动启动也会恢复。",
   "panel.autostart_off": "关闭",
   "panel.prevent_sleep": "防止电脑睡眠",
-  "panel.prevent_sleep_note": "屏幕仍可能关闭；合上笔记本电脑的盖子时按系统设置处理。",
+  "panel.prevent_sleep_note": "使用电池供电且电量低于 {percent}% 时，此设置会暂停生效。",
   "mac.autostart": "开机自动启动",
   "panel.lock": "断开后自动锁屏",
   "panel.pair": "添加手机或电脑",

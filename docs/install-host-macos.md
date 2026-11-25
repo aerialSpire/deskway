@@ -70,12 +70,18 @@ Finishing setup turns on **Open at login** and **Keep this computer awake**.
 - **Open at login** opens Deskway Host after you sign in to macOS. If the panel shows
   **Login item awaiting approval**, click **Approve the login item in System Settings** and allow
   Deskway under **General → Login Items & Extensions**.
-- **Keep this computer awake** prevents idle system sleep while Deskway Host runs. The display may
-  still turn off between sessions, and a remote session wakes it.
+- **Keep this computer awake** prevents idle system sleep while Deskway Host runs. On battery
+  below 15%, Deskway releases the setting's request and reapplies it on external power or at 15%
+  or higher. Active sessions keep their own requests. The display may still turn off between
+  sessions. A desk session wakes the display.
 
 You can turn each setting on or off separately. Signing out in the panel also removes the login item and stops keeping
 the Mac awake. If
 macOS refuses to remove the login item, use **Try again to stop opening at login**.
+
+A Mac laptop sleeps when its lid is closed unless it is in macOS closed-display mode, which
+requires external power, an external display, and a keyboard and mouse or trackpad. Deskway
+cannot change this macOS behavior.
 
 ## Using a Mac remotely
 

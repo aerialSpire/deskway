@@ -142,15 +142,12 @@ impl Backend for InProcess {
         let login = platform::ui::login_status();
         json!({
             "enrolled": self.cfg.is_some(), "busy": self.busy, "error": self.error,
-            // Start at login is the login item itself; keep-awake is the setting, and whether
-            // macOS holds it.
             "autostart": login.registered(),
             "mac": {
                 "screen": permissions.screen,
                 "accessibility": permissions.accessibility,
                 "permission_request": self.permission_request,
                 "login": login,
-                "awake": crate::power::awake(),
                 "error": self.settings_error,
             },
         })

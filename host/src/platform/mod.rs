@@ -21,6 +21,13 @@ use wire::types::{ClipboardError, FormatKind, Locks, Mods};
 mod local;
 pub use local::Local;
 
+/// The OS power state relevant to the keep-awake setting.
+#[derive(Clone, Copy, Debug)]
+pub enum PowerState {
+    External,
+    Battery(u8),
+}
+
 #[cfg(windows)]
 pub mod remote;
 #[cfg(windows)]

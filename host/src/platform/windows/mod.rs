@@ -18,7 +18,7 @@ pub use clipboard::Clipboard as NativeClipboard;
 pub use clipboard::{set_text as set_clipboard_text, text as clipboard_text};
 pub use programs::{kill_tree, start_program, start_terminal};
 pub use displays::DisplayWatch;
-pub use power::PowerRequest;
+pub use power::{PowerNotifications, PowerRequest};
 pub use encoder::Encoder as NativeEncoder;
 pub use files::Files as NativeFiles;
 pub use input::WinInput as NativeInput;

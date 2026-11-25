@@ -137,7 +137,7 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
         <div class="actions"><button class="btn compact" id="autostart-no" type="button" data-i18n="common.cancel"></button><button class="btn compact danger primary" id="autostart-yes" type="button" data-i18n="panel.autostart_off"></button></div>
       </div>
       <!-- Directly under starting with the computer, on every platform. -->
-      <div id="prevent-sleep-row" class="row" hidden><span><span data-i18n="panel.prevent_sleep"></span><span class="note" id="prevent-sleep-note" data-i18n="panel.prevent_sleep_note"></span></span><button class="switch" id="prevent-sleep" type="button" role="switch" data-i18n-attr="aria-label=panel.prevent_sleep" aria-describedby="prevent-sleep-note"><span></span></button></div>
+      <div id="prevent-sleep-row" class="row" hidden><span><span data-i18n="panel.prevent_sleep"></span><span class="note" id="prevent-sleep-note"></span></span><button class="switch" id="prevent-sleep" type="button" role="switch" data-i18n-attr="aria-label=panel.prevent_sleep" aria-describedby="prevent-sleep-note"><span></span></button></div>
       <div id="lock-row" class="row"><span data-i18n="panel.lock"></span><button class="switch" id="lock" type="button" role="switch" data-i18n-attr="aria-label=panel.lock"><span></span></button></div>
 
       <div class="dh"><h2><span data-i18n="panel.devices_title"></span> <span class="n" id="count"></span></h2><button class="btn compact" id="add" type="button" data-i18n="panel.add"></button></div>
@@ -469,6 +469,7 @@ window.render = (s) => {
   // Keep-awake, directly under it, wherever the host runs.
   $('prevent-sleep-row').hidden = s.prevent_sleep == null;
   $('prevent-sleep').setAttribute('aria-checked', !!s.prevent_sleep);
+  $('prevent-sleep-note').textContent = t('panel.prevent_sleep_note', { percent: s.keep_awake_min_battery });
   // A failure has a reason; "connecting" forever without one helps nobody.
   if (!s.online && s.problem) { text = t('status.no_server'); dot = 'warn'; }
   $('problem').hidden = !(!s.online && s.problem);

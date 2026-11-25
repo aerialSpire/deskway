@@ -195,6 +195,7 @@ fn panel_state(status: Option<&Status>, extras: Value) -> Value {
         "ai_client": s.ai_client, "ai_state": s.ai_state,
         "pair_qr": s.pair_url.as_deref().map(qr_svg), "devices": s.devices, "max_devices": crate::auth::MAX_CONTROLLERS,
         "asks": s.asks, "problem": s.problem, "prevent_sleep": s.prevent_sleep,
+        "keep_awake_min_battery": crate::power::MIN_BATTERY_PERCENT,
         "account": s.account, "server": s.server,
     });
     if let (Some(state), Value::Object(extras)) = (state.as_object_mut(), extras) {
