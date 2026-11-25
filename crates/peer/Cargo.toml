@@ -24,8 +24,9 @@ str0m = { workspace = true }
 # The platform's own crypto backs DTLS; the host uses the same str0m.
 [target.'cfg(windows)'.dependencies]
 str0m = { workspace = true, features = ["wincrypto"] }
-# The machine id an AI client gives as where it is (here).
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Registry"] }
+# Machine identity (here) and the interface's default route (gateway).
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 str0m = { workspace = true, features = ["apple-crypto"] }

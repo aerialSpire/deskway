@@ -423,7 +423,7 @@ fn run_reader<E: From<NetEvent>>(
         match m.typ {
             DATA_INDICATION => {
                 let (Some(peer), Some(data)) = (m.attr(A_PEER).and_then(parse_xor_addr), m.attr(A_DATA)) else { continue };
-                if owner.send(NetEvent::Udp { data: data.to_vec(), source: peer, destination: relay }.into()).is_err() {
+                if owner.send(NetEvent::Udp { data: data.to_vec(), source: peer, destination: relay, slot: None }.into()).is_err() {
                     return;
                 }
             }

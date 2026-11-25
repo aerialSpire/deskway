@@ -84,9 +84,9 @@ carries the epoch it answers. The browser's `Connection` waits for exactly one e
 
 The challenge is idempotent: however often it is asked, the host gives a session the same nonce
 until the nonce is used or expires. The host answers each offer or restart once, with its epoch.
-On a restart it binds its local addresses again (its own network may have changed), probes STUN
-and the relays again, and trickles the new candidates. Sockets for addresses that no longer
-exist are closed.
+On a restart it binds its local addresses again (its own network may have changed), checks
+its default gateways for router mappings, probes STUN and TURN again, and trickles the new
+candidates. Sockets for addresses that no longer exist are closed.
 
 ## Admission (the host)
 

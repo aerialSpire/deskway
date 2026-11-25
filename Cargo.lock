@@ -534,6 +534,7 @@ dependencies = [
  "deskway-wire",
  "hmac",
  "if-addrs",
+ "libc",
  "md-5",
  "serde_json",
  "sha1",

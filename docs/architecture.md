@@ -46,9 +46,10 @@ wire/              wire types for the server and browser channels (serde), check
                    randomness; contract.rs (tests, and the `contract` feature): the definition
                    and proto/vectors.json as contract tests read them
 peer/              what a WebRTC peer needs whatever it is for: net.rs, the network paths (a
-                   socket per local address, IPv4 + IPv6; the STUN address, stun.rs; TURN
-                   relays, turn.rs; binding again on every ICE restart); state.rs, the
-                   session's state machine, the same on both ends
+                   socket per local address, IPv4 + IPv6; the STUN address, stun.rs; router
+                   mapping leases and PCP/NAT-PMP codecs, portmap/; native per-interface
+                   gateway lookup, gateway.rs; TURN relays, turn.rs; binding again on every ICE
+                   restart); state.rs, the session's state machine, the same on both ends
 ```
 
 ## Host modules (`host/src`)
@@ -571,8 +572,12 @@ The source of truth is the viewer's constraints.
 - Connect signatures use a nonce issued by the host, not the clock.
 - Connecting waits only for what it must. The server sends a browser its ICE servers on every
   socket and renews them before the TURN credentials expire. The host answers with its host
-  candidates and then trickles its STUN address (`crates/peer/src/stun.rs`, with probes answered
-  through the sockets' own readers) and its relay candidates. Capture and the encoder start when
+  candidates and then trickles public addresses from STUN and router mappings, along with its
+  relay candidates. The host and `deskway` share these paths. Gateway lookup runs in the
+  background for private IPv4 sockets on Windows and macOS, including on ICE restart. STUN
+  and the PCP or NAT-PMP lease use the session socket's own reader and send through that same
+  socket. The peer offers one server-reflexive candidate per endpoint and socket, and checks
+  STUN again if it had seen an endpoint whose lease was lost. Capture and the encoder start when
   the offer is accepted, at the offer's `view`, and the first frame sent after DTLS connects is a
   keyframe.
 

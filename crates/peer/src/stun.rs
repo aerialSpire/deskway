@@ -90,6 +90,18 @@ impl Probe {
 }
 
 #[cfg(test)]
+pub(crate) fn answer_for(id: u64) -> Vec<u8> {
+    let mut r = vec![0x01, 0x01, 0, 12];
+    r.extend_from_slice(&MAGIC);
+    r.extend_from_slice(&id.to_be_bytes());
+    r.extend_from_slice(&[0, 0, 0, 0]);
+    r.extend_from_slice(&[0x00, 0x20, 0, 8, 0, 1]);
+    r.extend_from_slice(&(5000u16 ^ 0x2112).to_be_bytes());
+    r.extend_from_slice(&[203 ^ MAGIC[0], 0 ^ MAGIC[1], 113 ^ MAGIC[2], 9 ^ MAGIC[3]]);
+    r
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -98,17 +110,6 @@ mod tests {
         let r = answer_for(42);
         assert_eq!(parse(&r, 42), Some("203.0.113.9:5000".parse().unwrap()));
         assert_eq!(parse(&r, 43), None, "a response for another transaction is ignored");
-    }
-
-    fn answer_for(id: u64) -> Vec<u8> {
-        let mut r = vec![0x01, 0x01, 0, 12];
-        r.extend_from_slice(&MAGIC);
-        r.extend_from_slice(&id.to_be_bytes());
-        r.extend_from_slice(&[0, 0, 0, 0]);
-        r.extend_from_slice(&[0x00, 0x20, 0, 8, 0, 1]);
-        r.extend_from_slice(&(5000u16 ^ 0x2112).to_be_bytes());
-        r.extend_from_slice(&[203 ^ MAGIC[0], 0 ^ MAGIC[1], 113 ^ MAGIC[2], 9 ^ MAGIC[3]]);
-        r
     }
 
     #[test]

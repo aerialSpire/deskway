@@ -16,6 +16,10 @@ computers as tools once you approve them.
 
 Video and input go directly between the browser and the computer over WebRTC when the network
 allows. Otherwise they go through the server's TURN relay, which only forwards encrypted traffic.
+On Windows and macOS, Deskway can use a compatible router's temporary UDP port mapping for a
+direct connection. Deskway asks to renew the mapping halfway through its granted lifetime and
+offers any new public address and port the router supplies. If the router stops answering or
+refuses renewal, the current address and port remain a candidate until the mapping expires.
 
 ## Features
 

@@ -99,8 +99,8 @@ browser                     server                        host
 
 - Nothing on the path to the answer waits for a network round trip that could be made earlier
   or later. The browser already has its STUN and TURN servers (`ice`) before a session starts.
-  The host answers immediately with its host candidates; the address seen by a STUN server and
-  the relay addresses follow as candidates when they are found. The `view` in the offer lets
+  The host answers immediately with its host candidates. Addresses from STUN, router mappings
+  and TURN relays follow as candidates when they are found. The `view` in the offer lets
   the host start capture and the encoder at the right size while ICE and DTLS are being set up.
   Frames are sent once DTLS is connected, starting with a keyframe. The `view` is not signed:
   the first `view` on the control channel confirms it end to end, and receiving the same
@@ -146,9 +146,9 @@ section lists its messages.
   creates an offer and sends `restart{session, epoch, sdp}`. The host accepts it only if its
   DTLS fingerprint equals the session's. No new proof is needed, because the fingerprint ties
   the restart to the authenticated connection. The host then binds its local addresses again
-  (opening new sockets for new addresses, contacting STUN and the relays again, trickling the
-  new candidates and closing sockets of addresses that have disappeared) and replies with a
-  signed `answer{epoch}`.
+  and replies with a signed `answer{epoch}`. It opens sockets for new addresses, closes sockets
+  for vanished addresses, checks default gateways for router mappings, and contacts STUN and
+  TURN servers again. It trickles new candidates as it finds them.
 - **Deadlines** are the same on both ends: 30 s to connect (counted from the challenge) and 30 s
   to recover (counted from entering recovery). Whichever end gives up ends the session with
   `failed`.

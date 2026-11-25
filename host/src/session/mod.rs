@@ -405,7 +405,7 @@ impl<R: Role> Session<R> {
     /// One event from the session's queue. True once the session is over.
     fn on_event(&mut self, rtc: &mut Rtc, net: &mut Net<SessionEvent>, ev: SessionEvent) -> Result<bool> {
         match ev {
-            SessionEvent::Net(e) => net.handle(rtc, e, |rtc, c| self.offer_candidate(rtc, c))?,
+            SessionEvent::Net(e) => net.handle(rtc, e, Instant::now(), |rtc, c| self.offer_candidate(rtc, c))?,
             SessionEvent::Platform(e) => self.role.platform(cx!(self, rtc), e),
             SessionEvent::ClipShare(on) => self.role.clip_share(cx!(self, rtc), on),
             SessionEvent::Mcp(text) => self.role.mcp_reply(cx!(self, rtc), text),
@@ -499,8 +499,8 @@ fn serve<R: Role>(s: &mut Session<R>, rtc: &mut Rtc, net: &mut Net<SessionEvent>
         };
 
         let look = s.role.before_wait(cx!(s, rtc), net.queued());
-        let probe = net.poll(Instant::now());
-        let next = probe.into_iter().chain(s.peer.machine.deadline()).chain(look).fold(deadline, Instant::min);
+        let network = net.poll(rtc, Instant::now());
+        let next = network.into_iter().chain(s.peer.machine.deadline()).chain(look).fold(deadline, Instant::min);
         let wait = next.saturating_duration_since(Instant::now()).min(Duration::from_millis(500));
         match rx.recv_timeout(wait) {
             Ok(ev) => {
@@ -632,7 +632,7 @@ mod tests {
                 }
             };
             match net_rx.recv_timeout(next.saturating_duration_since(Instant::now()).min(Duration::from_millis(20))) {
-                Ok(ev) => net.handle(&mut rtc, ev, |_, _| false).unwrap(),
+                Ok(ev) => net.handle(&mut rtc, ev, Instant::now(), |_, _| false).unwrap(),
                 Err(_) => rtc.handle_input(Input::Timeout(Instant::now())).unwrap(),
             }
         }

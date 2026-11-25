@@ -117,6 +117,12 @@ directions of all its allocations together, with a single token bucket at `-rela
 (default 30), and drops whatever exceeds it, so one account cannot crowd out another. The relay
 offers only UDP relays, so no allocation can escape the limit.
 
+A router mapping exposes the same UDP socket that already receives ICE checks. The same
+DTLS fingerprints bound by device signatures protect the connection. The socket readers share
+a limit on queued datagrams and drop excess packets before they enter the session's event queue.
+The gateway may keep the mapping for the lifetime it granted. The peer sends a best-effort
+release when the connection closes.
+
 ## Device keys
 
 ### The key itself

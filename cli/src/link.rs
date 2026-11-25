@@ -464,12 +464,12 @@ fn drive(l: &mut Link, rtc: &mut Rtc, net: &mut Net<LinkEvent>, rx: &Receiver<Li
         if matches!(l.machine.state(), peer::state::State::Recovering) && l.restarted.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
             l.restart(rtc, net)?;
         }
-        let next = net.poll(Instant::now()).into_iter().chain(l.machine.deadline()).fold(deadline, Instant::min);
+        let next = net.poll(rtc, Instant::now()).into_iter().chain(l.machine.deadline()).fold(deadline, Instant::min);
         let wait = next.saturating_duration_since(Instant::now()).min(Duration::from_millis(500));
         match rx.recv_timeout(wait) {
             Ok(LinkEvent::Net(e)) => {
                 let l2: &Link = l;
-                net.handle(rtc, e, |rtc, c| l2.offer_candidate(rtc, c))?;
+                net.handle(rtc, e, Instant::now(), |rtc, c| l2.offer_candidate(rtc, c))?;
             }
             Ok(LinkEvent::Signal(m)) => {
                 if l.on_signal(rtc, m)? {
