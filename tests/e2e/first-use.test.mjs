@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { SCREENS, TAKE_OVER, q, signIn, sleep, t } from './harness.mjs';
+import { SCREENS, TAKE_OVER, lit, q, signIn, sleep, t } from './harness.mjs';
 
 const runCommand = promisify(execFile);
 const title = `document.querySelector('.dialog h2')?.textContent`;
@@ -90,12 +90,12 @@ async function openComputer(h, p, computer, id, offers, host) {
 async function turnOnAI(h, p, id, computer) {
   await p.eval(`document.querySelector('.name-btn').click()`);
   await click(p, '.menu:not([hidden]) .menu-item', t('devices.title'));
-  const ai = `document.querySelector('[data-ai=${JSON.stringify(id)}]')`;
+  const ai = `document.querySelector('[data-ai=${lit(id)}]')`;
   await p.until(`${ai}?.getAttribute('aria-checked') === 'false'`, 'the new computer’s AI switch to be off');
   await p.eval(`${ai}.click()`);
   await click(p, '.dialog button', t('devices.allow'));
   const checked = `${ai}?.getAttribute('aria-checked') === 'true'`;
-  await p.until(`${checked} || ${title} === ${q('devices.notChanged')} || !!document.querySelector('[data-ai-refused=${JSON.stringify(id)}]')`, 'the computer to accept or refuse AI');
+  await p.until(`${checked} || ${title} === ${q('devices.notChanged')} || !!document.querySelector('[data-ai-refused=${lit(id)}]')`, 'the computer to accept or refuse AI');
   h.check(`${computer} accepts the AI setting`, await p.eval(checked));
   if (await p.eval(`${title} === ${q('devices.notChanged')}`)) await click(p, '.dialog button', t('common.ok'));
 }
@@ -171,7 +171,7 @@ export const area = {
           throw new Error(`browser approval does not match ${computer} and its panel code`);
         }
         await click(p, '.dialog button', t('common.approve'));
-        await p.until(`d?.devices().some((d) => d.id === ${JSON.stringify(id)} && d.online) && [...document.querySelectorAll('.card-open')].some((b) => b.textContent === ${JSON.stringify(computer)})`, `${computer} online on the list`);
+        await p.until(`d?.devices().some((d) => d.id === ${lit(id)} && d.online) && [...document.querySelectorAll('.card-open')].some((b) => b.textContent === ${lit(computer)})`, `${computer} online on the list`);
 
         await openComputer(h, p, computer, id, offers, host);
         await turnOnAI(h, p, id, computer);

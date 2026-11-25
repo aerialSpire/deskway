@@ -42,6 +42,9 @@ export function words(key, params, { lang = 'en', texts = WEB_TEXTS } = {}) {
 // in English, and `q` the same quoted for an expression evaluated on the page.
 export const t = (key, params) => words(key, params);
 export const q = (key, params) => JSON.stringify(t(key, params));
+// A value from outside the test (a computer's id or name) as a literal in an expression evaluated on the page:
+// JSON, with every character that could end a script or a line written as its escape.
+export const lit = (value) => JSON.stringify(value).replace(/[<>\/\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 // The longest fixed part of a text with placeholders: what the page shows whatever fills them.
 export const fixed = (key, opts) => words(key, undefined, opts).split(/\{\w+\}/).map((x) => x.trim()).reduce((a, b) => (b.length > a.length ? b : a));
