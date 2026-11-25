@@ -56,6 +56,11 @@ func (f *fixture) choose(id string) {
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	return newFixtureWithServer(t, nil)
+}
+
+func newFixtureWithServer(t *testing.T, configure func(*Server)) *fixture {
+	t.Helper()
 	data := filepath.Join(t.TempDir(), "state.json")
 	store, err := OpenStore(data)
 	if err != nil {
@@ -65,6 +70,9 @@ func newFixture(t *testing.T) *fixture {
 	// state as they end), then the store lets go of the file, then the folder is removed.
 	t.Cleanup(func() { store.Close() })
 	s := New(store, func(string) []proto.ICEServer { return nil }, fstest.MapFS{})
+	if configure != nil {
+		configure(s)
+	}
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(func() {
 		srv.Close()

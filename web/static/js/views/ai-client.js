@@ -18,21 +18,28 @@ import { deviceOf, answerDevice } from './approvals.js';
 
 // Where the program goes on the AI's computer: its user folder, no administrator rights.
 const PATH = { windows: '%LOCALAPPDATA%\\Deskway\\bin\\deskway.exe', unix: '~/.deskway/bin/deskway' };
+const FILE_ERROR = new Map([
+  ['download', 'aiclient.fileError.download'],
+  ['checksum', 'aiclient.fileError.checksum'],
+  ['storage', 'aiclient.fileError.storage'],
+]);
 
-const page = { from: 'devices', files: null, until: 0, copied: false, copyFailed: false, open: false, manual: false, codes: {} };
+const page = { from: 'devices', files: null, fileErrors: {}, until: 0, copied: false, copyFailed: false, open: false, manual: false, codes: {} };
 let timer = 0;
 
 // Opened from My devices or a computer's page; the way back returns there.
 export function openAiClient() {
-  Object.assign(page, { from: state.view === 'detail' ? 'detail' : 'devices', files: null, copied: false, copyFailed: false, open: false, manual: false });
+  Object.assign(page, { from: state.view === 'detail' ? 'detail' : 'devices', files: null, fileErrors: {}, copied: false, copyFailed: false, open: false, manual: false });
   setView('aiclient');
   load();
 }
 
 async function load() {
   try {
-    const [files, win] = await Promise.all([api('GET', '/api/ai/clients'), api('GET', '/api/ai/window')]);
-    page.files = files.ok ? await files.json() : [];
+    const [programs, win] = await Promise.all([api('GET', '/api/ai/clients?details=1'), api('GET', '/api/ai/window')]);
+    const { files, errors } = programs.ok ? await programs.json() : { files: [], errors: {} };
+    page.files = files;
+    page.fileErrors = errors;
     if (win.ok) page.until = (await win.json()).until;
   } catch (e) {
     if (signedOut(e)) return;
@@ -72,13 +79,18 @@ async function copy() {
 
 function stepPrompt() {
   if (!page.files) return h('p', { class: 'hint' }, t('common.loading'));
-  if (!page.files.length) return h('p', { class: 'hint ai-note' }, t('aiclient.noFiles'));
-  return h('div', { class: `ai-prompt ${page.open ? 'open' : ''}` },
+  const notes = Object.entries(page.fileErrors).map(([file, reason]) =>
+    h('p', { class: 'hint ai-note' }, t(FILE_ERROR.get(reason) ?? 'aiclient.fileError.generic', { file })));
+  if (!page.files.length) return [
+    h('p', { class: 'hint ai-note' }, t('aiclient.noFiles')),
+    ...(notes.length ? notes : [h('p', { class: 'hint ai-note' }, t('aiclient.noFilesLocal'))]),
+  ];
+  return [...notes, h('div', { class: `ai-prompt ${page.open ? 'open' : ''}` },
     h('pre', { class: 'ai-prompt-text' }, prompt()),
     h('div', { class: 'ai-prompt-bar' },
       h('button', { class: 'btn text compact', type: 'button', 'aria-expanded': String(page.open), onclick: () => { page.open = !page.open; render(); } }, t(page.open ? 'aiclient.less' : 'aiclient.more')),
       h('button', { class: 'btn primary compact', type: 'button', onclick: copy }, t(page.copied ? 'aiclient.copied' : 'aiclient.copy'))),
-    page.copyFailed ? h('div', { class: 'error', role: 'alert' }, t('aiclient.copyFailed')) : null);
+    page.copyFailed ? h('div', { class: 'error', role: 'alert' }, t('aiclient.copyFailed')) : null)];
 }
 
 // The newest AI client waiting, with its digits beside Deny and Approve.

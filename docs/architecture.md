@@ -354,10 +354,20 @@ back by `audit_read` and by the account's browsers.
 
 The server distributes `deskway` for each system from the `-clients` folder (by default
 `clients`, next to the state file), under the fixed names listed in
-`internal/server/aiclients.go` (`deskway-windows-x64.exe`, `deskway-windows-arm64.exe`,
-`deskway-macos-arm64`, `deskway-macos-x64`). `GET /api/ai/clients` lists them with their SHA-256
-hashes, and `GET /download/{file}` serves them to anyone, because a client downloads the program
-before it signs in. `scripts/build-ai-clients.*` builds them. `deskway mcp` compares its own file
+`internal/server/clientprograms.go` (`deskway-windows-x64.exe`, `deskway-windows-arm64.exe`,
+`deskway-macos-arm64`, `deskway-macos-x64`). The release workflow stamps the server with the
+GitHub release tag and hashes of its final client assets. One server-owned goroutine fetches
+missing release programs at startup, verifies them and installs them atomically in the
+`.release` cache inside `-clients`, using one path per filename. The fetcher treats a cached
+program with a different SHA-256 as missing and retries failed fetches after a delay.
+Shutdown cancels the goroutine and waits for it to clean up. `-fetch-clients=false` disables
+outbound fetching. The handlers read from disk, looking for operator-supplied files first,
+then for a cached program with the expected SHA-256.
+
+`GET /api/ai/clients` lists available programs with their SHA-256 hashes. The browser adds
+`?details=1` to also see why programs are missing.
+`GET /download/{file}` serves them to anyone, because a client downloads the program before it
+signs in. `scripts/build-ai-clients.*` builds them. `deskway mcp` compares its own file
 with the server's at start-up and every hour, and replaces itself when they differ (it
 downloads the new file, checks its SHA-256 and renames the old file aside); processes that are
 already running are not affected. `deskway update` does the same immediately.
@@ -537,7 +547,8 @@ The source of truth is the viewer's constraints.
   | `account.go` | names and passwords, and choosing them the first time |
   | `members.go` | the admin's members: list, create, reset, remove |
   | `browsers.go` | approvals, browser keys, the device log, the device-check policy |
-  | `aiclients.go` | AI clients' sign-in without the password, the 10-minute window in which an account accepts new ones, and the AI client programs it distributes, from `-clients` |
+  | `aiclients.go` | AI clients' sign-in without the password and the 10-minute window in which an account accepts new ones |
+  | `clientprograms.go` | AI client program lookup, release fetching and verification, and listing and download responses |
   | `computers.go` | enroll, leave, rename, remove, the device list and who holds each computer as each browser sees it; at most `maxComputersPerUser` per account |
   | `previews.go` | previews |
   | `signaling.go` | the sockets, routed through `sessions.go` |

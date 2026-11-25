@@ -7,13 +7,10 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -182,39 +179,6 @@ func TestAnAIClientSignsInWithoutThePassword(t *testing.T) {
 		f.s.login.reset("127.0.0.1")
 		got := f.status(again(), "POST", "/api/login/ai", map[string]any{"user": c.user, "ts": c.ts, "sig": c.by.sign(t, proto.AILogin(c.user, c.ts))})
 		want(t, c.name, got, c.status)
-	}
-}
-
-// The AI client programs: listed with their SHA-256 for the account, handed out to anyone by
-// name, nothing else from the folder.
-func TestTheServerHandsOutTheAIClientPrograms(t *testing.T) {
-	f := newFixture(t)
-	me := f.signedIn("me")
-	dir := t.TempDir()
-	files := map[string]string{"deskway-macos-arm64": "mac program", "deskway-linux-x64": "not one of them", "deskway-windows-x64.exe": "windows program", "notes.txt": "not a program"}
-	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	f.s.ServeClients(dir)
-	want(t, "the list needs a signed-in browser", f.status(f.browser(), "GET", "/api/ai/clients", nil), http.StatusUnauthorized)
-	var list []ClientFile
-	_ = json.NewDecoder(f.do(me, "GET", "/api/ai/clients", nil).Body).Decode(&list)
-	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
-	if len(list) != 2 || list[0].File != "deskway-windows-x64.exe" || list[0].SHA256 != sum("windows program") || list[1].File != "deskway-macos-arm64" || list[1].OS != "macos" || list[1].SHA256 != sum("mac program") {
-		t.Fatalf("listed %+v", list)
-	}
-	for _, c := range []struct {
-		file   string
-		status int
-	}{
-		{"deskway-macos-arm64", http.StatusOK},
-		{"deskway-macos-x64", http.StatusNotFound},
-		{"deskway-linux-x64", http.StatusNotFound},
-		{"notes.txt", http.StatusNotFound},
-	} {
-		want(t, "download "+c.file, f.status(f.browser(), "GET", "/download/"+c.file, nil), c.status)
 	}
 }
 

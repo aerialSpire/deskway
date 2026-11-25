@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the AI client program (deskway) for this system into the folder the server hands it out
 # from (deskway-server -clients; by default "clients" beside its state file), under the names
-# internal/server/aiclients.go lists, on a Mac: Apple silicon and Intel. Windows:
+# internal/server/clientprograms.go lists, on a Mac: Apple silicon and Intel. Windows:
 # scripts/build-ai-clients.ps1.
 #
 #   scripts/build-ai-clients.sh [OUT]      OUT defaults to deskway-data/clients

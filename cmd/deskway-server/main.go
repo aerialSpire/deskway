@@ -30,6 +30,7 @@ func main() {
 		listen    = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
 		dataPath  = flag.String("data", "deskway-data/state.json", "state file")
 		clients   = flag.String("clients", "", "folder of the AI client programs to hand out (default: clients beside the state file)")
+		fetch     = flag.Bool("fetch-clients", true, "fetch missing AI client programs from this server's GitHub release")
 		domain    = flag.String("domain", "", "domain name; gets a Let's Encrypt certificate automatically (listen on :443)")
 		tlsCert   = flag.String("tls-cert", "", "TLS certificate file")
 		tlsKey    = flag.String("tls-key", "", "TLS key file")
@@ -76,7 +77,7 @@ func main() {
 	if *clients == "" {
 		*clients = filepath.Join(filepath.Dir(*dataPath), "clients")
 	}
-	s.ServeClients(*clients)
+	s.ServeClients(*clients, *fetch)
 	srv := &http.Server{
 		Addr:              *listen,
 		Handler:           s.Handler(),
@@ -92,7 +93,6 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
-		s.Shutdown()
 		close(stopped)
 	}()
 	log.Printf("listening on %s", *listen)
@@ -111,10 +111,13 @@ func main() {
 	default:
 		err = srv.ListenAndServe()
 	}
+	if err == http.ErrServerClosed {
+		<-stopped
+	}
+	s.Shutdown()
 	if err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
-	<-stopped
 	log.Printf("stopped")
 }
 
