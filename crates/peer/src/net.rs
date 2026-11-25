@@ -2,7 +2,8 @@
 //! STUN server sees through each, and a TURN relay per server. It keeps what it needs to find
 //! them all again when ICE restarts (`rebind`), as either end's network may have changed.
 
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -13,8 +14,12 @@ use str0m::net::{Protocol, Receive, Transmit};
 use str0m::{Candidate, Input, Output, Rtc};
 
 use crate::stun::{self, Probe};
-use crate::turn::{Relay, TurnServer};
+use crate::turn::{Relay, Transport, TurnServer};
 use crate::{NetEvent, Stop};
+
+pub(crate) fn resolve_ipv4(endpoint: impl ToSocketAddrs) -> Option<SocketAddr> {
+    endpoint.to_socket_addrs().ok()?.find(SocketAddr::is_ipv4)
+}
 
 /// Addresses a host candidate can use: not loopback, and for IPv6 only global or unique-local
 /// ones (link-local addresses need a scope the candidate cannot carry).
@@ -93,31 +98,27 @@ pub struct Net<E> {
 
 impl<E: From<NetEvent> + Send + 'static> Net<E> {
     /// Binds the local sockets and adds their host candidates to `rtc`; then, in the background,
-    /// resolves the STUN server and sets up a relay on every TURN server, each reported to `tx`
-    /// when ready, so nothing slow delays the first answer or offer (trickle ICE).
+    /// resolves the STUN server and sets up the relays, reporting each path as it is ready.
+    /// The first answer or offer can go out while those paths are being found.
     ///
-    /// Test switch: `DESKWAY_TEST_RELAY` set to "udp" or "tcp" uses only that relay path,
-    /// proving it works on its own.
+    /// Test switch: "udp" and "tcp" use only that relay. "tls" disables direct paths and
+    /// leaves all relay allocations running so the test can block the usual TURN port.
     pub fn start(rtc: &mut Rtc, stun_urls: Vec<String>, turn: Vec<TurnServer>, tx: Sender<E>) -> Result<Net<E>> {
         let forced_relay = std::env::var("DESKWAY_TEST_RELAY").ok();
         let all = Arc::new(AtomicBool::new(false));
         let direct = forced_relay.is_none();
         let sockets = if direct { bind(&local_ips(), &tx, &all)? } else { Vec::new() };
-        let turn: Vec<TurnServer> = turn.into_iter().filter(|t| forced_relay.as_deref().is_none_or(|f| f == if t.tcp { "tcp" } else { "udp" })).collect();
+        let turn: Vec<TurnServer> = turn.into_iter().filter(|t| forced_relay.as_deref().is_none_or(|f| f == "tls" || f == t.transport.name())).collect();
         anyhow::ensure!(!sockets.is_empty() || !turn.is_empty(), "no usable network interface");
         for c in sockets.iter().flat_map(|b| b.candidates.iter().cloned()) {
             rtc.add_local_candidate(c);
         }
-        // Resolving the STUN server's name may wait on DNS: off the owner's thread.
-        if !sockets.is_empty() && !stun_urls.is_empty() {
-            let tx = tx.clone();
-            std::thread::Builder::new().name("stun-resolve".into()).spawn(move || {
-                if let Some(server) = stun_urls.iter().find_map(|u| stun::resolve(u)) {
-                    let _ = tx.send(NetEvent::StunServer(server).into());
-                }
+        let net = Net { sockets, relays: Vec::new(), probes: Vec::new(), stun: None, turn, direct, tx, all };
+        if !net.sockets.is_empty() && !stun_urls.is_empty() {
+            net.spawn_path("stun-resolve", move |_| {
+                stun_urls.iter().find_map(|u| stun::resolve(u)).map(NetEvent::StunServer)
             })?;
         }
-        let net = Net { sockets, relays: Vec::new(), probes: Vec::new(), stun: None, turn, direct, tx, all };
         net.spawn_relays()?;
         Ok(net)
     }
@@ -162,8 +163,8 @@ impl<E: From<NetEvent> + Send + 'static> Net<E> {
                 }
             }
             NetEvent::RelayReady(r) => {
-                eprintln!("relay ready over {}: {}", if r.tcp { "tcp" } else { "udp" }, r.addr);
-                match Candidate::relayed(r.addr, r.local, "udp") {
+                eprintln!("relay ready over {}: {}", r.transport.name(), r.addr);
+                match relay_candidate(&r) {
                     Ok(c) if offer(rtc, c.clone()) => self.add_relay(rtc, r, c),
                     _ => r.close(),
                 }
@@ -231,31 +232,58 @@ impl<E: From<NetEvent> + Send + 'static> Net<E> {
         self.probes = self.sockets.iter().filter(|b| b.addr.is_ipv4() == server.is_ipv4()).map(|b| Probe::new(b.addr, server, now)).collect();
     }
 
-    /// Sets up a relay on every TURN server, in the background: each is offered when ready
-    /// (`RelayReady`), so a blocked relay never delays a direct connection.
+    /// Resolves and sets up each allocation on its own worker, which reports it when ready.
     fn spawn_relays(&self) -> Result<()> {
         for server in self.turn.clone() {
-            let (tx, stop) = (self.tx.clone(), Stop::new(&self.all));
-            std::thread::Builder::new().name("turn-setup".into()).spawn(move || match Relay::start(&server, tx.clone(), stop) {
-                Ok(r) => {
-                    let _ = tx.send(NetEvent::RelayReady(r).into());
+            let stop = Stop::new(&self.all);
+            self.spawn_path("turn-setup", move |tx| match Relay::start(&server, tx, stop) {
+                Ok(r) => Some(NetEvent::RelayReady(r)),
+                Err(e) => {
+                    eprintln!("relay {}:{} ({}) unavailable: {e:#}", server.endpoint.0, server.endpoint.1, server.transport.name());
+                    None
                 }
-                Err(e) => eprintln!("relay {} ({}) unavailable: {e:#}", server.addr, if server.tcp { "tcp" } else { "udp" }),
             })?;
         }
+        Ok(())
+    }
+
+    /// DNS and path setup may block. Report their results through the owner's event queue.
+    fn spawn_path(&self, name: &str, discover: impl FnOnce(Sender<E>) -> Option<NetEvent> + Send + 'static) -> Result<()> {
+        let tx = self.tx.clone();
+        std::thread::Builder::new().name(name.into()).spawn(move || {
+            if let Some(event) = discover(tx.clone()) {
+                let _ = tx.send(event.into());
+            }
+        })?;
         Ok(())
     }
 
     /// A relay offered as `c`: it takes the place of an earlier allocation on the same server,
     /// which is given up and withdrawn.
     fn add_relay(&mut self, rtc: &mut Rtc, r: Relay, c: Candidate) {
-        if let Some(i) = self.relays.iter().position(|(o, _)| o.server == r.server && o.tcp == r.tcp) {
+        if let Some(i) = self.relays.iter().position(|(o, _)| o.server == r.server && o.transport == r.transport) {
             let (old, oc) = self.relays.remove(i);
             old.close();
             rtc.direct_api().invalidate_candidate(&oc);
         }
         self.relays.push((r, c));
     }
+}
+
+fn relay_candidate(relay: &Relay) -> Result<Candidate> {
+    let candidate = Candidate::relayed(relay.addr, relay.local, Protocol::Udp)?;
+    // RFC 8445 priority: relayed type preference 0, then the TURN transport,
+    // then 256 minus the component ID. Every allocation relays UDP to its peer.
+    let preference = match relay.transport {
+        Transport::Udp => 3,
+        Transport::Tcp => 2,
+        Transport::Tls => 1,
+    };
+    let priority = (preference << 8) | 255;
+    let mut hash = DefaultHasher::new();
+    (relay.addr.ip(), &relay.server).hash(&mut hash);
+    let foundation = format!("{}{:016x}", relay.transport.name(), hash.finish());
+    Ok(Candidate::from_parts(foundation, 1, candidate.proto(), priority, candidate.addr(), candidate.kind(), Some((Ipv4Addr::UNSPECIFIED, 0).into()), None, None))
 }
 
 impl<E> Drop for Net<E> {

@@ -15,6 +15,7 @@ anyhow = "1"
 hmac = "0.12"
 if-addrs = "0.13"
 md-5 = "0.10"
+native-tls = "0.2"
 serde_json = "1"
 sha1 = "0.10"
 # The TCP relay's send buffer is kept small (turn), which std cannot set.

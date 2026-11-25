@@ -322,11 +322,10 @@ impl<R: Role> Session<R> {
 
     /// Adds a local candidate found after the answer and tells the other end about it.
     fn offer_candidate(&self, rtc: &mut Rtc, c: Candidate) -> bool {
-        let sdp = c.to_sdp_string();
-        if rtc.add_local_candidate(c).is_none() {
+        let Some(c) = rtc.add_local_candidate(c) else {
             return false;
-        }
-        let candidate = IceCandidate { candidate: sdp, sdp_mid: None, sdp_m_line_index: Some(0), username_fragment: None };
+        };
+        let candidate = IceCandidate { candidate: c.to_sdp_string(), sdp_mid: None, sdp_m_line_index: Some(0), username_fragment: None };
         let _ = self.out.send(signal_text(&Wire::Candidate { session: self.id.clone(), candidate }));
         true
     }

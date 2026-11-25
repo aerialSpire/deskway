@@ -251,10 +251,10 @@ impl Link {
     }
 
     fn offer_candidate(&self, rtc: &mut Rtc, c: Candidate) -> bool {
-        let sdp = c.to_sdp_string();
-        if rtc.add_local_candidate(c).is_none() {
+        let Some(c) = rtc.add_local_candidate(c) else {
             return false;
-        }
+        };
+        let sdp = c.to_sdp_string();
         send(&self.p.out, json!({ "type": "candidate", "session": self.p.session, "candidate": { "candidate": sdp, "sdpMLineIndex": 0 } }));
         true
     }

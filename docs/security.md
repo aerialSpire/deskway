@@ -116,6 +116,9 @@ HMAC-signed with the server's TURN secret. The relay polices each account's rela
 directions of all its allocations together, with a single token bucket at `-relay-account-mbps`
 (default 30), and drops whatever exceeds it, so one account cannot crowd out another. The relay
 offers only UDP relays, so no allocation can escape the limit.
+TURN over TLS adds an outer TLS connection to the relay for reachability on port 443. The
+relay still only forwards the peers' end-to-end encrypted DTLS and SRTP traffic and cannot
+read its contents.
 
 ## Device keys
 

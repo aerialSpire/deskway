@@ -12,6 +12,9 @@
 // On macOS, --areas host-restart starts and restarts a host with that separate test profile.
 // --server-exe and --server-state add the check that a server restart keeps the session.
 // --areas previous-protocol uses a fresh account with a previous-version host.
+// --areas relay --relay-tls uses only TURN over the HTTPS port. Start the host with
+// DESKWAY_TEST_RELAY=tls and give --url the HTTPS address advertised for TURN.
+// Silently drop the host's UDP and TCP traffic to the server's usual TURN port.
 // Several runs can go side by side with their own --devtools-port and server --url.
 // On Windows, run --areas first-use alone. It starts its own server and three hosts with fresh state.
 // It needs --browser, --url http://localhost:PORT, --server-exe and --host-exe.

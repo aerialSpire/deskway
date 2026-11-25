@@ -1,10 +1,10 @@
 //! Minimal TURN client (RFC 8656), for when a direct path cannot be found. It reaches the
-//! relay over UDP, or TCP on networks that block UDP. The relayed traffic is still end-to-end
+//! relay over UDP, TCP or TLS. The relayed traffic is still end-to-end
 //! encrypted by WebRTC; the relay only forwards it.
 
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -13,10 +13,11 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use hmac::{Hmac, Mac};
 use md5::{Digest, Md5};
+use native_tls::{TlsConnector, TlsStream};
 use serde_json::Value;
 use sha1::Sha1;
 
-use crate::{NetEvent, Stop};
+use crate::{net::resolve_ipv4, NetEvent, Stop};
 
 const MAGIC: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
 
@@ -46,23 +47,51 @@ const PERMISSION_EVERY: Duration = Duration::from_secs(240);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TurnServer {
-    pub addr: SocketAddr,
-    pub tcp: bool,
+    pub endpoint: (String, u16),
+    pub transport: Transport,
     pub username: String,
     pub credential: String,
 }
 
-/// Reads the TURN servers out of the offer's RTCIceServer list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transport {
+    Udp,
+    Tcp,
+    Tls,
+}
+
+impl Transport {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Udp => "udp",
+            Self::Tcp => "tcp",
+            Self::Tls => "tls",
+        }
+    }
+}
+
+/// Reads the TURN servers out of the offer's RTCIceServer list. Names are resolved at setup.
 pub fn servers(ice: &Value) -> Vec<TurnServer> {
     let mut out = Vec::new();
     for s in ice.as_array().into_iter().flatten() {
         let (Some(user), Some(cred)) = (s["username"].as_str(), s["credential"].as_str()) else { continue };
         for url in s["urls"].as_array().into_iter().flatten().filter_map(|u| u.as_str()) {
-            let Some(rest) = url.strip_prefix("turn:") else { continue };
+            let Some((scheme, rest)) = url.split_once(':') else { continue };
             let (target, query) = rest.split_once('?').unwrap_or((rest, ""));
-            let target = if target.contains(':') { target.to_string() } else { format!("{target}:3478") };
-            let Some(addr) = target.to_socket_addrs().ok().and_then(|mut a| a.find(|x| x.is_ipv4())) else { continue };
-            out.push(TurnServer { addr, tcp: query.contains("transport=tcp"), username: user.to_string(), credential: cred.to_string() });
+            let (host, port) = match target.rsplit_once(':') {
+                Some((host, port)) => {
+                    let Ok(port) = port.parse::<u16>() else { continue };
+                    (host, port)
+                }
+                None => (target, if scheme == "turns" { 5349 } else { 3478 }),
+            };
+            let transport = match (scheme, query) {
+                ("turn", "" | "transport=udp") => Transport::Udp,
+                ("turn", "transport=tcp") => Transport::Tcp,
+                ("turns", "" | "transport=tcp") => Transport::Tls,
+                _ => continue,
+            };
+            out.push(TurnServer { endpoint: (host.to_string(), port), transport, username: user.to_string(), credential: cred.to_string() });
         }
     }
     out
@@ -193,7 +222,18 @@ const TCP_QUEUE_MAX: usize = 4 * 1024 * 1024;
 /// still holds are counted.
 enum Writer {
     Udp(Arc<UdpSocket>),
-    Tcp { queue: Sender<Vec<u8>>, queued: Arc<AtomicUsize> },
+    Tcp { queue: Sender<QueuedPacket>, queued: Arc<AtomicUsize> },
+}
+
+struct QueuedPacket {
+    bytes: Vec<u8>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl Drop for QueuedPacket {
+    fn drop(&mut self) {
+        self.queued.fetch_sub(self.bytes.len(), Ordering::Relaxed);
+    }
 }
 
 impl Writer {
@@ -203,13 +243,11 @@ impl Writer {
                 let _ = s.send(&m);
             }
             Writer::Tcp { queue, queued } => {
-                let n = m.len();
-                if queued.load(Ordering::Relaxed) + n > TCP_QUEUE_MAX {
-                    return;
-                }
-                queued.fetch_add(n, Ordering::Relaxed);
-                if queue.send(m).is_err() {
-                    queued.fetch_sub(n, Ordering::Relaxed);
+                if queued.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bytes| {
+                    let total = bytes + m.len();
+                    (total <= TCP_QUEUE_MAX).then_some(total)
+                }).is_ok() {
+                    let _ = queue.send(QueuedPacket { bytes: m, queued: queued.clone() });
                 }
             }
         }
@@ -226,7 +264,30 @@ impl Writer {
 
 enum Reader {
     Udp(Arc<UdpSocket>, Vec<u8>),
-    Tcp(TcpStream, Vec<u8>),
+    Tcp(Box<dyn Read + Send>, Vec<u8>),
+}
+
+// Native TLS keeps both directions in one stream. Give the writer a chance to
+// acquire it between reads, including when the relay is idle.
+#[derive(Clone)]
+struct SharedTls(Arc<Mutex<TlsStream<TcpStream>>>);
+
+impl Read for SharedTls {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let result = self.0.lock().unwrap().read(buf);
+        std::thread::yield_now();
+        result
+    }
+}
+
+impl Write for SharedTls {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().flush()
+    }
 }
 
 impl Reader {
@@ -260,36 +321,49 @@ impl Reader {
 }
 
 fn open(server: &TurnServer) -> Result<(Writer, Reader, SocketAddr)> {
+    let (host, port) = &server.endpoint;
+    let addr = resolve_ipv4((host.as_str(), *port)).context("no IPv4 address")?;
     let timeout = Some(Duration::from_millis(200));
-    if server.tcp {
-        let stream = TcpStream::connect_timeout(&server.addr, Duration::from_secs(2)).context("connect")?;
+    if server.transport != Transport::Udp {
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2)).context("connect")?;
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(timeout)?;
         socket2::SockRef::from(&stream).set_send_buffer_size(TCP_SEND_BUFFER)?;
         let local = stream.local_addr()?;
-        let mut writer = stream.try_clone()?;
-        let (tx, rx) = channel::<Vec<u8>>();
-        let queued = Arc::new(AtomicUsize::new(0));
-        let left = queued.clone();
-        std::thread::Builder::new().name("turn-write".into()).spawn(move || {
-            while let Ok(m) = rx.recv() {
-                let n = m.len();
-                let written = writer.write_all(&m);
-                left.fetch_sub(n, Ordering::Relaxed);
-                if written.is_err() {
-                    break;
-                }
-            }
-        })?;
-        Ok((Writer::Tcp { queue: tx, queued }, Reader::Tcp(stream, Vec::new()), local))
+        let (writer, reader) = if server.transport == Transport::Tls {
+            let handshake_timeout = Some(Duration::from_secs(2));
+            stream.set_read_timeout(handshake_timeout)?;
+            stream.set_write_timeout(handshake_timeout)?;
+            let tls = TlsConnector::new()?.connect(host, stream).context("TLS handshake")?;
+            tls.get_ref().set_write_timeout(None)?;
+            tls.get_ref().set_read_timeout(Some(Duration::from_millis(20)))?;
+            let shared = SharedTls(Arc::new(Mutex::new(tls)));
+            open_tcp(shared.clone(), shared)?
+        } else {
+            stream.set_read_timeout(timeout)?;
+            open_tcp(stream.try_clone()?, stream)?
+        };
+        Ok((writer, reader, local))
     } else {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.connect(server.addr)?;
+        socket.connect(addr)?;
         socket.set_read_timeout(timeout)?;
         let local = socket.local_addr()?;
         let socket = Arc::new(socket);
         Ok((Writer::Udp(socket.clone()), Reader::Udp(socket, vec![0u8; 2048]), local))
     }
+}
+
+fn open_tcp(mut writer: impl Write + Send + 'static, reader: impl Read + Send + 'static) -> Result<(Writer, Reader)> {
+    let (tx, rx) = channel::<QueuedPacket>();
+    let queued = Arc::new(AtomicUsize::new(0));
+    std::thread::Builder::new().name("turn-write".into()).spawn(move || {
+        while let Ok(packet) = rx.recv() {
+            if writer.write_all(&packet.bytes).is_err() {
+                break;
+            }
+        }
+    })?;
+    Ok((Writer::Tcp { queue: tx, queued }, Reader::Tcp(Box::new(reader), Vec::new())))
 }
 
 /// Sends a request until its answer arrives, skipping anything else.
@@ -314,8 +388,8 @@ pub struct Relay {
     pub addr: SocketAddr,
     pub local: SocketAddr,
     /// The relay server and how it is reached: one allocation per server at a time.
-    pub server: SocketAddr,
-    pub tcp: bool,
+    pub server: (String, u16),
+    pub transport: Transport,
     writer: Writer,
     auth: Arc<Mutex<Auth>>,
     permissions: Arc<Mutex<HashMap<IpAddr, Instant>>>,
@@ -352,7 +426,7 @@ impl Relay {
         std::thread::Builder::new().name("turn-read".into()).spawn(move || {
             run_reader(reader, write2, auth2, perms2, addr, owner, reader_stop);
         })?;
-        Ok(Relay { addr, local, server: server.addr, tcp: server.tcp, writer, auth, permissions, stop })
+        Ok(Relay { addr, local, server: server.endpoint.clone(), transport: server.transport, writer, auth, permissions, stop })
     }
 
     /// Gives the allocation up: the reader stops and releases the relay's port.
@@ -450,33 +524,37 @@ mod tests {
     use super::*;
 
     /// A TCP relay the network does not keep up with: what waits is counted here (the system's
-    /// buffer is small), never beyond the last bound, and goes once the other end reads.
+    /// buffer is small), never beyond the last bound, and clears on drain or write failure.
     #[test]
     fn a_tcp_relay_counts_what_waits_and_bounds_it() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let server = TurnServer { addr: listener.local_addr().unwrap(), tcp: true, username: String::new(), credential: String::new() };
-        let (writer, _reader, _) = open(&server).unwrap();
-        let (peer, _) = listener.accept().unwrap();
-        socket2::SockRef::from(&peer).set_recv_buffer_size(64 * 1024).unwrap();
-        for _ in 0..64 {
-            writer.send(vec![0u8; 100_000]);
+        for reset in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let server = TurnServer { endpoint: ("127.0.0.1".into(), listener.local_addr().unwrap().port()), transport: Transport::Tcp, username: String::new(), credential: String::new() };
+            let (writer, _reader, _) = open(&server).unwrap();
+            let (mut peer, _) = listener.accept().unwrap();
+            socket2::SockRef::from(&peer).set_recv_buffer_size(64 * 1024).unwrap();
+            for _ in 0..64 {
+                writer.send(vec![0u8; 100_000]);
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            let waiting = writer.queued();
+            assert!(waiting > 2_000_000, "a peer that reads nothing leaves most of it waiting here: {waiting}");
+            assert!(waiting <= TCP_QUEUE_MAX, "never more than the bound: {waiting}");
+            if reset {
+                socket2::SockRef::from(&peer).set_linger(Some(Duration::ZERO)).unwrap();
+                drop(peer);
+            } else {
+                std::thread::spawn(move || {
+                    let mut buf = vec![0u8; 1 << 16];
+                    while peer.read(&mut buf).is_ok_and(|n| n > 0) {}
+                });
+            }
+            let until = Instant::now() + Duration::from_secs(10);
+            while writer.queued() > 0 && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(writer.queued(), 0, "nothing waits after the peer drains or resets (reset: {reset})");
         }
-        std::thread::sleep(Duration::from_millis(200));
-        let waiting = writer.queued();
-        assert!(waiting > 2_000_000, "a peer that reads nothing leaves most of it waiting here: {waiting}");
-        assert!(waiting <= TCP_QUEUE_MAX, "never more than the bound: {waiting}");
-        let mut peer = peer;
-        let reader = std::thread::spawn(move || {
-            let mut buf = vec![0u8; 1 << 16];
-            while peer.read(&mut buf).is_ok_and(|n| n > 0) {}
-        });
-        let until = Instant::now() + Duration::from_secs(10);
-        while writer.queued() > 0 && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(writer.queued(), 0, "read: nothing waits any more");
-        drop(writer);
-        drop(reader);
     }
 
     fn auth() -> Auth {
@@ -526,14 +604,29 @@ mod tests {
     fn reads_servers_from_the_offer() {
         let ice = serde_json::json!([
             { "urls": ["stun:192.0.2.1:3478"] },
-            { "urls": ["stun:192.0.2.1:3478", "turn:192.0.2.1:3478?transport=udp", "turn:192.0.2.1:3478?transport=tcp"], "username": "u", "credential": "p" },
+            { "urls": [
+                "stun:192.0.2.1:3478",
+                "turn:192.0.2.1?transport=udp",
+                "turn:192.0.2.1:3478?transport=tcp",
+                "turns:localhost:443?transport=tcp",
+                "turns:localhost",
+                "turns:localhost?transport=udp"
+            ], "username": "u", "credential": "p" },
         ]);
         let list = servers(&ice);
-        assert_eq!(list.len(), 2);
-        assert!(!list[0].tcp);
-        assert!(list[1].tcp);
-        assert_eq!(list[1].addr, "192.0.2.1:3478".parse().unwrap());
-        assert_eq!(list[1].username, "u");
+        let expected = [
+            ("192.0.2.1", 3478, Transport::Udp),
+            ("192.0.2.1", 3478, Transport::Tcp),
+            ("localhost", 443, Transport::Tls),
+            ("localhost", 5349, Transport::Tls),
+        ];
+        assert_eq!(list.len(), expected.len());
+        for (server, (host, port, transport)) in list.iter().zip(expected) {
+            assert_eq!((server.endpoint.0.as_str(), server.endpoint.1), (host, port));
+            assert_eq!(server.transport, transport);
+            assert_eq!(server.username, "u");
+            assert_eq!(server.credential, "p");
+        }
     }
 
     #[test]
