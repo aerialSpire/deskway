@@ -202,8 +202,9 @@ fn value_sets_match_the_definition() {
 #[test]
 fn version_and_capabilities_match_the_definition() {
     let def = def();
-    assert_eq!(def["protocol_version"], super::PROTOCOL_VERSION);
-    assert_eq!(def["min_version"], super::MIN_VERSION);
+    let version: Value = serde_json::from_str(include_str!("../../../proto/version.json")).unwrap();
+    assert_eq!(version["protocol_version"], super::PROTOCOL_VERSION);
+    assert_eq!(version["protocol_version"], super::MIN_VERSION + 1);
     let host: Vec<&str> = def["capabilities"].as_array().unwrap().iter().filter(|c| c["who"] == "host").map(|c| c["name"].as_str().unwrap()).collect();
     assert_eq!(super::caps::ALL, host);
 }

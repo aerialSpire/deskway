@@ -316,7 +316,21 @@ server bind port 443.
 
 1. Read the release notes for the version you are moving to.
 2. Download the new release (step 2) or build it (step 3).
-3. Stop the service, back up its data and replace the binary:
+3. Before moving to the next protocol version, run the check with the current server binary
+   against its state file. The command reads the last saved snapshot while the server is
+   running and lists every account's computers.
+
+   ```sh
+   sudo -u deskway /usr/local/bin/deskway-server upgrade-check -data /var/lib/deskway/state.json
+   ```
+
+   Each row gives the last protocol version reported and its status relative to the binary
+   running the check. Exit status 0 means every approved computer is `current` or `newer`.
+   Computers still waiting for approval appear as `pending` and do not affect readiness. Exit status
+   1 flags `previous`, `older` and `unknown` computers. Bring computers with an unknown
+   version online to let them report it, then run the check again. Exit status 2 means the
+   check failed.
+4. Stop the service, back up its data and replace the binary:
 
    ```sh
    sudo systemctl stop deskway
@@ -328,10 +342,11 @@ server bind port 443.
    starting the new server. Update any manually supplied programs you want to keep serving.
    Start the service with `sudo systemctl start deskway`.
 
-4. Update Deskway Host on each computer: on Windows run the new `DeskwayHost-Setup-windows-x64.exe` and choose
-   **Update**; on macOS quit Deskway Host and replace `Deskway.app` in Applications. If a computer no longer speaks
-   the same protocol as the server, the browser shows "This computer needs an update" for that
-   computer.
+5. Update Deskway Host on each computer: on Windows run the new `DeskwayHost-Setup-windows-x64.exe`
+   and choose **Update**; on macOS quit Deskway Host and replace `Deskway.app` in Applications.
+   The device list shows **Update available** for a computer you can still connect to and
+   **This computer needs an update** when its protocol is too old to connect. See the
+   [compatibility window](protocol.md#versions-and-capabilities).
 
 The released server automatically fetches the new release's AI client programs at startup.
 AI clients pick up the programs served by the server within an hour.

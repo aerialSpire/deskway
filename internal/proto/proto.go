@@ -10,7 +10,7 @@ import "encoding/json"
 // (docs/protocol.md, "Versions and capabilities").
 const (
 	Version    = 4
-	MinVersion = 3
+	MinVersion = Version - 1
 )
 
 // Signaling message types.
@@ -86,14 +86,15 @@ type Device struct {
 	Controller *Controller `json:"controller,omitempty"` // who holds it now; absent: nobody
 	// Displays attached to the computer while it is online: id, x, y, w, h, primary.
 	Displays json.RawMessage `json:"displays,omitempty"`
-	// The host's hello while it is online, so a browser adapts before it connects.
-	Version int      `json:"version,omitempty"`
-	Caps    []string `json:"caps,omitempty"`
+	// The current socket's hello while online, or the last saved version while offline.
+	Version int `json:"version,omitempty"`
+	// The host's capabilities while it is online.
+	Caps []string `json:"caps,omitempty"`
 	// AI clients on this computer: the switch, and who uses it now; nil: never switched.
 	AI *AiView `json:"ai,omitempty"`
 	// The browser or AI client this list is for runs on this computer (locate).
 	Here bool `json:"here,omitempty"`
-	// The AI tools the computer carries out, from its hello while online; nil: it did not say.
+	// The AI tools the computer last reported; nil: it did not say.
 	Tools []string `json:"tools,omitempty"`
 }
 

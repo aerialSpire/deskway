@@ -29,9 +29,7 @@ type message struct {
 }
 
 type definition struct {
-	ProtocolVersion int `json:"protocol_version"`
-	MinVersion      int `json:"min_version"`
-	Types           map[string]struct {
+	Types map[string]struct {
 		Fields map[string]field `json:"fields"`
 	} `json:"types"`
 	Channels map[string]struct {
@@ -192,8 +190,15 @@ func TestSharedTypesMatchDefinition(t *testing.T) {
 }
 
 func TestVersionMatchesDefinition(t *testing.T) {
-	d := load(t)
-	if d.ProtocolVersion != proto.Version || d.MinVersion != proto.MinVersion {
-		t.Errorf("definition %d/%d, Go %d/%d", d.ProtocolVersion, d.MinVersion, proto.Version, proto.MinVersion)
+	raw, err := os.ReadFile("../../proto/version.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d map[string]int
+	if err := json.Unmarshal(raw, &d); err != nil {
+		t.Fatal(err)
+	}
+	if d["protocol_version"] != proto.Version || proto.MinVersion != d["protocol_version"]-1 {
+		t.Errorf("definition %v, Go %d/%d", d, proto.Version, proto.MinVersion)
 	}
 }

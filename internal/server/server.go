@@ -64,10 +64,9 @@ type conn struct {
 	browser  string // browsers
 	ai       bool   // browsers: an AI client's login (aiMay)
 	watching bool
-	// From its hello: protocol version, and for hosts their capabilities.
+	// Hosts: version and capabilities from this connection's hello.
 	version int
 	caps    []string
-	tools   []string // hosts: the AI tools they carry out
 	// Hosts: the session holding its desk seat and its AI seat, and what AI clients may do there,
 	// from its latest status; nil: nobody, "": a host before version 4.
 	holder   *proto.Holder

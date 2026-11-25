@@ -4,9 +4,19 @@
 import { h, svg, spinner, ICONS } from '../dom.js';
 import { dropdown } from './menu.js';
 import { LANGS, currentLang, setLanguage, t, agoText } from '../i18n.js';
+import { MIN_VERSION, PROTOCOL_VERSION } from '../proto.js';
 import { state, setView } from '../state.js';
 
+const computerUpdate = (d) => d.version && d.version < PROTOCOL_VERSION
+  ? t(d.version < MIN_VERSION ? 'update.computerTitle' : 'update.available') : '';
+
 export const statusOf = (d) => {
+  const { text, dot } = presenceOf(d);
+  const update = computerUpdate(d);
+  return { text: update ? `${text} · ${update}` : text, dot };
+};
+
+const presenceOf = (d) => {
   if (!d.online) return { text: d.last_seen ? t('status.offlineSince', { ago: agoText(d.last_seen) }) : t('status.offline'), dot: '' };
   // An AI client works beside whoever holds the computer: said too, never someone to take over from.
   const ai = aiUsing(d);
@@ -30,8 +40,11 @@ export const aiUsing = (d) => (d && d.ai && d.ai.name ? t('status.aiUsing', { na
 const holderText = (c) => t(c.connecting ? 'status.connecting' : 'status.controlledBy', { name: c.name });
 
 export const statusLine = (d) => {
-  const s = statusOf(d);
-  return h('div', { class: 'status' }, h('span', { class: `dot ${s.dot}`, 'aria-hidden': 'true' }), h('span', {}, s.text));
+  const { text, dot } = presenceOf(d);
+  const update = computerUpdate(d);
+  return h('div', { class: 'computer-status' },
+    h('div', { class: 'status' }, h('span', { class: `dot ${dot}`, 'aria-hidden': 'true' }), h('span', {}, text)),
+    update ? h('div', { class: 'computer-update' }, update) : null);
 };
 
 // The top bar of every page: Deskway at the left; at the right what this page has (the language

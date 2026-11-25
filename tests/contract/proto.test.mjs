@@ -1,4 +1,4 @@
-// Contract test: web/static/js/proto.js against proto/messages.json, both ways.
+// Contract test: web/static/js/proto.js against the shared message and version definitions.
 // Run: node --test tests/contract/proto.test.mjs (no dependencies).
 
 import { test } from 'node:test';
@@ -45,8 +45,9 @@ function object(fields, full) {
 }
 
 test('version and capabilities', () => {
-  assert.equal(proto.PROTOCOL_VERSION, def.protocol_version);
-  assert.equal(proto.MIN_VERSION, def.min_version);
+  const version = JSON.parse(fs.readFileSync(new URL('../../proto/version.json', import.meta.url), 'utf8'));
+  assert.equal(proto.PROTOCOL_VERSION, version.protocol_version);
+  assert.equal(proto.MIN_VERSION, version.protocol_version - 1);
   assert.deepEqual(Object.values(proto.CAPS), def.capabilities.filter((c) => c.who === 'host').map((c) => c.name));
 });
 

@@ -688,13 +688,15 @@ style.css            the client's page and session layout, in those tokens only
   messages, view constraints, the session connection with a fake peer, socket and clock), the
   design tokens, and the i18n catalogs and code scan are checked under Node with node:test:
   `node --test "tests/unit/*.test.mjs"`.
-- Contract tests check `proto/messages.json` and `proto/vectors.json` in Rust, Go and JS
+- Contract tests check `proto/messages.json`, `proto/version.json` and `proto/vectors.json` in Rust, Go and JS
   (`node --test "tests/contract/*.test.mjs"`).
 - The e2e tests are split by area (`tests/e2e/*.test.mjs`) and run by `tests/e2e/run.mjs` on one
   shared harness (`harness.mjs`: the browser, pages, sign-in, real mouse and touch input, and the
   test doubles). Each area names the areas it depends on, and `manage` runs last. Several runs
   can proceed in parallel, because the ports are parameters. Opt-in areas run only when named:
-  `clipboard-host` (which uses the real clipboard) and `relay` (which uses a fresh account and a
-  relay-only host), and `first-use` (which runs its own fresh server and Windows hosts).
+  `clipboard-host` (which uses the real clipboard), `relay` (which uses a fresh account and a
+  relay-only host), `first-use` (which runs its own fresh server and Windows hosts), and
+  `previous-protocol` (which opens a session on a previous-version host using a fresh account
+  on the current server).
 - A rule enforced by the server or the host is tested in Go or Rust; e2e tests check only what
   the page shows.

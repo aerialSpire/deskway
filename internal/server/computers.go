@@ -151,15 +151,15 @@ func (s *Server) dropComputer(id string) {
 }
 
 // deviceList is the computers of browser c's account with what the live connections add:
-// online, who holds them (as this browser sees it), their displays and their hello.
+// online, who holds them (as this browser sees it), their displays and their current hello.
 func (s *Server) deviceList(c *conn) []proto.Device {
+	s.mu.Lock()
 	list := s.store.DevicesFor(c.user)
 	holders := make([]*proto.Holder, len(list))
-	s.mu.Lock()
 	for i := range list {
 		d := &list[i]
 		if h := s.hosts[d.ID]; h != nil {
-			d.Online, d.Version, d.Caps, d.Tools = true, h.version, h.caps, h.tools
+			d.Online, d.Version, d.Caps = true, h.version, h.caps
 			holders[i] = h.holder
 			d.AI = aiView(d.AI, h.aiState, h.aiRefused, h.aiHolder)
 		}

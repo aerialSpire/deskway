@@ -1,11 +1,11 @@
 # Protocol
 
 This page is the readable companion to `proto/messages.json`, which defines every message, field
-and type, and `proto/vectors.json`, which defines every signed or MACed string. Those two files
-are the definition; this page explains how the messages fit together. The Go
+and type, `proto/version.json`, which defines the current protocol version, and `proto/vectors.json`,
+which defines every signed or MACed string. The Go
 (`internal/proto`), Rust (`crates/wire`) and JS (`web/static/js/proto.js`,
 `web/static/js/auth.js`) implementations are checked against them by contract tests
-(`go test ./internal/proto`, `cargo test -p deskway-wire`, `node tests/contract/*.test.mjs`).
+(`go test ./internal/proto`, `cargo test -p deskway-wire`, `node --test "tests/contract/*.test.mjs"`).
 
 ## Channels
 
@@ -31,24 +31,20 @@ A type name has the same meaning everywhere. When the same name appears on two c
 
 ## Versions and capabilities
 
-- `PROTOCOL_VERSION` is 4 (`protocol_version` in `messages.json`). Version 1 denotes everything
-  from before `hello` existed.
+- **Compatibility window.** Each release's server and web client support the current protocol
+  version and keep all existing features working with hosts on the previous protocol version.
+  The minimum is `protocol_version - 1`. Version 1 denotes everything from before `hello` existed.
 - Every connection starts with `hello {version, caps}` in both directions: between browser and
   server, between host and server, and between browser and host on the control channel once it
   opens.
-- The server copies a host's `version` and `caps` into the device list, so the browser knows
-  them before it connects. The host's `hello` on the control channel is authoritative, since the
-  server cannot alter it; if the two differ, the browser uses the control-channel one.
-- A peer that sends no `hello`, or whose version is below `min_version` (3), is too old. The
-  browser shows that the computer, the page or the server needs an update, and does not
-  connect. There is no compatibility code for older versions.
-- The server refuses no one because of their version; it only passes a host's `version` on in
-  the device list. The check against `min_version` is made by the browser, both on the host's
-  version in the device list and on its control-channel `hello`. On the control channel the
-  browser accepts nothing from the host before that `hello`. Pointer positions on the move
-  channel can arrive first, but they say nothing about the version, and `old` is decided from
-  the `hello` alone.
-- Within a version, optional features are gated only by capabilities. The browser adapts to
+- The server saves the last reported version for offline display and `upgrade-check`. For online
+  computers, the device list uses the version and `caps` from the current signaling socket's
+  hello. The version stays unknown until that socket reports it. The server accepts signaling
+  sockets regardless of version. The browser refuses to connect when the current socket reports
+  a version below the minimum and checks the version again in the host's authoritative
+  control-channel `hello`. The browser waits for that `hello` before handling other host messages,
+  including pointer positions that can arrive first on the move channel.
+- Optional features are gated by capabilities. The browser adapts to
   `caps` and never infers support from the OS name, the browser, timing or a missing reply:
   | Cap | Without it |
   |---|---|
@@ -65,9 +61,10 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `ai` | no AI seat: AI clients cannot use the computer |
 - A newer peer sends a new message or field only when the other side's version or capabilities
   show that it is understood. Receivers ignore unknown fields.
-- To add a message or field, add it to `messages.json` with the new `since`, bump
-  `protocol_version` if older peers must be distinguished, and update all three
-  implementations. The contract tests fail until all of them agree.
+- To add a message or field, add it to `messages.json` with its `since` and update the
+  implementations that use it. When a change requires a protocol bump, update `protocol_version`
+  in `version.json` and the constants checked against it. Preserve interoperability with the
+  previous host protocol.
 
 ## The computer you are using
 

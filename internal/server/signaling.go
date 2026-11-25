@@ -208,9 +208,6 @@ func (s *Server) fromClient(c *conn, m proto.Msg) {
 	}
 	switch m.Type {
 	case proto.TypeHello:
-		s.mu.Lock()
-		c.version = m.Version
-		s.mu.Unlock()
 		return
 	case proto.TypeWatch:
 		s.mu.Lock()
@@ -304,20 +301,23 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 func (s *Server) fromHost(c *conn, m proto.Msg) {
 	switch m.Type {
 	case proto.TypeHello:
-		s.mu.Lock()
-		c.version, c.caps, c.tools = m.Version, m.Caps, nil
-		if len(c.caps) > 64 {
-			c.caps = c.caps[:64]
-		}
+		var tools []string
 		for _, t := range m.Tools {
-			if len(c.tools) < 128 && t != "" && len(t) <= 64 {
-				c.tools = append(c.tools, t)
+			if len(tools) < 128 && t != "" && len(t) <= 64 {
+				tools = append(tools, t)
 			}
 		}
-		tools := c.tools
+		s.mu.Lock()
+		if s.hosts[c.deviceID] != c {
+			s.mu.Unlock()
+			return
+		}
+		c.version = max(0, m.Version)
+		c.caps = m.Caps[:min(len(m.Caps), 64)]
+		err := s.store.SetHostHello(c.deviceID, c.version, tools)
 		s.mu.Unlock()
-		if err := s.store.SetTools(c.deviceID, tools); err != nil {
-			log.Printf("server: keep %s's tools: %v", c.deviceID, err)
+		if err != nil {
+			log.Printf("server: keep %s's hello: %v", c.deviceID, err)
 		}
 		s.broadcastDevices()
 		return

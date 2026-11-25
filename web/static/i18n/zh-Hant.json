@@ -370,6 +370,7 @@
   "session.endedText": "這台電腦上的人中斷了連線，遠端程式繼續執行。",
   "session.failedTitle": "連線已中斷",
   "session.failedText": "到這台電腦的網路沒有恢復。遠端程式繼續執行。",
+  "update.available": "有可用更新",
   "update.computerTitle": "這台電腦需要更新",
   "update.computerText": "請在這台電腦上更新 Deskway，然後再連線。",
   "update.reload": "重新載入",

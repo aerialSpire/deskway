@@ -6,6 +6,7 @@
 // (A2); the computer this browser runs on;
 // disconnecting; each computer in a window of its own.
 import { sleep, SCREENS, TAKE_OVER, click, centre, t, q, fixed } from './harness.mjs';
+import { MIN_VERSION } from '../../web/static/js/proto.js';
 
 const dialogTitle = `document.querySelector('.dialog h2')?.textContent || ''`;
 const hasButton = (label) => `[...document.querySelectorAll('.dialog button')].some((x) => x.textContent === ${JSON.stringify(label)})`;
@@ -98,14 +99,21 @@ export const area = {
     h.check('A6 another device of this account: "your … is controlling", Take over', question.title === t('force.account', { name: '小林的手机' }) && question.buttons.includes(t('force.accountGo')), JSON.stringify(question));
     question = await asked({ device: false, name: '小林的手机', connecting: true }, 'account question, connecting');
     h.check('A8 still connecting says so', question.title === t('force.accountConnecting', { name: '小林的手机' }), JSON.stringify(question));
+    const versionAs = (version) => b.v(`d.serverSays({ type: 'devices', devices: d.devices().map((x) => ({ ...x, controller: undefined, version: ${version} })) })`);
+    await b.v(`d.show('list')`);
+    await versionAs(MIN_VERSION);
+    await b.until(`document.querySelector('.card .status + .computer-update')?.textContent === ${q('update.available')}`, 'update available on its own line');
+    h.check('the card shows the update available note below the status', true);
+    await b.eval(`document.querySelector('.card-open').click()`);
+
     // A3: a computer older than this page understands: the update notice, no session.
-    await b.v(`d.serverSays({ type: 'devices', devices: d.devices().map((x) => ({ ...x, controller: undefined, version: 2 })) })`);
+    await versionAs(MIN_VERSION - 1);
     await b.until(SCREENS, 'picture');
     await b.eval(TAKE_OVER);
     await b.until(`!!document.querySelector('.dialog')`, 'update notice');
     h.check('A3 a computer too old: the update notice, no session', await b.eval(`${dialogTitle} === ${q('update.computerTitle')}`) && await b.v(`!s`), await b.eval(dialogTitle));
     await b.clickText('.dialog button', t('common.gotIt'));
-    await b.v(`d.serverSays({ type: 'devices', devices: d.devices().map((x) => ({ ...x, controller: undefined, version: 3 })) })`);
+    await versionAs(MIN_VERSION);
 
     // A2: the page knows its socket is down: pressing says so at once and starts nothing.
     await b.v(`d.dropSignaling()`);

@@ -52,8 +52,9 @@ function ask(d, c) {
 export function openSession(d, force) {
   // A delayed action may still run after a new connection has started on this page.
   if (currentSession()) return;
-  // A computer whose hello is older than this page understands is not connected to.
-  if (d.version && d.version < MIN_VERSION) { show(d, { reason: 'old' }); return; }
+  // A delayed action uses the latest report from the online computer's current socket.
+  const live = state.devices.find((x) => x.id === d.id);
+  if (live?.online && live.version && live.version < MIN_VERSION) { show(d, { reason: 'old' }); return; }
   setView('session', d.id);
   // Full screen needs a tap; a computer's own window takes it over as it opens, without one:
   // there “Full screen” is pressed by hand.

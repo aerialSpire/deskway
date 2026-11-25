@@ -294,14 +294,14 @@ func (s *Store) DeviceOwner(id string) (owner string, approved bool) {
 }
 
 // DevicesFor lists the account's computers that are let in, without what only the live
-// connections know (online, controller, displays, version).
+// connections know (online, controller, displays, capabilities).
 func (s *Store) DevicesFor(user string) []proto.Device {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	list := []proto.Device{}
 	for id, d := range s.Devices {
 		if !d.Pending && d.Owner == user {
-			dev := proto.Device{ID: id, Name: d.Name, OS: d.OS, LastSeen: d.LastSeen, Tools: d.Tools}
+			dev := proto.Device{ID: id, Name: d.Name, OS: d.OS, LastSeen: d.LastSeen, Tools: d.Tools, Version: d.Version}
 			if d.AI != nil {
 				dev.AI = &proto.AiView{State: proto.AIOff, Admin: d.AI.Admin, TS: d.AI.TS}
 				if d.AI.AI {
@@ -350,15 +350,15 @@ func (s *Store) Touch(device string) error {
 	return nil
 }
 
-// SetTools keeps the AI tools the computer said it carries out, saved only when they changed.
-func (s *Store) SetTools(device string, tools []string) error {
+// SetHostHello keeps the reported protocol version and AI tools, saving when either changes.
+func (s *Store) SetHostHello(device string, version int, tools []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := s.Devices[device]
-	if d == nil || slices.Equal(d.Tools, tools) {
+	if d == nil || (d.Version == version && slices.Equal(d.Tools, tools)) {
 		return nil
 	}
-	d.Tools = slices.Clone(tools)
+	d.Version, d.Tools = version, slices.Clone(tools)
 	return s.saveLocked()
 }
 

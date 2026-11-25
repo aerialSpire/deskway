@@ -3,6 +3,7 @@
 // the "Keyboard" button, full screen and the toolbar there, and the video's numbers.
 // Leaves the session open on `h.a`.
 import { sleep, SCREENS, click, t, q, fixed } from './harness.mjs';
+import { MIN_VERSION } from '../../web/static/js/proto.js';
 
 // The video's size follows what the page shows and decodes (`view`): a phone gets no more than
 // its screen, a window that grows gets more, a 4K-sized window gets the display at up to the
@@ -227,7 +228,7 @@ export const area = {
     await a.v(`s.forgetHello()`);
     await a.v(`s.fromHost({ t: 'cp', x: 0.5, y: 0.5, v: true, s: 0 })`);
     h.check('a pointer position before the hello ends nothing', await a.v(`!!s && s.info().state === 'active'`));
-    await a.v(`s.fromHost({ t: 'hello', version: 2, caps: [] })`);
+    await a.v(`s.fromHost({ t: 'hello', version: ${MIN_VERSION - 1}, caps: [] })`);
     await a.until(`!!document.querySelector('.dialog')`, 'update notice');
     h.check('a hello older than this page ends the session: the update notice', await a.eval(`document.querySelector('.dialog h2')?.textContent === ${q('update.computerTitle')}`) && await a.v(`!s`));
     // The notice closed: the areas after this one use the page.

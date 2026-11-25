@@ -370,6 +370,7 @@
   "session.endedText": "Someone at this computer ended the connection; programs keep running.",
   "session.failedTitle": "The connection was lost",
   "session.failedText": "The network to this computer didn’t come back. Programs on the computer keep running.",
+  "update.available": "Update available",
   "update.computerTitle": "This computer needs an update",
   "update.computerText": "Update Deskway on this computer, then connect again.",
   "update.reload": "Reload",
