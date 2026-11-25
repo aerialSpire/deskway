@@ -555,6 +555,7 @@ The source of truth is the viewer's constraints.
   | `previews.go` | previews |
   | `signaling.go` | the sockets, routed through `sessions.go` |
   | `turn.go` | the relay and the ICE servers, whose TURN credentials name the account |
+  | `tlssplit.go` | the shared HTTPS listener that sends decrypted connections to HTTP or TURN |
   | `relaylimit.go` | each account's share of the relay |
   | `store.go`, `records.go` | the state |
 
@@ -577,6 +578,12 @@ The source of truth is the viewer's constraints.
   through the sockets' own readers) and its relay candidates. Capture and the encoder start when
   the offer is accepted, at the offer's `view`, and the first frame sent after DTLS connects is a
   keyframe.
+- With server-terminated TLS and TURN enabled, the HTTPS listener serves both HTTP and TURN
+  over TLS. HTTP ALPN goes to the HTTP server. Without ALPN, an ASCII letter goes to HTTP and
+  a STUN first byte goes to TURN. The relay shares its account limits and peer rules across
+  listeners. ICE advertises the certificate hostname and HTTPS port in the `turns:` URL. The
+  host and CLI verify that hostname using system trust. They offer direct candidates first
+  and publish each relay as it is ready. ICE candidate priorities prefer UDP, TCP, then TLS.
 
 ## Power
 
@@ -700,5 +707,11 @@ style.css            the client's page and session layout, in those tokens only
   relay-only host), `first-use` (which runs its own fresh server and Windows hosts), and
   `previous-protocol` (which opens a session on a previous-version host using a fresh account
   on the current server).
+- Use `--areas relay --relay-tls` with an HTTPS `--url` and start the host with
+  `DESKWAY_TEST_RELAY=tls` to exercise TURN over the HTTPS port. Silently drop the host's UDP
+  and TCP traffic to the server's `-turn-port` (3478 by default) so both attempts time out.
+  For a local run, start the server with `-tls-cert`, `-tls-key`, `-public-ip 127.0.0.1` and
+  `-turn-allow-private-for-tests`. Use a certificate for the URL's hostname trusted by the
+  browser and host.
 - A rule enforced by the server or the host is tested in Go or Rust; e2e tests check only what
   the page shows.

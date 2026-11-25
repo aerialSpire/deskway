@@ -175,6 +175,8 @@ sudo systemctl enable --now deskway
 The unit runs the server as the `deskway` user on port 443. `-domain` obtains a Let's Encrypt
 certificate automatically and caches it in `/var/lib/deskway/certs`, and `-public-ip` turns on the
 built-in TURN relay.
+With both enabled, TCP 443 also carries TURN over TLS for networks that block the usual TURN
+port. Keep the same firewall ports open.
 
 `sudo systemctl status deskway` should show `active (running)`, and
 `sudo journalctl -u deskway -n 20 --no-pager` should include `TURN relay on port 3478` and
@@ -264,6 +266,7 @@ Set these flags on the `ExecStart` line of the unit.
 | `-data` | `deskway-data/state.json` | State file. The `certs` and `clients` folders sit beside it |
 | `-domain` | | Get a Let's Encrypt certificate for this domain automatically, through port 443 (port 80 can stay closed) |
 | `-tls-cert`, `-tls-key` | | Use your own certificate and key files instead of `-domain` |
+| `-public-host` | | Public hostname for TURN over TLS with your own certificate, when it has no single concrete DNS name |
 | `-public-ip` | | The public IPv4 address. Turns on the built-in TURN relay. Without it, computers behind strict NATs can't be reached |
 | `-turn-port` | `3478` | TURN port, UDP and TCP |
 | `-turn-min-port`, `-turn-max-port` | `49160`, `49359` | Relay port range. Open the same range in the firewall |
@@ -276,8 +279,11 @@ Set these flags on the `ExecStart` line of the unit.
 
 Replace `-domain @DOMAIN@` in the unit with `-tls-cert /etc/deskway/fullchain.pem -tls-key
 /etc/deskway/privkey.pem`. Both files must be readable by the `deskway` user (for example owner
-`root`, group `deskway`, mode `640`). `ProtectSystem=strict` keeps `/etc` readable, so no other
-unit change is needed. The server reads the certificate at startup, so run
+`root`, group `deskway`, mode `640`). `ProtectSystem=strict` keeps `/etc` readable. When
+`-public-ip` enables the relay, Deskway infers the TURN hostname when the certificate lists
+one DNS name without a wildcard. For a certificate with several DNS names or a wildcard, set
+`-public-host` to a concrete public hostname that the certificate covers, such as
+`desk.example.net` for `*.example.net`. The server reads the certificate at startup, so run
 `sudo systemctl restart deskway` after renewing it.
 
 ### Behind a reverse proxy
@@ -289,7 +295,8 @@ Deskway can run behind it, with the following limitations:
 - Deskway sees every request as coming from the proxy. Approval prompts show the proxy's address
   instead of the device's, and the limit on failed password attempts applies to everyone
   together, so repeated wrong passwords from one person can lock others out for a while.
-- The TURN ports (3478 and 49160–49359) still go straight to the server, not through the proxy.
+- With the plain HTTP listener behind the proxy, the relay still uses ports 3478 and 49160–49359
+  directly. TURN over TLS on the HTTPS port requires Deskway to terminate TLS.
 
 Caddy meets both proxy requirements by default. A minimal Caddyfile looks like this:
 
@@ -381,6 +388,7 @@ Read the log with `sudo journalctl -u deskway -n 100 --no-pager`.
 | Certificate errors in the log | Port 443 must reach this server directly. Let's Encrypt rate-limits repeated failures; fix the cause and wait before retrying |
 | `admin` says the state is locked | The server is running. Stop it first |
 | Sessions work on the same network but not from mobile data | `-public-ip` is the server's public address; TCP/UDP 3478 and UDP 49160–49359 are open in both firewalls |
+| Can sign in but cannot connect on a network that only allows TCP 443 | Enable `-public-ip` and terminate TLS in Deskway on port 443. Check that the log shows `TURN over TLS at` with the public hostname and that the browser and host trust its certificate |
 | A computer stays "Waiting for approval on a signed-in device" | Approve it from an approved browser, on **My devices** |
 | **Add an AI client** says the server has no programs | Check the reason on the page and the server log. For manually supplied programs, check the exact names in step 5 |
 | The browser shows "This computer needs an update" | Update Deskway Host on that computer to the server's version |

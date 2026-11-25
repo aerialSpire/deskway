@@ -78,7 +78,10 @@ function sessionHandle(s) {
           for (const k of ['packetsReceived', 'framesReceived', 'keyFramesDecoded', 'pliCount', 'firCount', 'nackCount', 'freezeCount', 'frameWidth']) out[k] = r[k];
         }
       });
-      if (pair) Object.assign(out, { local: stats.get(pair.localCandidateId)?.candidateType, remote: stats.get(pair.remoteCandidateId)?.candidateType, rtt: pair.currentRoundTripTime });
+      if (pair) {
+        const local = stats.get(pair.localCandidateId);
+        Object.assign(out, { local: local?.candidateType, relayProtocol: local?.relayProtocol, remote: stats.get(pair.remoteCandidateId)?.candidateType, rtt: pair.currentRoundTripTime });
+      }
       return out;
     },
     // The session's elements, to look at and to press like a person would.

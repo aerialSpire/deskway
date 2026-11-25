@@ -1,7 +1,9 @@
 //! Minimal STUN binding client, used to learn this host's public address.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
+
+use crate::net::resolve_ipv4;
 
 const MAGIC: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
 const XOR_MAPPED_ADDRESS: u16 = 0x0020;
@@ -11,7 +13,7 @@ pub fn resolve(url: &str) -> Option<SocketAddr> {
     let rest = url.strip_prefix("stun:")?;
     let rest = rest.split('?').next()?;
     let target = if rest.contains(':') { rest.to_string() } else { format!("{rest}:3478") };
-    target.to_socket_addrs().ok()?.find(|a| a.is_ipv4())
+    resolve_ipv4(target)
 }
 
 fn request(id: u64) -> [u8; 20] {

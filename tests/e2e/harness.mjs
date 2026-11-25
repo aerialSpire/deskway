@@ -81,6 +81,7 @@ export function options(argv = process.argv) {
     // Optional: the server's executable and data file, for restarting it during a session.
     serverExe: arg('server-exe'),
     serverState: arg('server-state'),
+    relayTLS: argv.includes('--relay-tls'),
     browserArgs: argv.filter((v) => v.startsWith('--browser-arg=')).map((v) => v.slice('--browser-arg='.length)),
     port: Number(arg('devtools-port') || 9333),
     areas: arg('areas') ? arg('areas').split(',').map((x) => x.trim()).filter(Boolean) : null,

@@ -23,6 +23,7 @@ type TURNConfig struct {
 	PublicIP string
 	Port     int
 	Secret   string
+	TLSAddr  string // certificate hostname and HTTPS port, when shared with TURN
 	// Relay ports stay in this range, so a firewall only has to open this much.
 	MinPort, MaxPort uint16
 	// AllowPrivatePeers is for tests on one machine. A public server must leave it off:
@@ -32,8 +33,8 @@ type TURNConfig struct {
 	AccountMbps int
 }
 
-// StartTURN starts the relay on UDP and TCP. TCP matters on networks that block UDP.
-func StartTURN(cfg TURNConfig) (*turn.Server, error) {
+// StartTURN serves UDP, TCP, and the TLS listener when one is provided.
+func StartTURN(cfg TURNConfig, secure net.Listener) (*turn.Server, error) {
 	ip := net.ParseIP(cfg.PublicIP)
 	if ip == nil {
 		return nil, fmt.Errorf("invalid public IP %q", cfg.PublicIP)
@@ -63,7 +64,14 @@ func StartTURN(cfg TURNConfig) (*turn.Server, error) {
 		allowed = func(net.Addr, net.IP) bool { return true }
 	}
 	logger := logging.NewDefaultLoggerFactory().NewLogger("turn")
-	return turn.NewServer(turn.ServerConfig{
+	listenerConfig := func(l net.Listener) turn.ListenerConfig {
+		return turn.ListenerConfig{Listener: l, RelayAddressGenerator: gen(), PermissionHandler: allowed}
+	}
+	listeners := []turn.ListenerConfig{listenerConfig(tcp)}
+	if secure != nil {
+		listeners = append(listeners, listenerConfig(secure))
+	}
+	relay, err := turn.NewServer(turn.ServerConfig{
 		Realm:       "deskway",
 		AuthHandler: turn.LongTermTURNRESTAuthHandler(cfg.Secret, logger),
 		PacketConnConfigs: []turn.PacketConnConfig{{
@@ -71,12 +79,13 @@ func StartTURN(cfg TURNConfig) (*turn.Server, error) {
 			RelayAddressGenerator: gen(),
 			PermissionHandler:     allowed,
 		}},
-		ListenerConfigs: []turn.ListenerConfig{{
-			Listener:              tcp,
-			RelayAddressGenerator: gen(),
-			PermissionHandler:     allowed,
-		}},
+		ListenerConfigs: listeners,
 	})
+	if err != nil {
+		tcp.Close()
+		udp.Close()
+	}
+	return relay, err
 }
 
 // publicPeersOnly stops anyone holding TURN credentials from using the relay to
@@ -104,8 +113,12 @@ func ICEProvider(cfg *TURNConfig, stun []string) func(account string) []proto.IC
 			return out
 		}
 		base := fmt.Sprintf("%s:%d", cfg.PublicIP, cfg.Port)
+		urls := []string{"stun:" + base, "turn:" + base + "?transport=udp", "turn:" + base + "?transport=tcp"}
+		if cfg.TLSAddr != "" {
+			urls = append(urls, "turns:"+cfg.TLSAddr+"?transport=tcp")
+		}
 		return append(out, proto.ICEServer{
-			URLs:       []string{"stun:" + base, "turn:" + base + "?transport=udp", "turn:" + base + "?transport=tcp"},
+			URLs:       urls,
 			Username:   user,
 			Credential: pass,
 		})

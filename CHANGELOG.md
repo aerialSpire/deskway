@@ -9,6 +9,7 @@ Notable changes to Deskway are recorded here. The format follows
 ### Added
 
 - Install the Deskway server on Debian or Ubuntu with one command and upgrade released servers with verified GitHub release assets.
+- Self-hosted servers that terminate TLS can relay sessions over the HTTPS port when a network blocks the usual TURN port.
 - Released servers fetch and verify missing AI client programs in the background at startup.
 - First public release: the Deskway server, web client, Deskway Host for Windows and macOS
   (Apple silicon and Intel), and the `deskway` CLI for AI clients.
@@ -25,6 +26,7 @@ Notable changes to Deskway are recorded here. The format follows
 ### Fixed
 
 - The server installer uses DNS for the public TURN address, enables the service on reruns, and shows recent journal entries if startup fails.
+- Sessions can start over the HTTPS relay while attempts to reach the usual TURN port are still pending.
 - Server upgrades replace outdated cached AI client programs in place.
 - Speed up AI client program listings and downloads by reusing SHA-256 hashes for unchanged files.
 - Connect to the first computer you add without needing to request control, and turn on AI for it from the same browser.
