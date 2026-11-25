@@ -33,8 +33,11 @@ type Server struct {
 	web   fs.FS
 	build string // which client files are served: their hash, told to every browser
 	login *loginLimiter
-	ai    *aiState // AI sign-ins and the AI client programs (aiclients.go)
+	ai    *aiState // AI sign-ins (aiclients.go)
 
+	ctx      context.Context
+	cancel   context.CancelFunc
+	programs *clientPrograms
 	sessions *Sessions
 
 	mu       sync.Mutex
@@ -46,8 +49,7 @@ type Server struct {
 	previews map[string]map[string]preview
 	asked    map[string]time.Time // device id -> when it was last asked for previews
 
-	// Open WebSocket handlers. Their goroutines outlive what net/http tracks once the
-	// connection is hijacked, so Shutdown waits for them itself.
+	// WebSocket handlers and the program fetcher outlive what net/http tracks.
 	active sync.WaitGroup
 }
 
@@ -95,6 +97,7 @@ func (c *conn) send(m any) {
 
 // New creates a Server.
 func New(store *Store, ice func(user string) []proto.ICEServer, web fs.FS) *Server {
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		store:    store,
 		ice:      ice,
@@ -102,6 +105,8 @@ func New(store *Store, ice func(user string) []proto.ICEServer, web fs.FS) *Serv
 		build:    buildOf(web),
 		login:    newLoginLimiter(),
 		ai:       newAIState(),
+		ctx:      ctx,
+		cancel:   cancel,
 		hosts:    map[string]*conn{},
 		clients:  map[*conn]bool{},
 		displays: map[string]json.RawMessage{},
@@ -113,9 +118,10 @@ func New(store *Store, ice func(user string) []proto.ICEServer, web fs.FS) *Serv
 	return s
 }
 
-// Shutdown ends every WebSocket and waits until their handlers have finished, including the
-// state they save on the way out. Call it after the HTTP server stops accepting connections.
+// Shutdown cancels program fetching, ends every WebSocket and waits for them to finish.
+// Call it after the HTTP server stops accepting connections.
 func (s *Server) Shutdown() {
+	s.cancel()
 	s.mu.Lock()
 	var all []*conn
 	for _, c := range s.hosts {

@@ -131,15 +131,19 @@ created later on the website.
 
 `sudo ls /var/lib/deskway` should now show `state.json`.
 
-## 5. Put the AI client programs in place (optional)
+## 5. AI client programs (automatic for releases)
 
-You need this step only if you will connect AI clients such as Claude Code, and you can do it at
-any time.
+A released server downloads missing `deskway` programs for Windows x64 and both macOS
+architectures from its own GitHub release in the background at startup. It verifies each
+program's SHA-256 before saving it as `/var/lib/deskway/clients/.release/<file name>`. At startup,
+the server replaces cached files whose hashes differ from the release. This needs outbound HTTPS
+to GitHub and its release asset host, and write access to the clients folder (or its parent so
+the server can create it). Set `-fetch-clients=false` to turn off outbound fetching. The server
+can still use cached programs whose hashes match its release.
 
-The server hands out the `deskway` command-line program to AI clients from
-`/var/lib/deskway/clients`, the `clients` folder beside the state file. The `-clients` flag
-changes this location. The server lists the files in that folder that have one of these exact
-names, each with its SHA-256 hash:
+For a source build, an offline server, or a custom build of a client program, you can place
+files directly in `/var/lib/deskway/clients`, the `clients` folder beside the state file.
+The `-clients` flag changes this location. Files with these exact names take priority:
 
 | File name | For |
 |---|---|
@@ -148,19 +152,8 @@ names, each with its SHA-256 hash:
 | `deskway-macos-arm64` | macOS on Apple silicon |
 | `deskway-macos-x64` | macOS on Intel |
 
-Each GitHub release publishes the Windows x64 and macOS files under these names, so you can
-download them into the folder unchanged. Use the release tag of the server you run:
-
-```sh
-tag=v0.1.0   # the release you are running
-sudo install -d -m 755 -o deskway -g deskway /var/lib/deskway/clients
-for f in deskway-windows-x64.exe deskway-macos-arm64 deskway-macos-x64; do
-  sudo -u deskway curl -fL -o "/var/lib/deskway/clients/$f" \
-    "https://github.com/aerialSpire/deskway/releases/download/$tag/$f"
-done
-```
-
-To build them from source instead, run `scripts\build-ai-clients.ps1 <folder>` on Windows. It
+Use the matching release assets for an offline release install. To build the programs yourself,
+run `scripts\build-ai-clients.ps1 <folder>` on Windows. It
 builds the x64 program, and also the ARM64 one if the `aarch64-pc-windows-msvc` Rust target is
 installed. On a Mac, `scripts/build-ai-clients.sh <folder>` builds both macOS programs. Copy the
 results into `/var/lib/deskway/clients` with the names above.
@@ -169,9 +162,9 @@ The server reads the folder on each request, so it does not need a restart. When
 files with a newer version, AI clients that are already set up update themselves within an hour
 (see [AI clients](ai-clients.md)).
 
-After you sign in (step 7), the **Add an AI client** window on the website should list a download
-for each file. If it shows "The server has no AI client programs yet", the folder is empty or the
-file names don't match.
+After you sign in (step 7), **Add an AI client** lists the available programs and shows any
+download, verification or storage errors. The server logs fetch failures and retries them
+in the background after a one-minute delay. Reopen the page to see the latest status.
 
 ## 6. Start the service
 
@@ -254,22 +247,21 @@ sudo docker run -d --name deskway --restart unless-stopped --network host \
 The first command prints the admin's initial password once, as in step 4. The container can bind
 port 443 although it does not run as root. `sudo docker logs deskway` shows the server log.
 
-For AI clients (step 5), put the programs in `/var/lib/deskway/clients`, owned by uid 65532:
+The image fetches AI client programs at startup and caches them in `/data/clients/.release`
+on the mounted volume. For offline deployments, append `-fetch-clients=false` to the server
+arguments above. You can put programs in `/var/lib/deskway/clients` on the host as described
+in step 5. They must be readable by uid 65532.
 
-```sh
-sudo install -d -m 755 -o 65532 -g 65532 /var/lib/deskway/clients
-sudo install -m 644 -o 65532 -g 65532 deskway-windows-x64.exe deskway-macos-arm64 deskway-macos-x64 \
-  /var/lib/deskway/clients/
-```
-
-To upgrade, pull the new version, then replace the container with the same `docker run` command
-and the new tag:
+To upgrade, pull the new version, then stop the container and back up its data:
 
 ```sh
 sudo docker stop deskway && sudo docker rm deskway
 sudo cp -a /var/lib/deskway /var/lib/deskway.bak-$(date +%F)
-# docker run -d --name deskway ... with the new tag, as above
 ```
+
+To switch to automatic fetching, move any manually placed programs out of the host's `clients`
+folder before starting the new container. Programs left there take priority. Start the new
+container with the same `docker run` command and the new tag.
 
 ## Server options
 
@@ -287,6 +279,7 @@ Set these flags on the `ExecStart` line of the unit.
 | `-relay-account-mbps` | `30` | Each account's share of the relay bandwidth, both directions together |
 | `-stun` | | Comma-separated STUN URLs to hand out when TURN is off |
 | `-clients` | `clients` beside the state file | Folder of AI client programs |
+| `-fetch-clients` | `true` | Fetch missing AI client programs from the server's GitHub release. Use `-fetch-clients=false` to disable outbound fetching |
 
 ### Your own certificate
 
@@ -323,21 +316,25 @@ server bind port 443.
 
 1. Read the release notes for the version you are moving to.
 2. Download the new release (step 2) or build it (step 3).
-3. Stop the service, back up its data, replace the binary and start the service again:
+3. Stop the service, back up its data and replace the binary:
 
    ```sh
    sudo systemctl stop deskway
    sudo cp -a /var/lib/deskway /var/lib/deskway.bak-$(date +%F)
    sudo install -m 755 deskway-server /usr/local/bin/deskway-server
-   sudo systemctl start deskway
    ```
 
-4. Replace the files in `/var/lib/deskway/clients` with the ones from the new release (step 5).
-   AI clients update themselves from there.
-5. Update Deskway Host on each computer: on Windows run the new `DeskwayHost-Setup-windows-x64.exe` and choose
+   To switch to automatic fetching, move any manually placed programs out of `clients` before
+   starting the new server. Update any manually supplied programs you want to keep serving.
+   Start the service with `sudo systemctl start deskway`.
+
+4. Update Deskway Host on each computer: on Windows run the new `DeskwayHost-Setup-windows-x64.exe` and choose
    **Update**; on macOS quit Deskway Host and replace `Deskway.app` in Applications. If a computer no longer speaks
    the same protocol as the server, the browser shows "This computer needs an update" for that
    computer.
+
+The released server automatically fetches the new release's AI client programs at startup.
+AI clients pick up the programs served by the server within an hour.
 
 Browsers pick up the new web client on their own and show "A new version of Deskway is ready".
 
@@ -367,5 +364,5 @@ Read the log with `sudo journalctl -u deskway -n 100 --no-pager`.
 | `admin` says the state is locked | The server is running. Stop it first |
 | Sessions work on the same network but not from mobile data | `-public-ip` is the server's public address; TCP/UDP 3478 and UDP 49160–49359 are open in both firewalls |
 | A computer stays "Waiting for approval on a signed-in device" | Approve it from an approved browser, on **My devices** |
-| **Add an AI client** says the server has no programs | Step 5: the files are in the `clients` folder with the exact names |
+| **Add an AI client** says the server has no programs | Check the reason on the page and the server log. For manually supplied programs, check the exact names in step 5 |
 | The browser shows "This computer needs an update" | Update Deskway Host on that computer to the server's version |

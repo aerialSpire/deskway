@@ -28,9 +28,9 @@ Mac.
 
 - The AI's machine runs Windows (x64 or ARM64) or macOS (Apple silicon or Intel). `deskway` does
   not run on Linux.
-- The server has the `deskway` programs in its `clients` folder. The server's administrator sets
-  this up once, as described in [Self-hosting, step 5](self-hosting.md#5-put-the-ai-client-programs-in-place-optional).
-  Until then, **Add an AI client** shows "The server has no AI client programs yet".
+- The server can provide the `deskway` program for the AI's machine. Released servers fetch the
+  programs in the background at startup. The administrator can also supply them as described in
+  [Self-hosting, step 5](self-hosting.md#5-ai-client-programs-automatic-for-releases).
 - The computers to be controlled run a current version of Deskway Host. A computer with an older
   version shows "This computer's Deskway is too old for AI control".
 
@@ -96,9 +96,10 @@ Several AI client windows on one machine share one connection through a local pr
 ## Updates
 
 `deskway` keeps itself up to date. When it starts, and every hour after that, it compares itself
-with the program in the server's `clients` folder and replaces itself if they differ. The new
-version takes effect the next time the AI client starts `deskway mcp`. To update your AI clients,
-you only need to update the files in the server's `clients` folder.
+with the program the server serves and replaces itself if they differ. The new version takes
+effect the next time the AI client starts `deskway mcp`. Released servers fetch their own
+release's programs automatically at startup. Replace files directly in `clients` only for
+programs you supply by hand. Those files take priority over the release downloads.
 
 ## Tools
 

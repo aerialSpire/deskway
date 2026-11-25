@@ -331,7 +331,9 @@ design is described in [architecture.md](architecture.md), "AI control".
 - **Sign-in.** A new client signs in with `POST /api/login/ai {user}`, which works only while the
   account accepts AI sign-ins (`POST /api/ai/window`). An approved client sends `{ts, sig}` over
   `deskway-ai-login-v1` instead. `GET /api/ai/clients` lists the programs the server distributes,
-  with their SHA-256 hashes, and `GET /download/{file}` serves them.
+  as a JSON array with their SHA-256 hashes, and `GET /download/{file}` serves them.
+  `GET /api/ai/clients?details=1` returns an object with that array as `files` and an
+  `errors` object mapping unavailable filenames to `download`, `checksum` or `storage`.
 
 ## IPC (Windows)
 

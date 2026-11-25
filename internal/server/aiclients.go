@@ -1,13 +1,8 @@
 package server
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"io"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
@@ -19,10 +14,6 @@ import (
 // page does when its prompt is copied. A request in that time waits for a browser's approval like
 // any new device; one at any other time is refused, so nobody can fill the list with requests.
 // An approved AI client signs in again with its own key, at any time.
-//
-// The server also hands out the AI client program (deskway) for each system, with its SHA-256,
-// from the folder ServeClients names (built by scripts/build-ai-clients.*). Signed-in browsers
-// list them for the prompt; an AI client's deskway lists them to see whether it is out of date.
 
 const (
 	aiWindowTTL = 10 * time.Minute
@@ -30,49 +21,16 @@ const (
 	aiSigSkew = 5 * 60
 )
 
-// The program for each system, by the names the prompt and the downloads use.
-var clientFiles = []struct{ OS, Arch, File string }{
-	{"windows", "x64", "deskway-windows-x64.exe"},
-	{"windows", "arm64", "deskway-windows-arm64.exe"},
-	{"macos", "arm64", "deskway-macos-arm64"},
-	{"macos", "x64", "deskway-macos-x64"},
-}
-
-// ClientFile is one program the server has, as GET /api/ai/clients lists it.
-type ClientFile struct {
-	OS     string `json:"os"`
-	Arch   string `json:"arch"`
-	File   string `json:"file"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
-}
-
 // aiState is what the server keeps in memory for AI sign-ins: until when each account takes
-// new ones, the latest signed time each AI client used (a signature is good once), and the
-// programs' hashes by file, size and time.
+// new ones and the latest signed time each AI client used (a signature is good once).
 type aiState struct {
-	mu     sync.Mutex
-	open   map[string]time.Time
-	last   map[string]int64
-	dir    string
-	hashed map[string]hashed
-}
-
-type hashed struct {
-	size int64
-	mod  time.Time
-	sum  string
+	mu   sync.Mutex
+	open map[string]time.Time
+	last map[string]int64
 }
 
 func newAIState() *aiState {
-	return &aiState{open: map[string]time.Time{}, last: map[string]int64{}, hashed: map[string]hashed{}}
-}
-
-// ServeClients names the folder holding the AI client programs; "" serves none.
-func (s *Server) ServeClients(dir string) {
-	s.ai.mu.Lock()
-	s.ai.dir = dir
-	s.ai.mu.Unlock()
+	return &aiState{open: map[string]time.Time{}, last: map[string]int64{}}
 }
 
 // handleAIWindow: GET says until when the account takes new AI sign-ins (0: not now); POST
@@ -167,70 +125,4 @@ func (s *Server) signedNow(id string, key *proto.BrowserKey, name string, ts int
 	}
 	s.ai.mu.Unlock()
 	return true
-}
-
-// programs lists the programs the folder has, each with its SHA-256 (worked out once per file
-// version).
-func (s *Server) programs() []ClientFile {
-	s.ai.mu.Lock()
-	defer s.ai.mu.Unlock()
-	list := []ClientFile{}
-	if s.ai.dir == "" {
-		return list
-	}
-	for _, c := range clientFiles {
-		path := filepath.Join(s.ai.dir, c.File)
-		st, err := os.Stat(path)
-		if err != nil || !st.Mode().IsRegular() {
-			continue
-		}
-		h, ok := s.ai.hashed[c.File]
-		if !ok || h.size != st.Size() || !h.mod.Equal(st.ModTime()) {
-			sum, err := fileSHA256(path)
-			if err != nil {
-				continue
-			}
-			h = hashed{st.Size(), st.ModTime(), sum}
-			s.ai.hashed[c.File] = h
-		}
-		list = append(list, ClientFile{c.OS, c.Arch, c.File, st.Size(), h.sum})
-	}
-	return list
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func (s *Server) handleClients(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, s.programs())
-}
-
-// handleDownload hands out one program by its name; anyone may fetch it, as an AI client
-// does before it has signed in.
-func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("file")
-	for _, c := range s.programs() {
-		if c.File == name {
-			s.ai.mu.Lock()
-			path := filepath.Join(s.ai.dir, c.File)
-			s.ai.mu.Unlock()
-			w.Header().Set("Content-Disposition", `attachment; filename="`+c.File+`"`)
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			http.ServeFile(w, r, path)
-			return
-		}
-	}
-	http.NotFound(w, r)
 }

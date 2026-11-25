@@ -8,6 +8,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Added
 
+- Released servers fetch and verify missing AI client programs in the background at startup.
 - First public release: the Deskway server, web client, Deskway Host for Windows and macOS
   (Apple silicon and Intel), and the `deskway` CLI for AI clients.
 
@@ -20,6 +21,8 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Server upgrades replace outdated cached AI client programs in place.
+- Speed up AI client program listings and downloads by reusing SHA-256 hashes for unchanged files.
 - Connect to the first computer you add without needing to request control, and turn on AI for it from the same browser.
 - Keep a complete picture during scrolling and window changes on slow connections.
 - Reduce the delay before clicks and keystrokes become visible when video backs up.

@@ -1,6 +1,6 @@
 # Builds the AI client program (deskway) for Windows into the folder the server hands it out
 # from (deskway-server -clients; by default "clients" beside its state file), under the names
-# internal/server/aiclients.go lists. x64 always; ARM64 too when its Rust target is installed
+# internal/server/clientprograms.go lists. x64 always; ARM64 too when its Rust target is installed
 # (rustup target add aarch64-pc-windows-msvc). macOS: scripts/build-ai-clients.sh.
 param([string]$Out = (Join-Path $PSScriptRoot '..\deskway-data\clients'))
 $ErrorActionPreference = 'Stop'

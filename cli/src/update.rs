@@ -16,7 +16,7 @@ use crate::store::Account;
 /// How often a running `deskway mcp` looks again.
 const EVERY: Duration = Duration::from_secs(3600);
 
-/// The name the server gives this system's program (internal/server/aiclients.go).
+/// The name the server gives this system's program (internal/server/clientprograms.go).
 fn file_name() -> Option<&'static str> {
     Some(match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => "deskway-windows-x64.exe",
