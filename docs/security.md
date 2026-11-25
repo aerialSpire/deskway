@@ -112,13 +112,28 @@ be waiting for approval at once, and likewise at most 5 browsers; beyond that, t
 is dropped.
 
 The TURN relay's credentials name the account: the username is REST-style `expiry:account`,
-HMAC-signed with the server's TURN secret. The relay polices each account's relayed traffic, both
+HMAC-signed with that relay's TURN secret. Each relay polices an account's relayed traffic, both
 directions of all its allocations together, with a single token bucket at `-relay-account-mbps`
 (default 30), and drops whatever exceeds it, so one account cannot crowd out another. The relay
 offers only UDP relays, so no allocation can escape the limit.
 TURN over TLS adds an outer TLS connection to the relay for reachability on port 443. The
 relay still only forwards the peers' end-to-end encrypted DTLS and SRTP traffic and cannot
 read its contents.
+
+### Relay nodes
+
+An additional relay node sees the account ID in the TURN username, the network endpoints
+and traffic metadata, and the encrypted WebRTC packets. It cannot read the session content.
+Each node's secret can mint TURN credentials for that node and authenticate its reports to
+the main server. It grants no access to accounts or signaling and cannot mint credentials
+for the main relay or other nodes.
+
+Only the admin can create a join token or manage nodes. The node exchanges the token once
+over HTTPS and stores its own secret in a private file with mode `0600` on Unix. The main
+server verifies the HMAC over the node ID and timestamp on each report and checks that the
+timestamp is recent and newer than the node's last accepted timestamp in memory. Removing a
+node erases its secret from the main store and stops new ICE offers for it. Already issued
+credentials can work until they expire, and stopping the node closes active allocations.
 
 ## Device keys
 

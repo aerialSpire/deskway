@@ -349,7 +349,7 @@ func TestAttachAfterAServerRestart(t *testing.T) {
 	f := signalingFixture(t)
 	me := f.signedIn("me")
 	// A new server on the same state knows no session.
-	s2 := New(f.s.store, func(string) []proto.ICEServer { return nil }, fstest.MapFS{})
+	s2 := New(f.s.store, TURNConfig{}, nil, fstest.MapFS{})
 	srv2 := httptest.NewServer(s2.Handler())
 	t.Cleanup(func() { srv2.Close(); s2.Shutdown() })
 

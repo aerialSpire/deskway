@@ -28,12 +28,14 @@ const (
 
 // Server holds all live connections.
 type Server struct {
-	store *Store
-	ice   func(user string) []proto.ICEServer // for one account: its relay credentials name it
-	web   fs.FS
-	build string // which client files are served: their hash, told to every browser
-	login *loginLimiter
-	ai    *aiState // AI sign-ins (aiclients.go)
+	store  *Store
+	turn   TURNConfig
+	stun   []string
+	relays relayState
+	web    fs.FS
+	build  string // which client files are served: their hash, told to every browser
+	login  *loginLimiter
+	ai     *aiState // AI sign-ins (aiclients.go)
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -95,11 +97,13 @@ func (c *conn) send(m any) {
 }
 
 // New creates a Server.
-func New(store *Store, ice func(user string) []proto.ICEServer, web fs.FS) *Server {
+func New(store *Store, turn TURNConfig, stun []string, web fs.FS) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{
 		store:    store,
-		ice:      ice,
+		turn:     turn,
+		stun:     stun,
+		relays:   newRelayState(),
 		web:      web,
 		build:    buildOf(web),
 		login:    newLoginLimiter(),
@@ -112,7 +116,7 @@ func New(store *Store, ice func(user string) []proto.ICEServer, web fs.FS) *Serv
 		previews: map[string]map[string]preview{},
 		asked:    map[string]time.Time{},
 	}
-	s.sessions = newSessions(time.Now, s.hostOf, ice, s.controllerFor, store.BrowserCred)
+	s.sessions = newSessions(time.Now, s.hostOf, s.ICEProvider, s.controllerFor, store.BrowserCred)
 	go s.sessions.run()
 	return s
 }
@@ -159,6 +163,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/members", s.requireAdmin(s.handleMemberCreate))
 	mux.HandleFunc("POST /api/members/{id}/password", s.requireAdmin(s.handleMemberReset))
 	mux.HandleFunc("DELETE /api/members/{id}", s.requireAdmin(s.handleMemberRemove))
+	mux.HandleFunc("GET /api/relays", s.requireAdmin(s.handleRelays))
+	mux.HandleFunc("POST /api/relays/token", s.requireAdmin(s.handleRelayToken))
+	mux.HandleFunc("PATCH /api/relays/{id}", s.requireAdmin(s.handleRelayRename))
+	mux.HandleFunc("DELETE /api/relays/{id}", s.requireAdmin(s.handleRelayRemove))
+	mux.HandleFunc("POST /api/relays/join", s.handleRelayJoin)
+	mux.HandleFunc("POST /api/relays/report", s.handleRelayReport)
 	mux.HandleFunc("POST /api/approvals", s.requireLogin(s.handleApprove))
 	mux.HandleFunc("GET /api/devices", s.requireClient(s.handleBrowserKeys))
 	mux.HandleFunc("DELETE /api/browsers/{id}", s.requireLogin(s.handleBrowserRemove))
@@ -235,7 +245,7 @@ func storeError(w http.ResponseWriter, err error) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, errNameTaken), errors.Is(err, errStale):
 		http.Error(w, err.Error(), http.StatusConflict)
-	case errors.Is(err, errNoUser):
+	case errors.Is(err, errNoUser), errors.Is(err, errNoRelay):
 		http.Error(w, err.Error(), http.StatusNotFound)
 	case errors.Is(err, errTooMany):
 		http.Error(w, err.Error(), http.StatusTooManyRequests)

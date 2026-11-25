@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/coder/websocket"
@@ -125,17 +126,30 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sendICE gives the browser its STUN and TURN servers now and again well before the
-// credentials expire, so starting a session never waits for them.
+// sendICE gives the browser its STUN and TURN servers now, when the relay selection
+// changes, and before the credentials expire.
 func (s *Server) sendICE(ctx context.Context, c *conn) {
 	t := time.NewTicker(iceRenew)
 	defer t.Stop()
+	var previous []TURNConfig
+	renew := true
 	for {
-		c.send(proto.Msg{Type: proto.TypeICE, ICE: s.ice(c.user)})
+		nodes, untilExpiry, changed := s.offeredRelays()
+		if renew || !slices.Equal(nodes, previous) {
+			c.send(proto.Msg{Type: proto.TypeICE, ICE: s.iceServers(c.user, nodes)})
+			previous, renew = nodes, false
+		}
+		var expiry <-chan time.Time
+		if untilExpiry > 0 {
+			expiry = time.After(untilExpiry)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			renew = true
+		case <-expiry:
+		case <-changed:
 		}
 	}
 }

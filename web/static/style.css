@@ -6,15 +6,16 @@
 html, body { height: 100%; }
 body { background: var(--ground); }
 /* An app, not a document (with js/app-feel.js): nothing selected, dragged or offered a
-   long-press menu (only fields take text), no tap flash, no double-tap zoom (pinching still
+   long-press menu outside fields and copyable code, no tap flash, no double-tap zoom (pinching still
    zooms), no pull to refresh or bounce at the edges, text not resized by the browser on turning. */
 html {
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
   touch-action: manipulation; overscroll-behavior: none; -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
 }
 body { overscroll-behavior: none; }
-input, textarea, [contenteditable] { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+input, textarea, [contenteditable], .copyable-code { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 img, svg { -webkit-user-drag: none; }
+.copyable-code { display: block; margin-top: var(--s1); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-control); background: var(--surface); font: 400 var(--fs-caption)/var(--lh-body) var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* ---- Pages: a top bar, the title, the content, top aligned ---- */
 .page { max-width: 1280px; margin: 0 auto; padding: var(--s6) var(--s8) var(--s12); }
@@ -261,7 +262,6 @@ img, svg { -webkit-user-drag: none; }
 .ai-manual { margin-top: var(--s5); }
 .ai-manual summary { color: var(--accent); cursor: pointer; }
 .ai-manual h3 { margin-top: var(--s4); color: var(--quiet); font-size: var(--fs-small); font-weight: 400; }
-.ai-code { display: block; margin-top: var(--s1); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--r-control); background: var(--surface); font: 400 var(--fs-caption)/var(--lh-body) var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 720px) {
   .ai-steps { padding: 0 var(--s3); }
   .ai-step { padding-left: calc(var(--s6) + var(--s3)); }

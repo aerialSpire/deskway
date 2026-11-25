@@ -13,7 +13,7 @@ import (
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireLogin(func(w http.ResponseWriter, r *http.Request) {
 		if !s.store.IsAdmin(userOf(r)) {
-			http.Error(w, "only the admin manages members", http.StatusForbidden)
+			http.Error(w, "admin access required", http.StatusForbidden)
 			return
 		}
 		next(w, r)

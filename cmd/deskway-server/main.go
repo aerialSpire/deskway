@@ -37,6 +37,8 @@ func main() {
 			os.Exit(upgradeCommand(os.Args[2:]))
 		case "upgrade-check":
 			os.Exit(upgradeCheckCommand(os.Args[2:]))
+		case "relay":
+			os.Exit(relayCommand(os.Args[2:]))
 		}
 	}
 	flag.Usage = func() {
@@ -44,6 +46,7 @@ func main() {
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin NAME [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+upgradeUsage)
+		fmt.Fprintln(flag.CommandLine.Output(), "       "+relayUsage)
 		flag.PrintDefaults()
 	}
 	var (
@@ -56,9 +59,9 @@ func main() {
 		tlsKey    = flag.String("tls-key", "", "TLS key file")
 		turnHost  = flag.String("public-host", "", "public TURN hostname for a TLS certificate without a single concrete DNS name")
 		publicIP  = flag.String("public-ip", "", "public IP; enables the TURN relay")
-		turnPort  = flag.Int("turn-port", 3478, "TURN port (UDP and TCP)")
-		turnMin   = flag.Int("turn-min-port", 49160, "lowest TURN relay port")
-		turnMax   = flag.Int("turn-max-port", 49359, "highest TURN relay port")
+		turnPort  = flag.Int("turn-port", turnDefaultPort, "TURN port (UDP and TCP)")
+		turnMin   = flag.Int("turn-min-port", turnDefaultMin, "lowest TURN relay port")
+		turnMax   = flag.Int("turn-max-port", turnDefaultMax, "highest TURN relay port")
 		turnPriv  = flag.Bool("turn-allow-private-for-tests", false, "let TURN reach private addresses; for tests on one machine only")
 		stun      = flag.String("stun", "", "comma-separated STUN URLs when TURN is off")
 		relayMbps = flag.Int("relay-account-mbps", 30, "each account's share of the TURN relay, both directions together, in Mbit/s")
@@ -98,9 +101,8 @@ func main() {
 	}
 
 	var https net.Listener
-	var turnCfg *server.TURNConfig
+	turnCfg := server.TURNConfig{PublicIP: *publicIP, Port: *turnPort, Secret: store.TURNSecret, MinPort: uint16(*turnMin), MaxPort: uint16(*turnMax), AllowPrivatePeers: *turnPriv, AccountMbps: *relayMbps}
 	if *publicIP != "" {
-		turnCfg = &server.TURNConfig{PublicIP: *publicIP, Port: *turnPort, Secret: store.TURNSecret, MinPort: uint16(*turnMin), MaxPort: uint16(*turnMax), AllowPrivatePeers: *turnPriv, AccountMbps: *relayMbps}
 		var secureRelay net.Listener
 		if tlsConfig != nil {
 			host := *domain
@@ -123,7 +125,7 @@ func main() {
 			turnCfg.TLSAddr = net.JoinHostPort(host, port)
 			https, secureRelay = server.SplitTLS(listener, tlsConfig.Clone(), 10*time.Second)
 		}
-		t, err := server.StartTURN(*turnCfg, secureRelay)
+		t, err := server.StartTURN(turnCfg, secureRelay)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -138,7 +140,7 @@ func main() {
 		stunURLs = strings.Split(*stun, ",")
 	}
 
-	s := server.New(store, server.ICEProvider(turnCfg, stunURLs), web.Files())
+	s := server.New(store, turnCfg, stunURLs, web.Files())
 	if *clients == "" {
 		*clients = filepath.Join(filepath.Dir(*dataPath), "clients")
 	}

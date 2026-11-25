@@ -81,6 +81,8 @@ export const settingRow = (label, sub, control) => h('div', { class: 'setting-ro
 // Six digits, as "123 456"; `label` is what a screen reader says instead.
 export const codeBox = (code, label) => h('div', { class: 'code', 'aria-label': label }, `${code.slice(0, 3)} ${code.slice(3)}`);
 
+export const copyableCode = (text) => h('code', { class: 'copyable-code' }, text);
+
 export function thumbFor(d) {
   const src = state.thumbs[d.id];
   const inner = h('div', { class: 'thumb-inner' });

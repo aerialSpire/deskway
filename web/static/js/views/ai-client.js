@@ -12,7 +12,7 @@ import { t } from '../i18n.js';
 import { api, signedOut } from '../net.js';
 import { keyCode } from '../auth-messages.js';
 import { state, setView, render } from '../state.js';
-import { topbar, heading, updateNote, aiSupported, codeBox } from './common.js';
+import { topbar, heading, updateNote, aiSupported, codeBox, copyableCode } from './common.js';
 import { accountMenu } from './account.js';
 import { deviceOf, answerDevice } from './approvals.js';
 
@@ -140,19 +140,18 @@ function stepComputers() {
 
 function manual() {
   if (!page.files || !page.files.length) return null;
-  const code = (text) => h('code', { class: 'ai-code' }, text);
   const path = `<${t('aiclient.path')}>`;
   return h('details', { class: 'ai-manual', open: page.manual, ontoggle: (e) => { page.manual = e.target.open; } },
     h('summary', {}, t('aiclient.manual')),
     h('div', { class: 'ai-manual-body' },
       h('h3', {}, t('aiclient.mDownload')),
-      ...page.files.map((f) => code(`${label(f)}\n${url(f)}\nSHA-256 ${f.sha256}`)),
+      ...page.files.map((f) => copyableCode(`${label(f)}\n${url(f)}\nSHA-256 ${f.sha256}`)),
       h('h3', {}, t('aiclient.mLogin')),
-      code(`${path} login --server ${location.origin} --user ${state.me.user} --name "Claude Code"`),
+      copyableCode(`${path} login --server ${location.origin} --user ${state.me.user} --name "Claude Code"`),
       h('h3', {}, t('aiclient.mClaude')),
-      code(`claude mcp add deskway -- ${path} mcp`),
+      copyableCode(`claude mcp add deskway -- ${path} mcp`),
       h('h3', {}, t('aiclient.mOther')),
-      code(JSON.stringify({ mcpServers: { deskway: { command: path, args: ['mcp'] } } }, null, 2))));
+      copyableCode(JSON.stringify({ mcpServers: { deskway: { command: path, args: ['mcp'] } } }, null, 2))));
 }
 
 export function renderAiClient() {
