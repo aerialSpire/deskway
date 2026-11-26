@@ -12,7 +12,7 @@ Notable changes to Deskway are recorded here. The format follows
   Gateway error messages are in English.
 - Open a Linux computer's terminal from the browser, with the same on-screen keyboard and takeover controls as a desktop session.
 - Browse a Linux computer’s files, create folders, rename entries and delete files or empty folders from the browser.
-- Upload and download files from a Linux computer’s Files view and track progress from Files or Terminal.
+- Upload, replace and download files from a Linux computer’s Files view, resume interrupted transfers, and track verified results from Files or Terminal.
 - Run a supervised MCP gateway with a private Unix socket on Linux and macOS and a proxy that stops with the gateway.
 - The Mac host panel offers optional Full Disk Access to skip folder-by-folder prompts during file transfers and AI file operations.
 - Install Deskway Host as a Linux service on x86-64 or ARM64 for AI commands, files and tunnels, and stop AI control locally with `deskway-host stop-ai`.

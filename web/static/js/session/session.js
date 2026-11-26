@@ -75,9 +75,13 @@ export class Session {
     // The stage reports progress until its contents are ready.
     this.setWaiting(t(this.content.connectingNotice || 'session.connecting'));
 
+    this.connect(this.id, dataOnly, force);
+  }
+
+  connect(id, dataOnly, force = false) {
     this.connection = new Connection({
-      id: this.id,
-      device: device.id,
+      id,
+      device: this.device.id,
       force,
       dataOnly,
       deps: {
@@ -216,6 +220,7 @@ export class Session {
   // updates that. The first also starts what waits for the computer to be known.
   onHello(m) {
     if (!(m.version >= MIN_VERSION)) { this.connection.end('old'); return; }
+    this.readmitting = false;
     const first = !this.caps;
     this.caps = new Set(Array.isArray(m.caps) ? m.caps : []);
     this.content.applyCaps(first);
@@ -295,6 +300,17 @@ export class Session {
   onEnded(end) {
     if (this.closed) return;
     this.releaseAll();
+    if (end.established && ['failed', 'gone'].includes(end.reason) && this.connection.resumable
+        && this.content.transfers?.unfinished && !this.readmitting) {
+      this.readmitting = true;
+      this.connectionStats.stop();
+      this.toolbar.route('reconnecting');
+      this.caps = null;
+      this.helloSent = false;
+      this.content.reconnect();
+      this.connect(randomId(), true);
+      return;
+    }
     this.closed = true;
     this.osk.toggle(false);
     this.connectionStats.stop();

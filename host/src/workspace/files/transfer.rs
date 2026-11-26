@@ -2,11 +2,12 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use sha2::{Digest, Sha256};
 use wire::file_transfer::Error;
 
 use super::browse::{component, directory, new_name};
@@ -23,7 +24,8 @@ pub const FILES: FileTransfers = FileTransfers {
     download,
 };
 
-fn path(folder: &[String], name: &str, upload: bool) -> Result<PathBuf, Error> {
+fn path(folder: &[String], name: &str, upload: bool, seated: &dyn Fn() -> bool) -> Result<PathBuf, Error> {
+    check(seated)?;
     let folder = directory(Some(folder)).map_err(|_| Error::InvalidPath)?;
     let name = if upload {
         new_name(name)
@@ -108,11 +110,24 @@ pub(crate) fn sweep_home() {
     }
 }
 
-struct Staged {
+struct Partial {
     file: File,
-    partial: Option<PathBuf>,
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for Partial {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+struct Staged {
+    partial: Option<Partial>,
     destination: PathBuf,
-    _folder: File,
+    folder: File,
     size: u64,
 }
 
@@ -123,67 +138,90 @@ fn upload(path: &Path, size: u64, seated: &dyn Fn() -> bool) -> Result<Box<dyn U
     if !folder.metadata().map_err(io_error)?.is_dir() {
         return Err(Error::InvalidPath);
     }
-    let directory = native::pinned_path(&folder);
-    let destination = directory.join(path.file_name().ok_or(Error::InvalidPath)?);
-    check(seated)?;
-    match fs::symlink_metadata(&destination) {
-        Ok(_) => return Err(Error::Exists),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        Err(e) => return Err(io_error(e)),
-    }
-    let id = wire::crypto::hex(&wire::crypto::random::<16>());
-    let partial = directory.join(format!("{PREFIX}{id}{SUFFIX}"));
-    check(seated)?;
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&partial)
-        .map_err(io_error)?;
-    let staged = Staged {
-        file,
-        partial: Some(partial),
-        destination,
-        _folder: folder,
-        size,
-    };
-    check(seated)?;
-    native::lock_exclusive(&staged.file).map_err(io_error)?;
-    Ok(Box::new(staged))
+    let destination = native::pinned_path(&folder).join(path.file_name().ok_or(Error::InvalidPath)?);
+    Ok(Box::new(Staged { partial: None, destination, folder, size }))
 }
 
 impl Upload for Staged {
-    fn write(&mut self, bytes: &[u8], seated: &dyn Fn() -> bool) -> Result<(), Error> {
+    fn conflict(&self, seated: &dyn Fn() -> bool) -> Result<Option<(u64, i64)>, Error> {
         check(seated)?;
-        self.file.write_all(bytes).map_err(io_error)
+        match fs::symlink_metadata(&self.destination) {
+            Ok(meta) if meta.is_file() => Ok(Some((meta.len(), native::modified(&meta)))),
+            Ok(_) => Err(Error::NotRegular),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_error(e)),
+        }
     }
 
-    fn commit(mut self: Box<Self>, seated: &dyn Fn() -> bool) -> Result<(), Error> {
+    fn prepare(&mut self, seated: &dyn Fn() -> bool) -> Result<u64, Error> {
+        if let Some(partial) = &mut self.partial {
+            check(seated)?;
+            let offset = partial.file.stream_position().map_err(io_error)?;
+            return Ok(offset);
+        }
+        let id = wire::crypto::hex(&wire::crypto::random::<16>());
+        let path = native::pinned_path(&self.folder).join(format!("{PREFIX}{id}{SUFFIX}"));
         check(seated)?;
-        if self.file.metadata().map_err(io_error)?.len() != self.size {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(io_error)?;
+        let partial = Partial { file, path, keep: false };
+        check(seated)?;
+        native::lock_exclusive(&partial.file).map_err(io_error)?;
+        self.partial = Some(partial);
+        Ok(0)
+    }
+
+    fn write(&mut self, bytes: &[u8], seated: &dyn Fn() -> bool) -> Result<(), Error> {
+        check(seated)?;
+        self.partial.as_mut().ok_or(Error::Protocol)?.file.write_all(bytes).map_err(io_error)
+    }
+
+    fn commit(&mut self, sha256: &str, replace: bool, seated: &dyn Fn() -> bool) -> Result<bool, Error> {
+        let partial = self.partial.as_mut().ok_or(Error::Protocol)?;
+        check(seated)?;
+        if partial.file.metadata().map_err(io_error)?.len() != self.size {
             return Err(Error::Size);
         }
         check(seated)?;
-        self.file.sync_all().map_err(io_error)?;
+        let mut reader = File::open(native::pinned_path(&partial.file)).map_err(io_error)?;
+        let mut hash = Sha256::new();
+        let mut buf = vec![0; 64 * 1024];
+        loop {
+            check(seated)?;
+            let n = reader.read(&mut buf).map_err(io_error)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&buf[..n]);
+        }
+        if wire::crypto::hex(&hash.finalize()) != sha256 {
+            return Err(Error::Integrity);
+        }
         check(seated)?;
-        native::rename_new(
-            self.partial.as_ref().expect("staged path"),
-            &self.destination,
-        )
-        .map_err(io_error)?;
-        self.partial = None;
-        Ok(())
+        partial.file.sync_all().map_err(io_error)?;
+        let replacing = replace && self.conflict(seated)?.is_some();
+        let partial = self.partial.as_mut().unwrap();
+        check(seated)?;
+        if replacing {
+            fs::rename(&partial.path, &self.destination)
+        } else {
+            native::rename_new(&partial.path, &self.destination)
+        }.map_err(io_error)?;
+        partial.keep = true;
+        Ok(replacing)
     }
-}
 
-impl Drop for Staged {
-    fn drop(&mut self) {
-        if let Some(path) = &self.partial {
-            let _ = fs::remove_file(path);
+    fn abandon(&mut self) {
+        if let Some(partial) = &mut self.partial {
+            partial.keep = true;
         }
     }
 }
-
 struct Reading {
     file: File,
     size: u64,
@@ -210,6 +248,13 @@ fn download(path: &Path, seated: &dyn Fn() -> bool) -> Result<Box<dyn Download>,
 impl Download for Reading {
     fn size(&self) -> u64 {
         self.size
+    }
+
+    fn rewind(&mut self, seated: &dyn Fn() -> bool) -> Result<(), Error> {
+        self.verify(seated)?;
+        check(seated)?;
+        self.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+        Ok(())
     }
 
     fn read(&mut self, bytes: &mut [u8], seated: &dyn Fn() -> bool) -> Result<(), Error> {
@@ -269,62 +314,79 @@ mod tests {
 
     use std::ffi::OsString;
 
+    fn digest(bytes: &[u8]) -> String {
+        wire::crypto::hex(&wire::crypto::sha256(bytes))
+    }
+
     #[test]
     fn staged_uploads_commit_or_clean_up() {
-        enum End {
-            Commit,
-            Cancel,
-            SeatLost,
-            Appeared,
-            WrongSize,
-        }
-        for (end, size, expected, contents) in [
-            (End::Commit, 3, Ok(()), Some(b"new".as_slice())),
-            (End::Cancel, 3, Ok(()), None),
-            (End::SeatLost, 3, Err(Error::Cancelled), None),
-            (
-                End::Appeared,
-                3,
-                Err(Error::Exists),
-                Some(b"old".as_slice()),
-            ),
-            (End::WrongSize, 4, Err(Error::Size), None),
+        for (size, data, resume, seated, expected) in [
+            (3, b"new", false, true, Ok(false)),
+            (3, b"new", true, true, Ok(false)),
+            (3, b"bad", true, true, Err(Error::Integrity)),
+            (4, b"new", false, true, Err(Error::Size)),
+            (3, b"new", false, false, Err(Error::Cancelled)),
         ] {
             let dir = Folder::new();
             let dest = dir.0.join("file");
             let mut staged = upload(&dest, size, &|| true).ok().unwrap();
-            staged.write(b"new", &|| true).unwrap();
+            assert_eq!(staged.prepare(&|| true), Ok(0));
+            staged.write(b"n", &|| true).unwrap();
+            if resume {
+                assert_eq!(staged.prepare(&|| true), Ok(1));
+            }
+            staged.write(b"ew", &|| true).unwrap();
             assert!(!dest.exists());
-            assert!(dir.names().iter().all(|name| partial_name(name)));
-            let result = match end {
-                End::Cancel => {
-                    drop(staged);
-                    Ok(())
-                }
-                End::SeatLost => staged.commit(&|| false),
-                End::Appeared => {
-                    fs::write(&dest, b"old").unwrap();
-                    staged.commit(&|| true)
-                }
-                _ => staged.commit(&|| true),
-            };
-            assert_eq!(result, expected);
-            assert_eq!(fs::read(&dest).ok().as_deref(), contents);
+            assert_eq!(staged.commit(&digest(data), false, &|| seated), expected);
+            drop(staged);
+            assert_eq!(fs::read(&dest).ok().as_deref(), expected.ok().map(|_| b"new".as_slice()));
             assert!(!dir.names().iter().any(|name| partial_name(name)));
         }
     }
 
     #[test]
-    fn existing_files_and_dangling_links_are_refused_before_staging() {
-        for link in [false, true] {
+    fn replacement_checks_the_kind_and_preserves_the_destination_until_commit() {
+        for (kind, late) in [("regular", false), ("regular", true), ("directory", false), ("link", false)] {
             let dir = Folder::new();
             let dest = dir.0.join("file");
-            if link {
-                symlink("missing", &dest).unwrap();
-            } else {
-                fs::write(&dest, b"unchanged").unwrap();
+            let put_destination = || match kind {
+                "regular" => fs::write(&dest, b"old").unwrap(),
+                "directory" => fs::create_dir(&dest).unwrap(),
+                _ => symlink("missing", &dest).unwrap(),
+            };
+            if !late {
+                put_destination();
             }
-            assert_eq!(upload(&dest, 1, &|| true).err(), Some(Error::Exists));
+            let mut staged = upload(&dest, 3, &|| true).ok().unwrap();
+            let found = staged.conflict(&|| true);
+            if kind != "regular" {
+                assert_eq!(found, Err(Error::NotRegular));
+            } else if late {
+                assert_eq!(found, Ok(None));
+            } else {
+                assert_eq!(found.unwrap().unwrap().0, 3);
+            }
+            staged.prepare(&|| true).unwrap();
+            staged.write(b"new", &|| true).unwrap();
+            if late {
+                put_destination();
+                assert_eq!(staged.commit(&digest(b"new"), false, &|| true), Err(Error::Exists));
+                assert_eq!(staged.conflict(&|| true).unwrap().unwrap().0, 3);
+            }
+            if kind == "regular" {
+                assert_eq!(fs::read(&dest).unwrap(), b"old");
+                assert_eq!(staged.commit(&digest(b"bad"), true, &|| true), Err(Error::Integrity));
+                assert_eq!(fs::read(&dest).unwrap(), b"old");
+                assert_eq!(staged.commit(&digest(b"new"), true, &|| true), Ok(true));
+                assert_eq!(fs::read(&dest).unwrap(), b"new");
+            } else {
+                assert_eq!(staged.commit(&digest(b"new"), true, &|| true), Err(Error::NotRegular));
+                let meta = fs::symlink_metadata(&dest).unwrap();
+                assert_eq!(meta.is_dir(), kind == "directory");
+                assert_eq!(meta.is_symlink(), kind == "link");
+                assert!(!dir.0.join("missing").exists());
+            }
+            drop(staged);
             assert_eq!(dir.names(), [OsString::from("file")]);
         }
     }
@@ -333,13 +395,14 @@ mod tests {
     fn a_write_failure_drops_the_partial() {
         let dir = Folder::new();
         let destination = dir.0.join("file");
-        let partial = dir.0.join(format!("{PREFIX}{}{SUFFIX}", "a".repeat(32)));
-        fs::write(&partial, []).unwrap();
+        let path = dir.0.join(format!("{PREFIX}{}{SUFFIX}", "a".repeat(32)));
+        fs::write(&path, []).unwrap();
         let mut staged = Staged {
-            file: OpenOptions::new().write(true).open("/dev/full").unwrap(),
-            partial: Some(partial),
+            partial: Some(Partial {
+                file: OpenOptions::new().write(true).open("/dev/full").unwrap(), path, keep: false,
+            }),
             destination,
-            _folder: File::open(&dir.0).unwrap(),
+            folder: File::open(&dir.0).unwrap(),
             size: 3,
         };
         assert_eq!(staged.write(b"new", &|| true), Err(Error::Io));
@@ -382,6 +445,24 @@ mod tests {
     }
 
     #[test]
+    fn an_abandoned_upload_unlocks_for_the_age_sweep() {
+        let dir = Folder::new();
+        let mut staged = upload(&dir.0.join("file"), 2, &|| true).ok().unwrap();
+        staged.prepare(&|| true).unwrap();
+        staged.write(b"a", &|| true).unwrap();
+        let name = dir.names().pop().unwrap();
+        let path = dir.0.join(&name);
+        let now = fs::metadata(&path).unwrap().modified().unwrap() + MAX_AGE + Duration::from_secs(1);
+        sweep_entry(&dir.0, &name, now, &|| true);
+        assert!(path.exists(), "a retained upload remains locked");
+        staged.abandon();
+        drop(staged);
+        assert!(path.exists(), "abandonment leaves the staged file for the sweep");
+        sweep_entry(&dir.0, &name, now, &|| true);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn download_keeps_its_open_file_and_detects_size_or_mtime_changes() {
         for change in ["rename", "size", "mtime"] {
             let dir = Folder::new();
@@ -415,6 +496,7 @@ mod tests {
                 assert_eq!(reading.verify(&|| true), Ok(()));
             } else {
                 assert_eq!(reading.verify(&|| true), Err(Error::Changed));
+                assert_eq!(reading.rewind(&|| true), Err(Error::Changed));
                 assert_eq!(reading.read(&mut byte, &|| true), Err(Error::Changed));
             }
         }

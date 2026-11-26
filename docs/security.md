@@ -464,13 +464,23 @@ Files uses the privileges of the account running Deskway Host across the filesys
 admitted browser can see directory entries, including hidden names, wherever this account
 can read them, and can create folders, rename entries and remove files, links or empty
 directories wherever this account can make those changes. A trusted browser can download
-regular file contents and upload new files as the host user. Uploads use a private staged
-file and a no-replace rename. This access includes configuration and credentials owned
+regular file contents and upload files as the host user. Uploads use a private staged
+file, verified with SHA-256, and a no-replace rename unless the person approves replacing a
+regular file. The host checks the destination without following links immediately before a plain atomic replacement rename, which fails over a directory and can replace a link itself without touching its target if another process of the host user swaps the entry during that interval.
+This access includes configuration and credentials owned
 by the host account. Files performs filesystem operations without starting a shell or
 running a file. The host output records the device, operation, path and outcome on one
-line per browse operation. It records the device, direction, path, size and outcome with
-any failure reason on one line per transfer. File contents are never recorded. Systemd
+line per browse operation. It records the device, direction, path, size, replacement and outcome
+with any failure reason on one line per transfer, including resumed transfers. File contents are never recorded. Systemd
 collects these lines in the journal.
+
+The host checks transfer ownership at desk admission using the verified browser credential
+and the page identity carried by its authenticated resume token, and checks the current seat
+before each transfer filesystem step. A takeover discards the previous device's staged upload.
+An upload may return while its peer session remains live or recovering, or after a connection
+failure while the page's existing resume token is valid (up to eight hours from device proof).
+The host pins that staged file against the age sweep during this lifetime. A leave abandons it
+to the sweep. Host restart forgets ownership and the sweep uses the file's modification age.
 
 Before sending its offer, the browser asks the host for a nonce (`challenge`). The host answers
 with 16 random bytes (`nonce`), valid for one offer on that session and for 60 seconds. Every

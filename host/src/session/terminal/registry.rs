@@ -117,6 +117,10 @@ pub struct Lease {
 }
 
 impl Lease {
+    pub(in crate::session) fn id(&self) -> &str {
+        &self.id
+    }
+
     pub(in crate::session) fn name(&self) -> &str {
         &self.name
     }

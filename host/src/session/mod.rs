@@ -33,7 +33,7 @@ use wire::types::{AnswerAuth, IceCandidate, Reason};
 pub mod ai;
 mod credit;
 pub mod data;
-mod file_transfer;
+pub(crate) mod file_transfer;
 pub mod terminal;
 #[cfg(desktop_host)]
 pub mod desk;

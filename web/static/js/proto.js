@@ -163,13 +163,16 @@ export const CHANNELS = Object.freeze({
     messages: Object.freeze({
       upload: msg(B2H, { id: 'i', path: '[s]', name: 's', size: 'i' }),
       download: msg(B2H, { id: 'i', path: '[s]', entry: 's', limit: 'i?' }),
-      ready: msg(H2B, { id: 'i', size: 'i' }),
+      resume: msg(B2H, { id: 'i' }),
+      conflict: msg(H2B, { id: 'i', size: 'i', modified: 'i' }),
+      replace: msg(B2H, { id: 'i' }),
+      ready: msg(H2B, { id: 'i', size: 'i', offset: 'i' }),
       start: msg(B2H, { id: 'i', offset: 'i' }),
       ack: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i' }),
-      finish: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i' }),
+      finish: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i', sha256: 's' }),
       done: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i' }),
       cancel: msg(B2H, { id: 'i' }),
-      error: msg(`${B2H},${H2B}`, { id: 'i', why: 's:not_found|denied|exists|invalid_name|invalid_path|busy|io|not_regular|changed|size|limit|protocol|cancelled' }),
+      error: msg(`${B2H},${H2B}`, { id: 'i', why: 's:not_found|denied|exists|invalid_name|invalid_path|busy|io|not_regular|changed|size|limit|protocol|cancelled|integrity|expired' }),
     }),
   },
   terminal: {
@@ -216,7 +219,7 @@ export const DATA_CHUNK = 16 * 1024;
 export const TERMINAL_FRAME = DATA_CHUNK;
 export const FileTransferMsg = Object.freeze({
   UPLOAD: 'upload', DOWNLOAD: 'download', READY: 'ready', START: 'start', ACK: 'ack', FINISH: 'finish',
-  DONE: 'done', CANCEL: 'cancel', ERROR: 'error',
+  DONE: 'done', CANCEL: 'cancel', ERROR: 'error', RESUME: 'resume', CONFLICT: 'conflict', REPLACE: 'replace',
 });
 export const FILE_TRANSFER_HEADER = 12;
 export const FILE_TRANSFER_FRAME = DATA_CHUNK;

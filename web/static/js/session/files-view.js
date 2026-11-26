@@ -50,9 +50,22 @@ export class FilesView {
 
   attach(channel) {
     this.channel = channel;
-    channel.addEventListener('open', () => this.update());
-    channel.addEventListener('message', ({ data }) => this.receive(data));
-    channel.addEventListener('close', () => this.fail());
+    channel.addEventListener('open', () => {
+      if (this.channel !== channel) return;
+      if (this.started) this.open(this.path);
+      this.update();
+    });
+    channel.addEventListener('message', ({ data }) => {
+      if (this.channel === channel) this.receive(data);
+    });
+    channel.addEventListener('close', () => {
+      if (this.channel === channel) this.fail();
+    });
+  }
+
+  detach() {
+    this.channel = null;
+    this.fail();
   }
 
   get ready() { return this.channel?.readyState === 'open' && this.s.connected; }

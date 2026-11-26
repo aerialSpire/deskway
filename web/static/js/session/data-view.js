@@ -13,7 +13,7 @@ export class DataView {
     this.terminal = new TerminalView(s);
     this.strip = h('div', { class: 'file-transfer-strip' });
     this.transfers = new FileTransfers(this.strip, () => s.connected, () => this.files.update(),
-      (path) => this.files.uploaded(path));
+      (path) => this.files.uploaded(path), () => this.openTransfers());
     this.files = new FilesView(s, this.transfers);
     this.buttons = this.terminal.buttons;
     this.navigation = ['terminal', 'files'].map((view) => h('button', {
@@ -73,13 +73,12 @@ export class DataView {
     if (this.s.hasCap(CAPS.BROWSE) && !this.files.channel) {
       this.files.attach(this.s.connection.pc.createDataChannel('browse'));
     }
-    if (this.s.hasCap(CAPS.FILE_TRANSFER) && !this.transfers.channel) {
-      this.transfers.attach(this.s.connection.pc.createDataChannel(CAPS.FILE_TRANSFER));
-    }
+    this.openTransfers();
     this.show(this.currentView);
   }
 
   active() {
+    this.openTransfers();
     this.transfers.next();
     this.files.update();
     if (this.filesVisible) {
@@ -89,7 +88,17 @@ export class DataView {
 
   recover() {
     this.transfers.recover();
-    this.files.update();
+  }
+
+  openTransfers() {
+    if (this.s.connected && this.s.hasCap(CAPS.FILE_TRANSFER) && !this.transfers.channel) {
+      this.transfers.attach(this.s.connection.pc.createDataChannel(CAPS.FILE_TRANSFER));
+    }
+  }
+
+  reconnect() {
+    this.recover();
+    this.files.detach();
   }
   placeIme(...args) { this.terminal.placeIme(...args); }
   placeKeypad(...args) { this.terminal.placeKeypad(...args); }

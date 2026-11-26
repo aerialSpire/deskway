@@ -151,7 +151,8 @@ fn resume_token_reconnects_and_dies_with_its_controller() {
     let (mut t, b) = paired("resume");
     let v = t.verify_offer("s1", "N", "x", false, &b.offer_auth("s1", "N", "x", false)).unwrap();
     let r = t.issue_resume(&v);
-    t.verify_offer("s2", "N2", "y", false, &resume_auth(&r, "s2", "N2", "y")).unwrap();
+    let resumed = t.verify_offer("s2", "N2", "y", false, &resume_auth(&r, "s2", "N2", "y")).unwrap();
+    assert_eq!((resumed.controller, resumed.page), (v.controller, v.page));
     t.remove(&b.cred).unwrap();
     assert!(t.verify_offer("s3", "N3", "y", false, &resume_auth(&r, "s3", "N3", "y")).is_err());
 }
@@ -161,8 +162,8 @@ fn revoked_resume_tokens_no_longer_reconnect() {
     let (mut t, b) = paired("revoke");
     let v = t.verify_offer("s1", "N", "x", false, &b.offer_auth("s1", "N", "x", false)).unwrap();
     let r = t.issue_resume(&v);
-    let other = t.issue_resume(&Verified { controller: "someone-else".into(), name: "x".into(), role: Role::Browser, since: Instant::now() });
-    let open = t.issue_resume(&Verified { controller: String::new(), name: "x".into(), role: Role::Browser, since: Instant::now() });
+    let other = t.issue_resume(&Verified { controller: "someone-else".into(), name: "x".into(), role: Role::Browser, since: Instant::now(), page: String::new() });
+    let open = t.issue_resume(&Verified { controller: String::new(), name: "x".into(), role: Role::Browser, since: Instant::now(), page: String::new() });
     t.revoke_resume(&b.cred);
     assert!(t.verify_offer("s2", "N2", "y", false, &resume_auth(&r, "s2", "N2", "y")).is_err());
     t.verify_offer("s3", "N3", "y", false, &resume_auth(&other, "s3", "N3", "y")).expect("other controllers keep theirs");
@@ -185,7 +186,7 @@ fn resume_tokens_do_not_outlive_the_passkey_check() {
     let (mut t, b) = paired("chain");
     let v = t.verify_offer("s1", "N", "x", false, &b.offer_auth("s1", "N", "x", false)).unwrap();
     let first = t.issue_resume(&v);
-    let renewed = Verified { controller: v.controller.clone(), name: v.name.clone(), role: v.role, since: v.since };
+    let renewed = Verified { controller: v.controller.clone(), name: v.name.clone(), role: v.role, since: v.since, page: v.page.clone() };
     t.issue_resume(&renewed);
     let expiries: Vec<Instant> = t.resume.values().map(|r| r.expires).collect();
     assert!(expiries.iter().all(|e| *e == v.since + RESUME_FOR), "{first:?}");
@@ -504,7 +505,7 @@ fn offers_resume_with_the_golden_format() {
     let all = vectors();
     let v = vector(&all, "deskway-resume-v3");
     let mut t = Trust::open(dir("golden-resume"), s(v, "host"), "https://node.example").unwrap();
-    let token = t.issue_resume(&Verified { controller: "c".into(), name: "n".into(), role: Role::Browser, since: Instant::now() });
+    let token = t.issue_resume(&Verified { controller: "c".into(), name: "n".into(), role: Role::Browser, since: Instant::now(), page: String::new() });
     let wire::control::Control::Resume { id, k } = token else { panic!("a resume token is a resume message") };
     let key = STANDARD.decode(k).unwrap();
     let auth = json!({ "k": "rs", "id": id, "nonce": s(v, "nonce"), "mac": mac_b64(&key, v["string"].as_str().unwrap()) });

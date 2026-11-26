@@ -1,7 +1,7 @@
 //! The desk seat's data-only browser role. Opening a channel starts no host program.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::{mpsc::Sender, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use peer::state::Signal;
@@ -13,7 +13,7 @@ use wire::control::Control;
 use wire::types::Reason;
 
 use super::terminal::{registry::Lease, Terminal};
-use super::{file_transfer::Transfers, Cx, Role, SessionEvent};
+use super::{file_transfer::{Page, Transfers}, Cx, Role, SessionEvent};
 use crate::i18n::t;
 use crate::workspace::{BrowseFiles, FileTransfers};
 
@@ -32,14 +32,14 @@ pub struct Data {
 }
 
 impl Data {
-    pub fn new(lease: Lease, files: Option<BrowseFiles>, transfers: Option<FileTransfers>, own: Sender<SessionEvent>) -> Self {
+    pub(crate) fn new(lease: Lease, files: Option<BrowseFiles>, transfers: Option<(FileTransfers, Arc<Mutex<Page>>)>, own: Sender<SessionEvent>) -> Self {
         Self {
             terminal: Terminal::new(lease.clone()),
             terminal_id: None,
             files: files.map(|call| Files {
                 call, lease: lease.clone(), own: own.clone(), channel: None, work: Work::Idle,
             }),
-            transfers: transfers.map(|files| Transfers::new(files, lease, own)),
+            transfers: transfers.map(|(files, page)| Transfers::new(files, page, lease, own)),
         }
     }
 }
@@ -65,7 +65,10 @@ impl Role for Data {
                     return false;
                 }
                 wire::file_transfer::CHANNEL => {
-                    if self.transfers.as_mut().is_some_and(|transfer| transfer.attach(id)) {
+                    if let Some(transfer) = &mut self.transfers {
+                        if let Some(old) = transfer.attach(id) {
+                            cx.rtc.direct_api().close_data_channel(old);
+                        }
                         return false;
                     }
                 }
@@ -90,7 +93,7 @@ impl Role for Data {
         } else if self.terminal_id == Some(d.id) {
             self.terminal.message(cx.active(), d);
         } else if let Some(transfer) = self.transfers.as_mut().filter(|t| t.channel() == Some(d.id)) {
-            if cx.active() && !transfer.receive(d.data, d.binary) {
+            if !transfer.receive(d.data, d.binary) {
                 cx.rtc.direct_api().close_data_channel(d.id);
                 transfer.protocol_error();
             }
@@ -123,14 +126,13 @@ impl Role for Data {
 
     fn ended(&mut self, reason: Reason) {
         self.terminal.ended(reason);
-        self.transfers = None;
+        if let Some(mut transfer) = self.transfers.take() {
+            transfer.ended(reason);
+        }
     }
 
     fn before_wait(&mut self, cx: &mut Cx, _: usize) -> Option<Instant> {
         if !cx.active() {
-            if let Some(transfer) = &mut self.transfers {
-                transfer.cancel();
-            }
             return None;
         }
         let terminal = self.terminal_id.and_then(|id| self.terminal.poll(cx, id));

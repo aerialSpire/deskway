@@ -97,7 +97,7 @@ session/
                    real time over a congested path, encoding waits while the queue is full;
                    media.rs: the picture's track (payload, mid, keyframes)
   data.rs          the desk seat's data-only role, routing control, terminal, browse and transfers
-  file_transfer.rs file transfer worker and channel, with the same worker limit as browsing
+  file_transfer.rs admitted page's transfer record and resumable channel, with the same worker limit as browsing
   credit.rs        byte credit shared by terminal and file transfers
   terminal.rs      one PTY attachment's resize and credit
   terminal/        registry.rs: the host's one browser PTY, attachment and idle timeout;
@@ -158,6 +158,13 @@ until it has up to 2,000 readable entries, with its own `more` field. The worksp
 ownership before each transfer filesystem step. A transfer holds one worker slot so a second
 slot can service browsing. Its channel and receiver credit limit the amount of transfer data
 competing with terminal and browse traffic.
+The host keeps the current transfer record and final reply in memory, keyed to the device and
+the authenticated page's resume chain. A new channel takes over the same record after the prior
+worker returns it. The workspace owns the staged upload, its write position, and the pinned
+download source and original metadata. The browser's session view owns its list, local source
+and destination, and the offsets and incremental digests used to resume. The browser hashes
+SHA-256 blocks incrementally as it sends or writes each chunk. Web Crypto's digest API takes
+the entire input.
 
 The host's terminal registry owns the PTY even with no desk session. Only the admitted desk
 session can attach. It owns its own input queue and credit, while the registry owns the recent
@@ -769,7 +776,8 @@ js/session/          connection.js (the session's lifecycle: peer connection, ne
                      terminal-channel.js (byte stream and credit), data-view.js (switch between
                      Terminal and Files), files-view.js (browsing and folder operations) and
                      file-listing.js (name and metadata display), file-transfers.js (contents
-                     channel and queue), download-file.js (browser save destinations),
+                     channel and queue), transfer-list.js (list and collision dialog),
+                     sha256.js (incremental content hashing), download-file.js (browser save destinations),
                      video, pointer, touch, mouse-pad, keyboard, onscreen-keyboard,
                      keyboard-layout.js (the on-screen US layout), text-box (every input
                      method's text), clipboard

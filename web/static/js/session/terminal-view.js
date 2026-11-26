@@ -44,6 +44,8 @@ export class TerminalView {
   }
 
   useChannels({ terminal }) {
+    this.stream?.dispose();
+    this.emulator?.reset();
     this.stream = new TerminalChannel(terminal, (bytes, done) => this.emulator.write(bytes, done), (m) => this.onStatus(m));
     terminal.onopen = () => this.active();
   }

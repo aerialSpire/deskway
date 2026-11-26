@@ -23,6 +23,8 @@ wire_values! {
         "limit" => Limit,
         "protocol" => Protocol,
         "cancelled" => Cancelled,
+        "integrity" => Integrity,
+        "expired" => Expired,
     }
 }
 
@@ -34,10 +36,13 @@ wire_enum! {
             #[serde(skip_serializing_if = "Option::is_none")]
             "limit" limit: Option<u64>,
         },
-        "ready" => Ready { "id" id: u32, "size" size: u64 },
+        "resume" => Resume { "id" id: u32 },
+        "conflict" => Conflict { "id" id: u32, "size" size: u64, "modified" modified: i64 },
+        "replace" => Replace { "id" id: u32 },
+        "ready" => Ready { "id" id: u32, "size" size: u64, "offset" offset: u64 },
         "start" => Start { "id" id: u32, "offset" offset: u64 },
         "ack" => Ack { "id" id: u32, "offset" offset: u64 },
-        "finish" => Finish { "id" id: u32, "offset" offset: u64 },
+        "finish" => Finish { "id" id: u32, "offset" offset: u64, "sha256" sha256: String },
         "done" => Done { "id" id: u32, "offset" offset: u64 },
         "cancel" => Cancel { "id" id: u32 },
         "error" => Error { "id" id: u32, "why" why: Error },
@@ -49,6 +54,9 @@ impl Message {
         match *self {
             Self::Upload { id, .. }
             | Self::Download { id, .. }
+            | Self::Resume { id }
+            | Self::Conflict { id, .. }
+            | Self::Replace { id }
             | Self::Ready { id, .. }
             | Self::Start { id, .. }
             | Self::Ack { id, .. }

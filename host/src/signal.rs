@@ -271,6 +271,7 @@ struct Host {
     quit: bool,
     desktop: Option<Desktop>,
     terminal: Option<Terminals>,
+    transfers: session::file_transfer::Registry,
     out_tx: Sender<String>,
     updates_tx: Sender<SessionUpdate>,
     /// The sessions on the two seats (their handles feed the session threads).
@@ -500,7 +501,9 @@ impl Host {
         }
         // The name shown at this computer is the paired device's own, which this host verified.
         let name = verified.name.clone();
-        match self.sessions.of(seat).admit(&verified.controller, force) {
+        let returning = data_only && seat == Seat::Desk && self.sessions.of(seat).current()
+            .is_some_and(|c| self.transfers.is_returning(&verified.controller, &verified.page, &c.id));
+        match self.sessions.of(seat).admit(&verified.controller, force || returning) {
             Admit::Busy { holder } => {
                 self.send(&Wire::Bye { session, reason: Reason::Busy, by: None, same: None, holder: Some(holder) });
                 return;
@@ -509,7 +512,9 @@ impl Host {
                 let old = self.sessions.of(seat).current().map(|c| (c.id.clone(), c.controller.clone()));
                 if let Some((id, cred)) = old {
                     let same = !cred.is_empty() && cred == verified.controller;
-                    self.end_seat(seat, End { reason: Reason::Taken, by: Some(name.clone()), same });
+                    let end = if returning { End::plain(Reason::Failed) }
+                        else { End { reason: Reason::Taken, by: Some(name.clone()), same } };
+                    self.end_seat(seat, end);
                     self.replaced.push(id);
                 }
             }
@@ -560,7 +565,10 @@ impl Host {
                 let lease = self.terminal.as_ref().expect("a terminal was admitted")
                     .admit(session.clone(), name.clone(), verified.controller.clone());
                 let files = self.browse_files();
-                let transfers = self.file_transfers();
+                let transfers = self.file_transfers().map(|files| {
+                    let page = self.transfers.admit(&verified.controller, &verified.page, &session, verified.resume_until());
+                    (files, page)
+                });
                 session::spawn(params, |own| session::data::Data::new(lease, files, transfers, own))
             }
             None => {
@@ -714,6 +722,7 @@ impl Host {
     /// and the AI seat goes when AI is no longer allowed here (`ai_off`).
     fn hold_to_trust(&mut self) {
         let Some(t) = self.trust.as_ref() else { return };
+        self.transfers.forget_untrusted(|id| t.controllers().iter().any(|d| d.id == id));
         let ai_on = matches!(t.ai_state(), AiState::On { .. });
         let mut ends = Vec::new();
         for seat in Seat::BOTH {
@@ -942,6 +951,7 @@ struct Queues {
 impl Queues {
     /// What can be handled without the server.
     fn drain_local(&self, host: &mut Host) {
+        host.transfers.expire(Instant::now());
         while let Ok(c) = self.control.try_recv() {
             host.on_control(c);
         }
@@ -1020,6 +1030,7 @@ impl Host {
             quit: false,
             desktop,
             terminal: terminal.map(|open| Terminals::new(open, updates_tx.clone())),
+            transfers: Default::default(),
             out_tx,
             updates_tx,
             sessions: Seats::default(),

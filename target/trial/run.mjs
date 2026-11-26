@@ -8,6 +8,7 @@ import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Harness, centre, click, keyboardOf, lit, nameThisDevice, signIn, sleep, superIn, t, tap, touch } from '../../tests/e2e/harness.mjs';
+import { FILE_TRANSFER_HEADER } from '../../web/static/js/proto.js';
 
 const trial = fileURLToPath(new URL('.', import.meta.url));
 const root = resolve(trial, '../..');
@@ -112,6 +113,15 @@ async function newBrowser(harness, url, shared = false) {
   const page = shared ? await harness.newPage() : await harness.contextPage();
   // Both peers can reach the same real TURN server. Only its client port crosses Docker.
   const source = `{
+    const header = ${lit(FILE_TRANSFER_HEADER)};
+    window.trialPeers = [];
+    window.trialFileTraffic = [];
+    const count = (traffic, data) => {
+      if (!(data instanceof ArrayBuffer)) return;
+      const frame = new DataView(data);
+      const stats = traffic[frame.getUint32(0)] ??= { offset: Number(frame.getBigUint64(4)), bytes: 0 };
+      stats.bytes += data.byteLength - header;
+    };
     const Peer = RTCPeerConnection;
     window.RTCPeerConnection = class extends Peer {
       constructor(settings) {
@@ -119,10 +129,21 @@ async function newBrowser(harness, url, shared = false) {
           ...server, urls: server.urls.filter((url) => url.startsWith('turn:') && url.endsWith('?transport=tcp')),
         })).filter((server) => server.urls.length);
         super({ ...settings, iceServers, iceTransportPolicy: 'relay' });
+        window.trialPeers.push(this);
       }
       createDataChannel(label, options) {
         const channel = super.createDataChannel(label, options);
-        if (label === 'file-transfer') window.trialFileChannel = channel;
+        if (label === 'control') window.trialControlChannel = channel;
+        if (label === 'file-transfer') {
+          window.trialFileChannel = channel;
+          const traffic = { up: {}, down: {} };
+          window.trialFileTraffic.push(traffic);
+          channel.addEventListener('message', ({ data }) => count(traffic.down, data));
+          channel.send = (data) => {
+            RTCDataChannel.prototype.send.call(channel, data);
+            count(traffic.up, data);
+          };
+        }
         return channel;
       }
     };
@@ -303,7 +324,7 @@ async function run() {
   await check('fresh Debian runtime image and trial server build', async () => {
     await checked('docker', ['build', ...platform, '--tag', runtime, '-'], {
       input: `FROM ${image}
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 procps
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 procps iptables
 `,
       timeout: 600000,
     });
@@ -366,7 +387,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
   const { device, foreground } = await check('browser approved the enrolled Linux host', async () => {
     await output(container(host, [
-      '-d', '--init', ...joinServer, ...relay, '-e', 'LANG=C', '--mount', mount + ',readonly', runtime, 'sleep', 'infinity',
+      '-d', '--init', '--cap-add', 'NET_ADMIN', ...joinServer, ...relay, '-e', 'LANG=C', '--mount', mount + ',readonly', runtime, 'sleep', 'infinity',
     ], { timeout: 15000 }), 'start the host container');
     await exec([host, 'sh', '-ec', [
       'useradd --create-home --shell /bin/sh "$1"',
@@ -645,6 +666,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
   const transferName = strip + ' .xfer:not(.bad) .x-name';
   const transferFailure = strip + ' .xfer.bad .x-name';
   const partialPattern = '.deskway-upload-*.partial';
+  const partials = async () => (await exec([...asHost, 'find', hostHome, '-maxdepth', '1', '-type', 'f', '-name', partialPattern])).trim();
   const largeName = 'transfer-30.bin';
   const fileSize = 30_000_000;
   const digest = (data) => createHash('sha256').update(data).digest('hex');
@@ -654,7 +676,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
       'host home listing', timeout);
   };
   const noPartials = async (name) => {
-    await waitFor(async () => (await exec([...asHost, 'find', hostHome, '-maxdepth', '1', '-type', 'f', '-name', partialPattern])).trim() === '',
+    await waitFor(async () => await partials() === '',
       'the staged upload to be removed', 90000);
     if (name) await exec([...asHost, 'test', '!', '-e', hostHome + '/' + name]);
   };
@@ -681,18 +703,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
   // Delay reads at the browser for timing checks, or hold a read halfway through for cancellation.
   const paceUploads = (browser, pause) => browser.eval(`(() => {
     const slice = File.prototype.slice;
+    let resume;
+    const paused = new Promise((resolve) => { resume = resolve; });
     File.prototype.slice = function(start, end) {
       const blob = slice.call(this, start, end);
       const read = blob.arrayBuffer.bind(blob);
       blob.arrayBuffer = async () => {
-        if (${lit(pause)} && start >= this.size / 2) await new Promise(() => {});
+        if (${lit(pause)} && start >= this.size / 2) await paused;
         else if (!${lit(pause)}) await new Promise((r) => setTimeout(r, 8));
         return read();
       };
       return blob;
     };
     window.restoreUploadReads = () => { File.prototype.slice = slice; };
+    window.resumeTrialUpload = () => { window.restoreUploadReads(); resume(); };
   })()`);
+  const halfUpload = async (browser, name) => {
+    await browser.until(`
+      document.querySelector(${lit(transferName)})?.textContent.includes(${lit(name)}) &&
+      Number.parseInt(document.querySelector(${lit(strip + ' .x-pct')})?.textContent, 10) >= 50`, 'the upload halfway point', 60000);
+    const partial = await partials();
+    assert.match(partial, /^\/[^\r\n]+\.deskway-upload-[a-f0-9]{32}\.partial$/);
+    assert(partial.startsWith(hostHome + '/.deskway-upload-'));
+    return partial;
+  };
   const startDroppedUpload = async (browser, name) => {
     await paceUploads(browser, true);
     await browser.eval(`(() => {
@@ -700,16 +734,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
       dataTransfer.items.add(new File([new Uint8Array(${lit(fileSize)})], ${lit(name)}));
       document.querySelector(${lit(files)}).dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
     })()`);
-    await browser.until(
-      `document.querySelector(${lit(transferName)})?.textContent.includes(${lit(name)}) &&
-      Number.parseInt(document.querySelector(${lit(strip + ' .x-pct')})?.textContent, 10) >= 50`, 'the upload halfway point', 60000);
-    const partials = await exec([...asHost, 'find', hostHome, '-maxdepth', '1', '-type', 'f', '-name', partialPattern]);
-    assert.equal(partials.trim().split('\n').length, 1);
-    assert(partials.trim().startsWith(hostHome + '/.deskway-upload-'));
+    const partial = await halfUpload(browser, name);
     await browser.eval('window.restoreUploadReads()');
+    return partial;
   };
   const failure = (browser, name, reason) => browser.until(
-    `document.querySelector(${lit(transferFailure)})?.textContent === ${lit(t('files.transfer.failure', { name, reason }))}`,
+    `[...document.querySelectorAll(${lit(transferFailure)})].some((row) => row.textContent === ${lit(t('files.transfer.failure', { name, reason }))})`,
     reason, 60000);
   const digestOnHost = async (name) => (await exec([...asHost, 'sha256sum', hostHome + '/' + name])).trim().split(/\s+/)[0];
 
@@ -773,11 +803,126 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     assert.deepEqual(order, ordered);
   });
 
-  await check('upload refuses an existing name and preserves the original', async () => {
+  const conflict = async (name) => page.until(
+    `document.querySelector('.dialog h2')?.textContent === ${lit(t('files.transfer.conflictTitle', { name }))}`,
+    'the conflict for ' + name);
+  const choose = async (action) => assert(await page.clickText('.dialog button', t('files.transfer.' + action), { exact: true }));
+  const expand = async () => page.eval(`(() => {
+    const toggle = document.querySelector(${lit(strip + ' > button')});
+    if (toggle.getAttribute('aria-expanded') === 'false') toggle.click();
+  })()`);
+  const collapse = async () => page.eval(`(() => {
+    const toggle = document.querySelector(${lit(strip + ' > button')});
+    if (toggle?.getAttribute('aria-expanded') === 'true') toggle.click();
+  })()`);
+  const verified = (name) => page.until(
+    `[...document.querySelectorAll(${lit(strip + ' .xfer.ok .x-name')})].some((row) => row.textContent === ${lit(name)})`,
+    'the verified row for ' + name, 90000);
+
+  await check('Skip preserves the existing file and sends no upload data', async () => {
+    const before = await page.eval('window.trialFileTraffic.at(-1).up');
     await selectFiles(page, [largeLocal]);
-    await failure(page, largeName, t('files.error.exists'));
-    assert.equal(await digestOnHost(largeName), expectedHash);
+    await conflict(largeName);
     await noPartials();
+    await choose('skip');
+    await page.until(`!document.querySelector(${lit(transferName)})`, 'the skipped transfer to end');
+    assert.deepEqual(await page.eval('window.trialFileTraffic.at(-1).up'), before);
+    assert.equal(await digestOnHost(largeName), expectedHash);
+  });
+
+  const replacement = 'replace-30.bin';
+  const late = 'transfer-late.txt';
+  const directoryConflict = 'transfer-directory';
+  const corrupt = 'transfer-corrupt.bin';
+  const original = Buffer.from('the old destination');
+  const oldHash = digest(original);
+  const putOriginal = (name) => exec([...asHost, 'tee', hostHome + '/' + name], { input: original });
+  const local = (name, data) => {
+    const path = join(folder, name);
+    writeFileSync(path, data);
+    return path;
+  };
+
+  await check('Replace keeps the old content until the staged upload verifies', async () => {
+    await putOriginal(replacement);
+    await paceUploads(page, true);
+    await selectFiles(page, [local(replacement, large)]);
+    await conflict(replacement);
+    await noPartials();
+    assert(await page.eval("document.querySelector('.dialog button.danger') !== null"));
+    await choose('replace');
+    await halfUpload(page, replacement);
+    assert.equal(await digestOnHost(replacement), oldHash);
+    await page.eval('window.resumeTrialUpload()');
+    await waitFor(async () => (await digestOnHost(replacement)) === expectedHash, 'verified replacement', 90000);
+    await noPartials();
+  });
+
+  await check('the batch choice replaces all three colliding files', async () => {
+    const changed = ordered.map((name) => local(name, 'new ' + name));
+    await selectFiles(page, changed);
+    await conflict(ordered[0]);
+    assert(await page.eval(`(() => {
+      const box = document.querySelector('.dialog input[type=checkbox]');
+      box?.click();
+      return box?.checked;
+    })()`));
+    await choose('replace');
+    await expand();
+    for (const name of ordered) {
+      await waitFor(async () => (await digestOnHost(name)) === digest('new ' + name), 'replaced ' + name);
+    }
+    await collapse();
+    await noPartials();
+  });
+
+  await check('a directory of the same name is refused before staging', async () => {
+    await exec([...asHost, 'mkdir', hostHome + '/' + directoryConflict]);
+    await selectFiles(page, [local(directoryConflict, 'file')]);
+    await failure(page, directoryConflict, t('files.transfer.notRegular'));
+    await exec([...asHost, 'test', '-d', hostHome + '/' + directoryConflict]);
+    await noPartials();
+  });
+
+  await check('a name created during transfer prompts after all bytes arrive', async () => {
+    await paceUploads(page, true);
+    await selectFiles(page, [local(late, large)]);
+    await halfUpload(page, late);
+    await putOriginal(late);
+    await page.eval('window.resumeTrialUpload()');
+    await conflict(late);
+    assert.equal(await digestOnHost(late), oldHash);
+    await choose('skip');
+    await noPartials();
+    assert.equal(await digestOnHost(late), oldHash);
+  });
+
+  await check('a corrupted staged upload fails verification and Try again works', async () => {
+    await putOriginal(corrupt);
+    await paceUploads(page, true);
+    await selectFiles(page, [local(corrupt, large)]);
+    await conflict(corrupt);
+    await choose('replace');
+    const partial = await halfUpload(page, corrupt);
+    // Alter a byte already acknowledged by the host without changing the staged length.
+    await exec([...asHost, 'dd', 'if=/dev/zero', 'of=' + partial, 'bs=1', 'count=1', 'conv=notrunc']);
+    await page.eval('window.resumeTrialUpload()');
+    await failure(page, corrupt, t('files.transfer.integrity'));
+    await noPartials();
+    assert.equal(await digestOnHost(corrupt), oldHash);
+    await expand();
+    assert(await page.eval(`(() => {
+      const row = [...document.querySelectorAll(${lit(strip + ' .xfer.bad')})]
+        .find((item) => item.querySelector('.x-name')?.textContent === ${lit(t('files.transfer.failure', { name: corrupt, reason: t('files.transfer.integrity') }))});
+      const retry = [...row.querySelectorAll('button')].find((button) => button.textContent === ${lit(t('files.transfer.tryAgain'))});
+      retry?.click();
+      return !!retry;
+    })()`));
+    await conflict(corrupt);
+    await choose('replace');
+    await verified(corrupt);
+    assert.equal(await digestOnHost(corrupt), expectedHash);
+    await collapse();
   });
 
   const cancelledName = 'cancelled-upload.bin';
@@ -804,6 +949,121 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     await waitFor(() => existsSync(downloaded), 'the completed Chrome download', 90000);
     assert.equal(digest(readFileSync(downloaded)), expectedHash);
     await page.until(`!document.querySelector(${lit(transferName)})`, 'download completion');
+  });
+
+  const resumedUpload = 'resume-upload-30.bin';
+  const queuedUpload = 'resume-waiting.txt';
+  const resumedDownload = 'resume-download-30.bin';
+  const readmittedUpload = 'resume-readmission-30.bin';
+  const interrupted = () => page.until(
+    `document.querySelector(${lit(strip)})?.textContent.includes(${lit(t('files.transfer.interrupted'))})`,
+    'the interrupted transfer', 28000);
+  const channelCount = () => page.eval('window.trialFileTraffic.length');
+  const peerCount = () => page.eval('window.trialPeers.length');
+  const waitForNewChannel = (before) => page.until(
+    `window.trialFileTraffic.length === ${lit(before + 1)} && window.trialFileChannel.readyState === 'open'`,
+    'the recovered transfer channel', 90000);
+  // Both peers use TURN over TCP. Drop its input in their shared namespace and keep signaling.
+  const dropTurn = async (run) => {
+    const rule = ['INPUT', '-p', 'tcp', '--dport', String(turn), '-j', 'DROP'];
+    await exec([host, 'iptables', '-I', ...rule]);
+    try { await run(); }
+    finally { await exec([host, 'iptables', '-D', ...rule]); }
+  };
+  const checkTraffic = async (direction, before) => {
+    const { offset, bytes } = await page.eval(`Object.values(window.trialFileTraffic[${lit(before)}][${lit(direction)}])[0]`);
+    assert(offset > 0 && bytes > 0 && bytes < fileSize);
+    assert.equal(bytes, fileSize - offset);
+    record(`${direction} resumed at byte ${offset}, sent ${bytes} of ${fileSize} bytes on the new channel\n`);
+  };
+
+  await check('a 30 MB upload continues after ICE restart and its waiting file is preserved', async () => {
+    await paceUploads(page, true);
+    const before = await channelCount();
+    const peers = await peerCount();
+    const waiting = () => page.until(`
+      [...document.querySelectorAll(${lit(strip + ' .xfer')})].some((row) =>
+        row.querySelector('.x-name')?.textContent === ${lit(queuedUpload)}
+        && row.querySelector('.x-detail')?.textContent === ${lit(t('files.transfer.waiting'))})`, 'the waiting file');
+    await selectFiles(page, [local(resumedUpload, large), local(queuedUpload, 'still queued')]);
+    await halfUpload(page, resumedUpload);
+    await expand();
+    await waiting();
+    await verified(largeName);
+    await failure(page, directoryConflict, t('files.transfer.notRegular'));
+    await dropTurn(async () => {
+      await interrupted();
+      await waiting();
+      await page.eval('window.resumeTrialUpload()');
+    });
+    await waitForNewChannel(before);
+    await verified(resumedUpload);
+    await verified(queuedUpload);
+    await checkTraffic('up', before);
+    assert.equal(await peerCount(), peers, 'ICE recovery kept the peer connection');
+    assert.equal(await digestOnHost(resumedUpload), expectedHash);
+    assert.equal(await digestOnHost(queuedUpload), digest('still queued'));
+    await noPartials();
+    await collapse();
+  });
+
+  await check('a 30 MB download continues after ICE restart and verifies', async () => {
+    await exec([...asHost, 'cp', hostHome + '/' + largeName, hostHome + '/' + resumedDownload]);
+    assert(await page.clickText(files + ' .files-bar button', t('files.refresh'), { exact: true }));
+    await page.until(hasEntry(resumedDownload), 'the resumable download');
+    const before = await channelCount();
+    const peers = await peerCount();
+    await page.eval(`(() => {
+      const send = RTCDataChannel.prototype.send;
+      RTCDataChannel.prototype.send = function(data) {
+        if (this.label === 'file-transfer' && typeof data === 'string') {
+          const message = JSON.parse(data);
+          if (message.t === 'ack' && message.offset >= ${lit(fileSize / 2)}) {
+            window.trialPausedDownload = true;
+            return;
+          }
+        }
+        send.call(this, data);
+      };
+      window.restoreTrialDownload = () => { RTCDataChannel.prototype.send = send; };
+    })()`);
+    try {
+      await entryMenu(resumedDownload, 'files.download');
+      await page.until('window.trialPausedDownload', 'half of the download acknowledged', 60000);
+      await dropTurn(async () => {
+        await interrupted();
+        await page.eval('window.restoreTrialDownload()');
+      });
+    } finally {
+      await page.eval('window.restoreTrialDownload()');
+    }
+    await waitForNewChannel(before);
+    await expand();
+    await verified(resumedDownload);
+    await checkTraffic('down', before);
+    assert.equal(await peerCount(), peers, 'ICE recovery kept the peer connection');
+    const downloaded = join(downloads, resumedDownload);
+    await waitFor(() => existsSync(downloaded), 'the completed resumed download');
+    assert.equal(digest(readFileSync(downloaded)), expectedHash);
+    await collapse();
+  });
+
+  await check('an upload continues through a fresh admission when the control channel ends', async () => {
+    await paceUploads(page, true);
+    const before = await channelCount();
+    const peers = await peerCount();
+    await selectFiles(page, [local(readmittedUpload, large)]);
+    await halfUpload(page, readmittedUpload);
+    await page.eval('window.trialControlChannel.close()');
+    await waitForNewChannel(before);
+    await page.eval('window.resumeTrialUpload()');
+    await expand();
+    await verified(readmittedUpload);
+    assert.equal(await peerCount(), peers + 1, 'readmission opened a new peer connection');
+    await checkTraffic('up', before);
+    assert.equal(await digestOnHost(readmittedUpload), expectedHash);
+    await noPartials();
+    await collapse();
   });
 
   const tooLarge = 'download-over-bound.bin';
@@ -993,13 +1253,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
   await check('closing the browser page abruptly leaves the same counter available from a new page', async () => {
     const before = await count();
-    await check('closing the page mid-upload removes its partial', async () => {
-      await clickToolbar(page, '[data-session-view="files"]');
-      await folderCheck(page);
-      await startDroppedUpload(page, 'closed-upload.bin');
-      await harness.closePage(page);
-      await noPartials('closed-upload.bin');
-    });
+    await clickToolbar(page, '[data-session-view="files"]');
+    await folderCheck(page);
+    const partial = await startDroppedUpload(page, 'closed-upload.bin');
+    await harness.closePage(page);
     page = await newBrowser(harness, url, true);
     await page.until('!!d?.me() && d.socketOpen()', 'the same browser on a new page');
     await detail(page, device);
@@ -1007,6 +1264,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     const missed = await waitFor(async () => { const n = await count(); return n > before && n; }, 'the counter to advance while the page was closed');
     await returnTerminal(page);
     await page.until(`(${rows}).includes(${lit('COUNT' + missed)})`, 'counter output from the time the page was closed');
+    await check('closing the page mid-upload leaves the partial to the age sweep', async () => {
+      await exec([...asHost, 'test', '-f', partial]);
+      await exec([...asHost, 'touch', '-d', '2 hours ago', partial]);
+      await clickToolbar(page, '[data-session-view="files"]');
+      await folderCheck(page);
+      assert(await page.eval(`!document.querySelector(${lit(strip + ' > button')})`));
+      await noPartials('closed-upload.bin');
+      await clickToolbar(page, '[data-session-view="terminal"]');
+    });
     await command(page, 'kill ' + counter + '; wait ' + counter);
     await processGone(counter);
     await command(page, 'true');
@@ -1180,18 +1446,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     const expected = [
       ['upload', largeName, fileSize, 'done', ''],
       ...ordered.map((name) => ['upload', name, name.length, 'done', '']),
-      ['upload', largeName, fileSize, 'failed', 'exists'],
+      ['upload', largeName, fileSize, 'cancelled', ''],
+      ['upload', replacement, fileSize, 'done', '', true],
+      ...ordered.map((name) => ['upload', name, name.length + 4, 'done', '', true]),
+      ['upload', late, fileSize, 'cancelled', ''],
+      ['upload', directoryConflict, 4, 'failed', 'not_regular'],
+      ['upload', corrupt, fileSize, 'failed', 'integrity', true],
+      ['upload', corrupt, fileSize, 'done', '', true],
       ['upload', cancelledName, fileSize, 'cancelled', ''],
       ['download', largeName, fileSize, 'done', ''],
+      ['upload', resumedUpload, fileSize, 'done', ''],
+      ['upload', queuedUpload, 'still queued'.length, 'done', ''],
+      ['download', resumedDownload, fileSize, 'done', ''],
+      ['upload', readmittedUpload, fileSize, 'done', ''],
       ['download', tooLarge, 64 * 1024 * 1024 + 1, 'failed', 'limit'],
       ['download', growing, fileSize, 'failed', 'changed'],
       ['upload', 'closed-upload.bin', fileSize, 'cancelled', ''],
       ['upload', 'takeover-upload.bin', fileSize, 'cancelled', ''],
     ];
     assert.equal(lines.length, expected.length);
-    for (const [direction, name, size, outcome, why] of expected) {
+    for (const [direction, name, size, outcome, why, replace = false] of expected) {
       const line = 'File transfer device="' + keeper + '" direction=' + direction +
-        ' path="' + hostHome + '/' + name + '" size=' + size + ' outcome=' + outcome + ' why=' + why;
+        ' path="' + hostHome + '/' + name + '" size=' + size + ' outcome=' + outcome + ' why=' + why + ' replace=' + replace;
       assert.equal(lines.filter((actual) => actual.trimEnd() === line).length, 1, line);
     }
     assert(!foreground.stderr.includes(fileContents));

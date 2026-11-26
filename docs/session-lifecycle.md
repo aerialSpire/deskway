@@ -130,10 +130,13 @@ reattaches the shell. Switching views leaves an attached terminal running. Takin
 detaches the prior browser. The new browser reattaches to the same shell when it shows
 Terminal. A session with no terminal has an ordinary Disconnect dialog.
 
-The Files and Terminal views share the current file transfer and its waiting queue. Changing
-views keeps both running. Recovery from a lost peer path, a takeover, a closed page or leaving
-the session cancels the active transfer and clears the queue. The host drops any staged upload
-when the worker sees cancellation or loss of the desk seat.
+The Files and Terminal views share one transfer list. Changing views keeps the list and its
+transfers running. During ICE recovery the active transfer is marked interrupted and the queue
+waits. On return the page opens a fresh transfer channel and continues at the receiver's offset.
+If the established connection ends with `failed` or `gone` with unfinished transfers, the page also
+makes one ordinary non-forced admission attempt with its resume token and retains the session
+view while it connects. Takeover or leaving the view ends unfinished transfers and clears the
+list. A page reload starts a new view and abandons the original partial upload to the host sweep.
 
 The host keeps one browser terminal independently of the desk session. Disconnect, the end
 of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's

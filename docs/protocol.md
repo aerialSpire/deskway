@@ -343,24 +343,34 @@ on the browse channel. A worker stays occupied until its call returns.
 
 The browser opens a separate reliable, ordered `file-transfer` channel after the control hello
 confirms the capability. There is one active transfer. Attempts use increasing nonzero 32-bit
-IDs. Each binary frame starts with that ID and a 64-bit offset from the start, both unsigned
+IDs in the browser page, with the same ID across reconnects for the same attempt. Each binary
+frame starts with that ID and a 64-bit offset from the start, both unsigned
 big-endian, and carries up to 16,372 bytes. The complete frame is at most 16 KiB. A receiver
 grants four payloads of credit initially and returns credit through the absolute offset in
 `ack` after consuming data. A sender waits for credit before reading any further. The host
 services the terminal and browse channels before queuing another transfer frame.
 
 - For `upload{id,path,name,size}`, the host validates the destination and stages the file before
-  sending `ready{id,size}`, which grants initial credit. The host acknowledges writes. The
-  browser sends `finish{id,offset}` after all bytes are acknowledged. The host verifies the size
-  and commits with no replacement before replying `done{id,offset}`.
+  sending `ready{id,size,offset}`, which grants initial credit at the staged offset. An existing
+  regular file instead prompts with `conflict{id,size,modified}` (Unix seconds). The browser
+  answers `replace{id}` or `cancel{id}`. The host acknowledges writes and the browser sends
+  `finish{id,offset,sha256}` after all bytes are acknowledged. The host hashes the staged file
+  and commits before replying `done{id,offset}`. If a destination appears before the
+  no-replace rename, the host sends the same conflict prompt and keeps the verified staged file
+  pending a decision. Only regular files are eligible for replacement.
 - For `download{id,path,entry,limit?}`, the host opens one regular file and checks its size
-  against the optional byte limit. It replies `ready{id,size}`. The browser grants initial
-  credit with `start{id,offset:0}` and acknowledges bytes as it consumes them. After the last
-  acknowledgment the host rechecks the file and sends `finish{id,offset}`. The browser
-  commits its download and sends `done{id,offset}`. The host echoes that message.
-- The browser can send `cancel{id}`, or `error{id,why}` for local I/O or protocol failures. The
-  host sends `error` when a transfer fails or is cancelled, after cleaning up any upload.
-  Recovery ends active and waiting transfers. A new attempt always starts at offset zero.
+  against the optional byte limit. It replies `ready{id,size,offset:0}`. The browser grants initial
+  credit with `start{id,offset}` at its written offset and acknowledges bytes as it consumes them.
+  The host checks the original size and modification time and hashes the open file, rereading the
+  prefix on resume. After the last acknowledgment it sends `finish{id,offset,sha256}`. The browser
+  compares the digest with its incremental hash before saving, sends `done{id,offset}`, and
+  receives the host's echo. Digests are lowercase SHA-256 hex in both directions.
+- An authenticated page reopens the channel on recovery and sends `resume{id}`. It may resend the
+  initial request if it has received no offer response. The host repeats any terminal result
+  still pending on that ID. The start offset of a new attempt is zero.
+- The browser can send `cancel{id}`, or `error{id,why}` for local I/O, protocol, or integrity
+  failures. The host sends `error` when a transfer fails or is cancelled, after cleaning up
+  any staged upload.
 
 ## Browser terminal
 

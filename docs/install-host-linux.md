@@ -12,8 +12,15 @@ output, which systemd sends to the journal.
 
 Use **Upload** in the Files bar or drop files into the folder. To download a regular file,
 choose **Download** in its entry's menu. Transfers run one at a time. The bottom strip
-shows the current file, how many are waiting, and cancellation controls in both views.
-Uploads have no Deskway size limit. An existing destination is refused.
+opens a list of waiting, interrupted, active, completed and failed transfers in both views.
+Transfers resume automatically after the session reconnects while the same page is open.
+The list marks files that passed SHA-256 verification. Use **Try again** on a failed or cancelled
+transfer while its source is available.
+
+Uploads have no Deskway size limit. If the name belongs to a regular file, choose **Skip** or
+**Replace** after comparing the two files' sizes and dates. A choice can apply to the remaining
+name conflicts in that batch. When replacing a file, the original stays intact until the upload
+is complete and verified. Folders and symbolic links are refused.
 
 Where the browser offers a save picker with writable file access, it streams to the selected
 file without a Deskway size limit. Cancelling before commit aborts the writable stream and
@@ -23,9 +30,10 @@ the Blob handed to the browser and the temporary copy needed to build it.
 
 The host stages uploads beside the destination, using reserved names
 `.deskway-upload-<32 lowercase hex digits>.partial`. It removes abandoned partial files
-older than one hour at startup in the host user's home and when any folder is listed.
+older than one hour at startup in the host user's home and when any folder is listed, once
+the owning session can no longer return. Reloading the page leaves its partial for that sweep.
 Sweeping other folders at browse time avoids walking arbitrary filesystems at startup.
-The journal records the device, direction, path, file size and outcome of each transfer.
+The journal records the device, direction, path, file size, outcome and any replacement once per transfer.
 
 Choose **Terminal** to start or return to the shell.
 A browser this computer trusts can use the host user's login shell, starting in that user's
