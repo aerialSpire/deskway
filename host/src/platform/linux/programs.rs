@@ -8,7 +8,7 @@ use crate::i18n::t;
 use crate::platform::unix::programs;
 use crate::workspace::procs::Started;
 
-use super::quit_signals;
+use super::host_signals;
 
 pub use programs::kill_tree;
 
@@ -25,7 +25,7 @@ fn shell(command: Option<&str>, cwd: Option<&str>, elevated: bool) -> io::Result
         return Err(io::Error::new(io::ErrorKind::Unsupported, t("mcp.elevation_unavailable")));
     }
     let mut c = programs::shell("/bin/sh", command, cwd);
-    let signals = quit_signals();
+    let signals = host_signals();
     // Children should receive signals that the host consumes through sigwait.
     unsafe {
         c.pre_exec(move || {

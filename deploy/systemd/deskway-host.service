@@ -1,0 +1,14 @@
+[Unit]
+Description=Deskway Host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+WorkingDirectory=~
+ExecStart=/usr/local/bin/deskway-host
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

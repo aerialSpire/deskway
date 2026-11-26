@@ -6,19 +6,30 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
 /// Hold this file open for as long as the host owns its state directory.
 pub(super) fn lock_host() -> anyhow::Result<File> {
-    let file = OpenOptions::new()
+    let file = open_host_lock(&crate::config::dir()?, false)?;
+    try_lock_host(&file)?;
+    Ok(file)
+}
+
+pub(super) fn open_host_lock(dir: &Path, read: bool) -> io::Result<File> {
+    OpenOptions::new()
         .create(true)
         .truncate(false)
+        .read(read)
         .write(true)
         .mode(0o600)
-        .open(crate::config::dir()?.join("host.lock"))?;
+        .open(dir.join("host.lock"))
+}
+
+pub(super) fn try_lock_host(file: &File) -> io::Result<()> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(io::Error::last_os_error().into());
+        return Err(io::Error::last_os_error());
     }
-    Ok(file)
+    Ok(())
 }
 
 /// Turn off echo for one read from terminal stdin and restore its settings afterwards.

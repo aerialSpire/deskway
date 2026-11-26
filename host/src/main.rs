@@ -140,9 +140,9 @@ fn enroll_command(args: &[String]) -> Result<()> {
     #[cfg(target_os = "linux")]
     let _lock = platform::lock()?;
     let cfg = config::Config::settle(enroll_with(&server, &user, &read_password()?, &name, config::Config::kept().as_ref())?)?;
-    println!("{}", tf("cli.enrolled", &[("name", shown_name(&cfg.name))]));
-    #[cfg(target_os = "linux")]
-    platform::run(cfg)?;
+    // A host with no window says how to start it and where its approval code appears.
+    let done = if cfg!(desktop_host) { "cli.enrolled" } else { "cli.enrolled_linux" };
+    println!("{}", tf(done, &[("name", shown_name(&cfg.name))]));
     Ok(())
 }
 
@@ -170,6 +170,8 @@ fn main() -> Result<()> {
     }
     match args.first().map(String::as_str) {
         Some("enroll") => enroll_command(&args),
+        #[cfg(target_os = "linux")]
+        Some("stop-ai") => platform::stop_ai(),
         // Opens a ten-minute window for pairing one passkey, and prints its code. With the
         // service installed this needs an administrator.
         #[cfg(desktop_host)]
@@ -290,10 +292,7 @@ fn main() -> Result<()> {
             ui::run(at_login)
         }
         #[cfg(target_os = "linux")]
-        None => {
-            let _lock = platform::lock()?;
-            platform::run(config::Config::load()?)
-        }
+        None => platform::run(),
         Some(other) => bail!(tf("err.unknown_command", &[("cmd", other.to_string())])),
     }
 }

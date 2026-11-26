@@ -305,8 +305,9 @@ connects and after every change.
   accepted as soon as its signer is trusted, by being added at the computer or endorsed in the
   log. Stop, pressed at the computer, ends AI control there until a
   browser signs a newer switch. It does not depend on the server, which could hold back an
-  "off". On Windows, `ai.json` is in the service's protected folder; on a Mac it is in the
-  signed-in person's own folder (see R6 below).
+  "off". On Windows, `ai.json` is in the service's protected folder. On macOS and Linux it is
+  in the host user's state directory. On Linux that user can run `deskway-host stop-ai`, which
+  signals the running host or applies the stop to the saved switch while the host is down.
 
 A computer works out whom it trusts as follows:
 
@@ -359,7 +360,9 @@ described in [architecture.md](architecture.md), "AI control".
   person's rights.
 - **As the host user** (Linux and macOS). An AI client that may run commands has the access
   of the user running Deskway Host, including that user's files and the host's own state.
-  Choose the account that runs the host based on the access you want to grant.
+  On Linux, the service runs as the ordinary user named in the unit. Use a dedicated
+  account and grant it sudo rights only if approved AI clients should have those rights.
+  See [Install Deskway Host on Linux](install-host-linux.md).
 - **Administrator rights only when allowed, and only the person's own.** The AI switch has a
   second part, administrator rights, which is signed together with it and is off unless a
   browser turns it on. Linux refuses `elevated` with `elevation_unavailable`. Windows and

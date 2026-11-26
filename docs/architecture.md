@@ -26,7 +26,7 @@ Every change follows these rules:
 |---|---|
 | Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
-| Linux | One foreground host process: signaling, the AI seat, and an in-process workspace for commands and files. |
+| Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the AI seat, and the in-process workspace for commands, files and tunnels. |
 | AI client's machine | `deskway` (cli/): `login`, `mcp` for each MCP client, and one proxy per user that holds the sign-in and a link to each computer. |
 
 Each platform has exactly one process model. The network service talks to the agent only
@@ -71,7 +71,8 @@ auth/              who may connect: the trust store (mod.rs), pairing window and
                    and WebAuthn checks (webauthn.rs)
 platform/
   features.rs      the host's feature set selects seats, capabilities and tools
-  linux.rs         foreground entry, operating-system signals, and per-user state directory
+  linux.rs         host commands, operating-system signals, and per-user state directory
+  linux/lock.rs    the running host's process id in its lock file, and the signal sent to it
   linux/programs.rs process setup and enumeration on Linux
   unix/programs.rs  login shell, process groups and pseudo-terminals on Linux and macOS
   mod.rs           trait Platform + PlatformEvent (and Call, what crosses the agent pipe);
@@ -138,10 +139,12 @@ AI seat uses the same device proofs and signed AI switch on all hosts.
 
 The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
 Starting or enrolling the host takes the same exclusive `host.lock` for that state directory.
-The enrollment prompt hides passwords typed at a terminal and accepts piped input or
-`DESKWAY_PASSWORD`. Whenever the host enters the waiting-for-approval state, it prints the same
-six comparison digits as the desktop panel. SIGTERM and SIGINT enter the signaling host's
-normal quit path. Linux uses str0m's dimpl DTLS implementation with system OpenSSL for
+Enrollment saves the sign-in and exits. The running host prints the six approval digits to
+the terminal or systemd journal whenever it enters the waiting-for-approval state.
+SIGTERM and SIGINT enter the signaling host's normal quit path. `deskway-host stop-ai` sends
+SIGUSR1 to the process recorded in the held lock file, whatever the saved switch says. The signal thread delivers `Control::StopAi` and the command
+checks the saved `ai.json`. When the command owns the lock itself, it stops the saved AI switch
+through `auth`. Linux uses str0m's dimpl DTLS implementation with system OpenSSL for
 cryptography and the existing native-tls stack for HTTPS and WebSockets.
 
 ### `platform::Platform`
@@ -234,7 +237,7 @@ MCP client window 2 -stdio-> deskway mcp -+-127.0.0.1-> deskway proxy (one per u
                                                           | one WebRTC connection per computer:
                                                           |   "control", "ai", "tunnel:<port>"
                                                           v
-DeskwayNet (Windows) / the app (macOS) / the foreground host (Linux)
+DeskwayNet (Windows) / the app (macOS) / deskway-host (Linux)
    session (ai role) -> mcp (gate) -> tools -> Platform (screenshots, input)
                                            +-> Workspace (programs, files, clipboard text, apps;
                                                on Windows in the user worker)
@@ -265,7 +268,8 @@ computer's entry. The switch is one signed entry, `{host, ai, admin, ts, by, sig
 latest entry for each computer separately from the device log (`POST /api/computers/{id}/ai`,
 sent as `devlog.ai`). The computer accepts only entries that are signed by a trusted browser and
 are newer than any it has seen (`host/src/auth/ai.rs`, stored in `ai.json`). Stop at the
-computer (in the panel or the indicator) ends AI control until a browser signs a newer entry.
+computer (in the panel or indicator, or with `deskway-host stop-ai` on Linux) ends AI control
+until a browser signs a newer entry.
 When the state stops being on, the computer ends the AI seat (with `ai_off`, or `unpaired` for a
 removed client). The host reports `ai_state` (`off | on | stopped`) in its status, for display
 only.
@@ -365,7 +369,8 @@ its job-control groups.
 
 Programs belong to the computer and can outlive the AI session. The computer keeps their
 output in a bounded buffer, read by offset. The host has no shutdown sweep for programs it
-started. On Windows programs can leave the service's job, and a terminal program loses its
+started; on Linux, stopping the systemd service ends them with it, as systemd stops the unit's
+whole control group. On Windows programs can leave the service's job, and a terminal program loses its
 console if the user worker restarts.
 
 ### Audit

@@ -8,7 +8,8 @@
 
 Deskway is a remote desktop that you host yourself. Open your Windows PC or Mac from the browser
 on a phone, tablet or another computer, and let AI agents such as Claude Code work on the
-computers you approve. The server, the accounts and the relay all run on a machine you control.
+computers you approve, including Linux servers. The server, the accounts and the relay all run
+on a machine you control.
 
 <p align="center"><img src="docs/images/interface-en-desktop.png" width="760" alt="The Deskway web app listing two computers, one of them under AI control"></p>
 
@@ -69,13 +70,16 @@ phone is removed from **My devices** in one step.
 
 ## Is Deskway right for you?
 
-Deskway is a good fit if you want to reach your own Windows or Mac computers from anywhere, want
-to give AI agents controlled access to real desktops, and are comfortable running a small Linux
-server with a domain name.
+Deskway is a good fit if you want to reach your own Windows or Mac desktops from anywhere or
+give AI agents controlled access to Windows, macOS or Linux computers, and are comfortable running
+a small Linux server with a domain name.
 
-It is not the right tool if the computers you need to control run Linux or Android, if you need
-quick one-off access to someone else's computer for support, or if you would rather not operate
-a server at all.
+On Linux, AI agents can run commands, work with files and open tunnels; there is no desktop
+viewing or control there.
+
+It is not the right tool if you need to see or control a Linux desktop or an Android device, if
+you need quick one-off access to someone else's computer for support, or if you would rather not
+operate a server at all.
 
 ## How it compares
 
@@ -84,7 +88,7 @@ a server at all.
 | AI control through MCP | Built in | Community projects; built-in support proposed upstream, not merged | No |
 | Signaling and relay | Your server | Public servers by default, or self-hosted | Google's service |
 | Web client | Served by your server | Server Pro plans | Provided by Google |
-| Controlled computers | Windows, macOS | Windows, macOS, Linux, Android | Windows, macOS, Linux |
+| Controlled computers | Windows, macOS, Linux (AI workspace) | Windows, macOS, Linux, Android | Windows, macOS, Linux |
 
 As of November 2026. The [full comparison](docs/comparison.md) covers accounts, AI access control
 and logging, with a source for every entry.
@@ -97,8 +101,9 @@ The [overview](docs/overview.md) describes every feature and the security model 
    in [Self-hosting](docs/self-hosting.md).
 2. Install Deskway Host on each computer you want to control, from the
    [Releases page](https://github.com/aerialSpire/deskway/releases). See the instructions for
-   [Windows](docs/install-host-windows.md) and [macOS](docs/install-host-macos.md).
-3. Open the server's address in a browser, sign in and choose a computer.
+   [Windows](docs/install-host-windows.md), [macOS](docs/install-host-macos.md) and
+   [Linux](docs/install-host-linux.md).
+3. Open the server's address in a browser, sign in and approve the computer in **My devices**.
 4. To let an AI client use your computers, see [AI clients](docs/ai-clients.md).
 
 ## Repository layout
@@ -107,12 +112,12 @@ The [overview](docs/overview.md) describes every feature and the security model 
 |---|---|
 | `cmd/deskway-server`, `internal/` | Go server: accounts, device approval, WebSocket signaling and the TURN relay. It also serves the web client |
 | `web/static` | Web client (plain JavaScript), embedded into the server at build time |
-| `host/` | Deskway Host (Rust) for Windows and macOS |
+| `host/` | Deskway Host (Rust) for Windows, macOS and Linux |
 | `cli/` | `deskway`, the command-line program that connects AI clients over MCP (Rust) |
 | `crates/` | Rust crates shared by the host and `deskway`: wire types and the WebRTC peer |
 | `proto/` | Protocol definition, tool list and test vectors that every side is tested against |
 | `tests/` | Browser unit, contract and end-to-end tests |
-| `deploy/systemd` | systemd unit template for the server |
+| `deploy/systemd` | systemd unit templates for the server and Linux host |
 | `scripts/` | Build scripts for the macOS app and the AI client programs, and a local trial script |
 
 ## Build from source
@@ -125,6 +130,9 @@ go build -o bin/deskway-server ./cmd/deskway-server
 
 # Host and the deskway CLI (on Windows or macOS)
 cargo build --locked --release -p deskway-host -p deskway
+
+# Linux host (with the system OpenSSL development libraries installed)
+cargo build --locked --release -p deskway-host
 
 # macOS app bundle and DMG (on an Apple silicon Mac)
 ./scripts/build-mac-host.sh --universal-dmg
@@ -154,6 +162,7 @@ Releases are published by the **Release** workflow. It is started by hand from
 | `deskway-server-linux-amd64.tar.gz`, `deskway-server-linux-arm64.tar.gz` | The server for Linux on x86-64 and ARM64, with the license and the systemd unit template |
 | `DeskwayHost-Setup-windows-x64.exe` | Deskway Host installer for Windows (x64) |
 | `DeskwayHost-macos-universal.dmg` | Deskway Host for macOS (Apple silicon and Intel) |
+| `deskway-host-linux-amd64.tar.gz`, `deskway-host-linux-arm64.tar.gz` | Deskway Host for Linux on x86-64 and ARM64, with the license and the systemd unit template |
 | `deskway-windows-x64.exe` | AI client program for Windows |
 | `deskway-macos-arm64`, `deskway-macos-x64` | AI client programs for macOS |
 | `SHA256SUMS` | SHA-256 checksums of the files above |

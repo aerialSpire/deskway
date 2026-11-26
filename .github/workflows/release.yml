@@ -81,6 +81,31 @@ jobs:
           retention-days: 3
           compression-level: 0
 
+  linux-host:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and package the Linux host
+        run: |
+          rustup default stable
+          sh scripts/build-linux-host.sh "$RUNNER_TEMP/linux-host"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-host-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/linux-host/deskway-host-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
   server:
     needs: [windows, macos]
     runs-on: ubuntu-24.04
@@ -136,7 +161,7 @@ jobs:
           retention-days: 3
 
   publish:
-    needs: [windows, macos, server]
+    needs: [windows, macos, linux-host, server]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -166,7 +191,8 @@ jobs:
           cd "$RUNNER_TEMP/deskway-release"
           read -r -a client_files <<< "$AI_CLIENT_ASSETS"
           cp "$GITHUB_WORKSPACE/scripts/install-server.sh" .
-          files=(install-server.sh DeskwayHost-Setup-windows-x64.exe DeskwayHost-macos-universal.dmg "${client_files[@]}" deskway-server-linux-amd64.tar.gz deskway-server-linux-arm64.tar.gz)
+          files=(install-server.sh DeskwayHost-Setup-windows-x64.exe DeskwayHost-macos-universal.dmg "${client_files[@]}"
+            deskway-host-linux-amd64.tar.gz deskway-host-linux-arm64.tar.gz deskway-server-linux-amd64.tar.gz deskway-server-linux-arm64.tar.gz)
           sha256sum -- "${files[@]}" > SHA256SUMS
           assets=("${files[@]}" SHA256SUMS)
           expected='{}'
