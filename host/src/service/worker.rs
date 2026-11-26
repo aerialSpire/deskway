@@ -16,7 +16,8 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 
 use super::ipc::{self, Pipe};
-use crate::workspace::{procs, Local, Workspace};
+use crate::workspace::{procs, Local};
+use crate::workspace::Workspace;
 
 /// Which worker.
 #[derive(Clone, Copy, Debug, PartialEq)]

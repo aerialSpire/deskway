@@ -203,7 +203,15 @@ fn machine_id() -> Option<String> {
     (!id.is_empty()).then_some(id)
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+/// The id of this Linux installation.
+#[cfg(target_os = "linux")]
+fn machine_id() -> Option<String> {
+    let id = std::fs::read_to_string("/etc/machine-id").ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
 fn machine_id() -> Option<String> {
     None
 }
@@ -225,7 +233,7 @@ mod tests {
     /// they exist only while its page does, e2e `devices.test.mjs`.)
     #[test]
     fn a_computer_knows_itself_by_its_machine_and_nothing_else_says_so() {
-        let me = machine().expect("Windows and macOS say which machine this is");
+        let me = machine().expect("this machine has a system id");
         assert!(me.starts_with(MACHINE) && me.len() == MACHINE.len() + 64, "{me}");
         assert_eq!(machine(), Some(me.clone()), "the same every time");
         let other = format!("{MACHINE}{}", "0".repeat(64));

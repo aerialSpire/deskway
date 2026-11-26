@@ -30,7 +30,7 @@ pub const IDLE: Duration = Duration::from_secs(10 * 60);
 
 pub struct Ai {
     id: String,
-    platform: Arc<dyn Platform>,
+    platform: Option<Arc<dyn Platform>>,
     ai: Option<ChannelId>,
     joiner: Joiner,
     /// Where requests go to be answered (`crate::mcp::spawn`).
@@ -47,13 +47,14 @@ pub struct Ai {
 }
 
 impl Ai {
-    pub fn new(session: String, platform: Arc<dyn Platform>, requests: Sender<String>, idle: Duration, allowed: Allowed, own: Sender<SessionEvent>) -> Ai {
+    pub fn new(session: String, platform: Option<Arc<dyn Platform>>, requests: Sender<String>, idle: Duration, allowed: Allowed, own: Sender<SessionEvent>) -> Ai {
         Ai { id: session, platform, ai: None, joiner: Joiner::default(), requests, last_call: Instant::now(), idle, allowed, pipes: Pipes::default(), own, outbox: Outbox::default() }
     }
 
     /// A tunnel's channel: joined to a new connection to its port, if the client may reach it.
     fn tunnel(&mut self, cx: &mut Cx, id: ChannelId, port: u16) {
-        let joined = self.allowed.lock().unwrap().contains(&port) && TcpStream::connect_timeout(&tunnel::place(port), Duration::from_secs(2)).ok().is_some_and(|s| self.pipes.add(id, s, self.own.clone()).is_ok());
+        let allowed = self.allowed.lock().unwrap().contains(&port);
+        let joined = allowed && TcpStream::connect_timeout(&tunnel::place(port), Duration::from_secs(2)).ok().is_some_and(|s| self.pipes.add(id, s, self.own.clone()).is_ok());
         if !joined {
             cx.log(format_args!("tunnel to port {port}: not allowed or nothing listens"));
             cx.rtc.direct_api().close_data_channel(id);
@@ -70,7 +71,11 @@ impl Drop for Ai {
 impl Role for Ai {
     fn releaser(&self) -> Box<dyn Fn() + Send> {
         let (platform, id) = (self.platform.clone(), self.id.clone());
-        Box::new(move || platform.release_all(&id))
+        Box::new(move || {
+            if let Some(platform) = &platform {
+                platform.release_all(&id);
+            }
+        })
     }
 
     fn accepts(&self, sdp: &str) -> bool {
@@ -169,14 +174,6 @@ pub fn hello() -> Control {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::{Call, Forward};
-
-    /// A computer that does nothing it is asked.
-    struct Still;
-    impl Forward for Still {
-        fn forward(&self, _: Call) {}
-    }
-
     /// (E3) An AI client that calls nothing for `idle` gives the seat up, told `idle`; one
     /// within it keeps it.
     #[test]
@@ -186,7 +183,7 @@ mod tests {
         }
         for (idle, want) in [(Duration::from_millis(300), Some("idle")), (Duration::from_secs(60), None)] {
             let (requests, _heard) = std::sync::mpsc::channel();
-            let ai = Ai::new("s1".into(), Arc::new(Still), requests, idle, Allowed::default(), std::sync::mpsc::channel().0);
+            let ai = Ai::new("s1".into(), None, requests, idle, Allowed::default(), std::sync::mpsc::channel().0);
             assert_eq!(super::super::tests::ended_by(ai, &["control", "ai"], Duration::from_secs(4)).as_deref(), want, "idle {idle:?}");
         }
     }

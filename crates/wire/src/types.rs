@@ -78,7 +78,7 @@ wire_values! {
     pub enum Reason {
         "left" => Left, "taken" => Taken, "ended" => Ended, "busy" => Busy, "failed" => Failed,
         "gone" => Gone, "offline" => Offline, "auth" => Auth, "unpaired" => Unpaired,
-        "forbidden" => Forbidden, "permissions" => Permissions,
+        "forbidden" => Forbidden, "permissions" => Permissions, "no_desktop" => NoDesktop,
         "pair" => Pair, "denied" => Denied, "full" => Full,
         "ai_off" => AiOff, "idle" => Idle,
     }

@@ -25,7 +25,7 @@ use crate::auth::{AiState, Trust};
 use crate::config::Config;
 use crate::display::DisplayInfo;
 use crate::mcp::{Facts, SharedFacts};
-use crate::platform::{Desk, Platform, PlatformEvent, Replies};
+use crate::platform::{Desk, DeskParams, DesktopFeatures, Features, Platform, PlatformEvent, Replies};
 use wire::control::Control as Message;
 use wire::signal::Signal as Wire;
 use wire::types::{self as types, Reason};
@@ -225,15 +225,27 @@ impl Router {
 }
 
 
+pub struct DesktopParams {
+    pub features: DesktopFeatures,
+    pub platform: Arc<dyn Platform>,
+    /// Everything the platform reports.
+    pub events: Receiver<PlatformEvent>,
+    /// Whether this computer can take a session now (macOS: the needed permissions).
+    pub can_host: Box<dyn Fn() -> bool + Send>,
+}
+
+struct Desktop {
+    features: DesktopFeatures,
+    platform: Arc<dyn Platform>,
+    router: Arc<Router>,
+    can_host: Box<dyn Fn() -> bool + Send>,
+}
+
 /// What a host needs to run.
 pub struct Params {
     pub cfg: Config,
     pub view_only: bool,
-    pub platform: Arc<dyn Platform>,
-    /// Everything `platform` reports.
-    pub events: Receiver<PlatformEvent>,
-    /// Whether this computer can take a session now (macOS: the needed permissions).
-    pub can_host: Box<dyn Fn() -> bool + Send>,
+    pub desktop: Option<DesktopParams>,
     pub notify: Notifier,
     /// Where the controlling browser's clipboard switch is saved.
     pub settings: Arc<Settings>,
@@ -255,9 +267,7 @@ struct Host {
     /// Why the last attempt to reach the server failed, in words for the panel.
     problem: Option<String>,
     quit: bool,
-    platform: Arc<dyn Platform>,
-    router: Arc<Router>,
-    can_host: Box<dyn Fn() -> bool + Send>,
+    desktop: Option<Desktop>,
     out_tx: Sender<String>,
     updates_tx: Sender<SessionUpdate>,
     /// The sessions on the two seats (their handles feed the session threads).
@@ -288,6 +298,17 @@ struct Host {
 }
 
 impl Host {
+    fn features(&self) -> Features {
+        Features { desktop: self.desktop.as_ref().map(|d| d.features), view_only: self.view_only }
+    }
+
+    fn hello(&self) -> Wire {
+        let features = self.features();
+        let caps = features.signaling_caps();
+        let tools = features.tools().map(String::from).collect();
+        Wire::Hello { version: wire::PROTOCOL_VERSION, caps, tools: Some(tools) }
+    }
+
     fn report(&self) {
         let (asks, pair_url, devices) = match self.trust.as_ref() {
             Some(t) => {
@@ -336,13 +357,13 @@ impl Host {
     /// The facts AI sessions read, brought up to date (`name`: the computer's, as configured).
     fn update_facts(&self, name: &str) {
         let facts = Facts {
-            name: if cfg!(target_os = "macos") { crate::shown_name(name) } else { name.to_string() },
+            name: crate::platform::facts_name(name),
             os: std::env::consts::OS.to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             displays: self.displays.clone(),
             desk: self.desk,
             person: self.sessions.of(Seat::Desk).controller(),
-            admin: matches!(self.trust.as_ref().map(Trust::ai_state), Some(AiState::On { admin: true })),
+            admin: self.desktop.is_some() && matches!(self.trust.as_ref().map(Trust::ai_state), Some(AiState::On { admin: true })),
             view_only: self.view_only,
             // Asked of the workspace when read (`tools::Ctx::facts`).
             user_session: false,
@@ -358,7 +379,9 @@ impl Host {
     /// after it restarted. Held back while a replaced session is still saying goodbye
     /// (`replaced`).
     fn send_status(&self) {
-        crate::power::ai_session(self.sessions.of(Seat::Ai).current().is_some());
+        if let Some(desk) = &self.desktop {
+            (desk.features.ai_awake)(self.sessions.of(Seat::Ai).current().is_some());
+        }
         if self.replaced.is_empty() {
             let (holder, ai) = (self.sessions.of(Seat::Desk).holder(), self.sessions.of(Seat::Ai).holder());
             let ai_refused = self.trust.as_ref().and_then(Trust::ai_refused);
@@ -413,10 +436,11 @@ impl Host {
         // The nonce issued for this session is used up by this offer, whatever its fate.
         let nonce = m["auth"]["nonce"].as_str().unwrap_or_default().to_string();
         let nonce_ok = self.nonces.take(&session, &nonce, Instant::now());
-        if !(self.can_host)() {
+        if self.desktop.as_ref().is_some_and(|d| !(d.can_host)()) {
             eprintln!("session refused: this computer cannot host one now");
             return self.bye(&session, Reason::Permissions);
         }
+        let features = self.features();
         let Some(trust) = self.trust.as_mut() else { return self.bye(&session, Reason::Auth) };
         trust.reload();
         if trust.controllers().is_empty() {
@@ -431,6 +455,9 @@ impl Host {
             }
         };
         let seat = Seat::of(verified.role);
+        if seat == Seat::Desk && features.desktop.is_none() {
+            return self.bye(&session, Reason::NoDesktop);
+        }
         if seat == Seat::Ai {
             // An AI client only while a browser of the account allows AI here, and not stopped;
             // never taking over, and never with media.
@@ -463,7 +490,7 @@ impl Host {
         // taking over from itself keeps this one. An AI client signs without asking anyone, so
         // it gets no resume token.
         let greeting = match seat {
-            Seat::Desk => vec![Message::Hello { version: wire::PROTOCOL_VERSION, caps: session::desk::caps(self.view_only) }, trust.issue_resume(&verified)],
+            Seat::Desk => vec![Message::Hello { version: wire::PROTOCOL_VERSION, caps: features.desk_caps() }, trust.issue_resume(&verified)],
             Seat::Ai => vec![session::ai::hello()],
         };
         let sign = trust.answer_signer(&session);
@@ -479,28 +506,37 @@ impl Host {
         let params = session::Params { session: session.clone(), sdp: sdp.clone(), stun, turn: peer::turn::servers(&m["ice"]), out: self.out_tx.clone(), updates: self.updates_tx.clone(), sign, greeting };
         let tx = match seat {
             Seat::Desk => {
-                let desk = session::desk::Desk::new(session::desk::Params {
+                let desktop = self.desktop.as_ref().expect("a desk seat was admitted");
+                let tx = (desktop.features.spawn)(params, DeskParams {
                     session: session.clone(),
                     offer: sdp,
                     view: serde_json::from_value(m["view"].clone()).ok(),
-                    platform: self.platform.clone(),
+                    platform: desktop.platform.clone(),
                     view_only: self.view_only,
                     clip_share: self.clip_share,
                     share: self.share_tx.clone(),
                 });
-                let tx = session::spawn(params, |_| desk);
-                *self.router.desk.lock().unwrap() = Some(tx.clone());
+                *desktop.router.desk.lock().unwrap() = Some(tx.clone());
                 self.note = None;
                 tx
             }
             Seat::Ai => {
                 let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };
                 let tunnels = crate::tools::tunnel::Allowed::default();
-                let ctx = crate::tools::Ctx { facts: self.facts.clone(), platform: self.platform.clone(), session: session.clone(), replies: self.router.replies.clone(), shot: Default::default(), workspace: self.workspace.clone(), tunnels: tunnels.clone(), admin: self.admin.clone(), audit: self.audit.clone() };
-                // Its input is the AI client's hand from now on (`platform::local`).
-                self.platform.ai_session(Some(session.clone()));
-                let (platform, id) = (self.platform.clone(), session.clone());
-                session::spawn(params, move |own| session::ai::Ai::new(id, platform, crate::mcp::spawn(gate, ctx, own.clone()), session::ai::IDLE, tunnels, own))
+                let platform = self.desktop.as_ref().map(|d| d.platform.clone());
+                if let Some(platform) = &platform {
+                    // Its input is the AI client's hand from now on (`platform::local`).
+                    platform.ai_session(Some(session.clone()));
+                }
+                let ctx = crate::tools::Ctx {
+                    facts: self.facts.clone(), session: session.clone(),
+                    platform: platform.clone(),
+                    replies: self.desktop.as_ref().map(|d| d.router.replies.clone()).unwrap_or_default(),
+                    shot: Default::default(), workspace: self.workspace.clone(), tunnels: tunnels.clone(),
+                    admin: self.admin.clone(), audit: self.audit.clone(),
+                };
+                let id = session.clone();
+                session::spawn(params, move |own| session::ai::Ai::new(id, platform, crate::mcp::spawn(features, gate, ctx, own.clone()), session::ai::IDLE, tunnels, own))
             }
         };
         eprintln!("session started by {name} ({seat:?} seat)");
@@ -524,8 +560,9 @@ impl Host {
                     let _ = cur.handle.send(SessionEvent::Negotiate { sdp: sdp.to_string(), epoch });
                 }
             }
-            "pair" => self.on_pair(&m),
-            "pairask" => self.on_ask(&m),
+            "pair" if self.desktop.is_some() => self.on_pair(&m),
+            "pairask" if self.desktop.is_some() => self.on_ask(&m),
+            "pair" | "pairask" => self.bye(session, Reason::NoDesktop),
             // The account's signed device log: who else may control this computer.
             "devlog" => {
                 if let Some(t) = self.trust.as_mut() {
@@ -549,7 +586,11 @@ impl Host {
                     let _ = cur.handle.send(SessionEvent::PeerBye(reason));
                 }
             }
-            "thumbs" => self.platform.thumbnails(m["on"].as_bool().unwrap_or(false)),
+            "thumbs" => {
+                if let Some(desk) = &self.desktop {
+                    desk.platform.thumbnails(m["on"].as_bool().unwrap_or(false));
+                }
+            }
             // Who this computer belongs to, for the panel.
             "account" => {
                 if let Ok(Wire::Account { user, display }) = serde_json::from_value::<Wire>(m.clone()) {
@@ -672,18 +713,21 @@ impl Host {
         let was_controller = self.sessions.of(seat).controller().is_some();
         if self.sessions.of_mut(seat).ended(session) {
             eprintln!("session ended ({seat:?} seat)");
-            match seat {
-                Seat::Desk => {
-                    *self.router.desk.lock().unwrap() = None;
-                    self.note = None;
+            if let Some(desk) = &self.desktop {
+                match seat {
+                    Seat::Desk => {
+                        *desk.router.desk.lock().unwrap() = None;
+                        self.note = None;
+                    }
+                    Seat::Ai => desk.platform.ai_session(None),
                 }
-                Seat::Ai => self.platform.ai_session(None),
             }
             self.send_status();
-            // Locking follows the person's session only: an AI client leaving (idle, stopped)
-            // must not lock out the person sitting at the computer.
+            // Locking follows the person's session only.
             if seat == Seat::Desk && was_controller && self.auto_lock && !self.quit {
-                self.platform.lock();
+                if let Some(desk) = &self.desktop {
+                    desk.platform.lock();
+                }
             }
         }
     }
@@ -732,10 +776,16 @@ impl Host {
             Control::Disconnect => self.end_seat(Seat::Desk, End::plain(Reason::Ended)),
             Control::SetAutoLock(on) => {
                 self.auto_lock = on;
-                self.platform.auto_lock(on);
+                if let Some(desk) = &self.desktop {
+                    desk.platform.auto_lock(on);
+                }
             }
             Control::SetClipShare(on) => self.set_clip_share(on),
-            Control::SetAutoStart(on) => self.platform.autostart(on),
+            Control::SetAutoStart(on) => {
+                if let Some(desk) = &self.desktop {
+                    desk.platform.autostart(on);
+                }
+            }
             Control::StartPairing => {
                 if let Ok(d) = crate::config::dir() {
                     if let Err(e) = crate::auth::Trust::start_pairing(&d) {
@@ -832,7 +882,7 @@ fn connect(cfg: &Config) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
 struct Queues {
     out: Receiver<String>,
     updates: Receiver<SessionUpdate>,
-    platform: Receiver<PlatformEvent>,
+    platform: Option<Receiver<PlatformEvent>>,
     control: Receiver<Control>,
     share: Receiver<bool>,
 }
@@ -853,13 +903,7 @@ impl Queues {
 }
 
 fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Queues) -> Result<()> {
-    // The AI tools this computer carries out: an AI client tells its own from them before it
-    // calls (`unsupported`, for a computer older than it).
-    let tools = crate::tools::implemented().into_iter().map(String::from).collect();
-    let mut caps = session::desk::caps(host.view_only);
-    caps.push(wire::caps::RELAY_RTT.into());
-    let hello = Wire::Hello { version: wire::PROTOCOL_VERSION, caps, tools: Some(tools) };
-    ws.send(WsMessage::text(serde_json::to_string(&hello)?))?;
+    ws.send(WsMessage::text(serde_json::to_string(&host.hello())?))?;
     host.send_status();
     let mut alive = alive::Alive::new(Instant::now());
     loop {
@@ -879,7 +923,7 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Que
             alive::Due::Gone => anyhow::bail!("the server said nothing for {}s", alive::SILENT.as_secs()),
         }
         q.drain_local(host);
-        while let Ok(e) = q.platform.try_recv() {
+        for e in q.platform.iter().flat_map(Receiver::try_iter) {
             host.on_platform(e, Some(ws))?;
         }
         while let Ok(m) = q.out.try_recv() {
@@ -899,12 +943,15 @@ impl Host {
     /// The host as it starts: offline, nobody in control, with the trust store of `cfg`'s
     /// folder (None refuses every offer).
     fn new(p: Params, trust: Option<Trust>, control: Receiver<Control>) -> (Host, Queues) {
-        let Params { cfg, view_only, platform, events, can_host, notify, settings, workspace, admin } = p;
+        let Params { cfg, view_only, desktop, notify, settings, workspace, admin } = p;
         let (out_tx, out) = channel();
         let (updates_tx, updates) = channel();
         let (share_tx, share) = channel();
-        let (router, platform_events) = Router::spawn(events);
-        platform.auto_lock(cfg.auto_lock);
+        let (desktop, platform_events) = desktop.map(|d| {
+            let (router, events) = Router::spawn(d.events);
+            d.platform.auto_lock(cfg.auto_lock);
+            (Desktop { features: d.features, platform: d.platform, router, can_host: d.can_host }, events)
+        }).unzip();
         let host = Host {
             view_only,
             auto_lock: cfg.auto_lock,
@@ -915,9 +962,7 @@ impl Host {
             waiting: false,
             problem: None,
             quit: false,
-            platform,
-            router,
-            can_host,
+            desktop,
             out_tx,
             updates_tx,
             sessions: Seats::default(),
@@ -961,7 +1006,9 @@ pub fn run(p: Params, control: Receiver<Control>) {
                 host.online = false;
                 host.report();
                 // Thumbnails resume only if the server asks again after reconnecting.
-                host.platform.thumbnails(false);
+                if let Some(desk) = &host.desktop {
+                    desk.platform.thumbnails(false);
+                }
             }
             Err(e) => {
                 host.waiting = e.downcast_ref::<tungstenite::Error>().is_some_and(|e| matches!(e, tungstenite::Error::Http(r) if r.status() == 403));
@@ -989,7 +1036,7 @@ pub fn run(p: Params, control: Receiver<Control>) {
             }
             q.drain_local(&mut host);
             // Displays and notes still count offline; thumbnails have nowhere to go.
-            while let Ok(e) = q.platform.try_recv() {
+            for e in q.platform.iter().flat_map(Receiver::try_iter) {
                 let _ = host.on_platform(e, None);
             }
         }
@@ -1030,6 +1077,10 @@ mod tests {
 
     impl Test {
         fn new(name: &str, can_host: bool, trust: bool) -> Test {
+            Self::with_features(name, can_host, trust, Features { desktop: Some(crate::platform::TEST_DESKTOP), ..Features::default() })
+        }
+
+        fn with_features(name: &str, can_host: bool, trust: bool, features: Features) -> Test {
             let dir = std::env::temp_dir().join(format!("deskway-signal-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
@@ -1038,12 +1089,13 @@ mod tests {
             let calls = Arc::new(Calls::default());
             let platform: Arc<dyn Platform> = calls.clone();
             let (control, control_rx) = channel();
-            let (settings, _) = Settings::start(dir.clone(), &cfg, platform.clone(), control);
+            let (settings, _) = Settings::start(dir.clone(), &cfg, features.desktop.map(|_| platform.clone()), control);
             let (_events_tx, events) = channel();
             let shown = Arc::new(Mutex::new(Vec::new()));
             let to = shown.clone();
             let trust = trust.then(|| Trust::open(dir.clone(), &cfg.id, &cfg.server).unwrap());
-            let p = Params { cfg, view_only: false, platform, events, can_host: Box::new(move || can_host), notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace: None, admin: None };
+            let desktop = features.desktop.map(|features| DesktopParams { features, platform, events, can_host: Box::new(move || can_host) });
+            let p = Params { cfg, view_only: features.view_only, desktop, notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace: None, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
             Test { host, q, shown, dir, calls }
         }
@@ -1162,6 +1214,40 @@ mod tests {
     }
 
     #[test]
+    fn hello_and_desk_admission_follow_the_feature_set() {
+        let desktop = crate::platform::TEST_DESKTOP;
+        for (case, features, refusal) in [
+            ("desktop", Features { desktop: Some(desktop), view_only: false }, None),
+            ("view-only", Features { desktop: Some(desktop), view_only: true }, None),
+            ("headless", Features::default(), Some("no_desktop")),
+        ] {
+            let mut t = Test::with_features(case, true, true, features);
+            let Wire::Hello { caps, tools, .. } = t.host.hello() else { panic!("expected hello") };
+            assert_eq!(caps.iter().any(|c| c == wire::caps::DESK), refusal.is_none());
+            assert_eq!(caps.last().map(String::as_str), Some(wire::caps::RELAY_RTT));
+            let names = tools.unwrap();
+            if refusal.is_some() {
+                assert_eq!(caps, [wire::caps::RELAY_RTT]);
+                assert_eq!(names, ["computer_info", "audit_read"]);
+            } else {
+                let mut expected = (desktop.caps)(features.view_only);
+                expected.push(wire::caps::RELAY_RTT.into());
+                assert_eq!(caps, expected);
+                assert!(names.iter().any(|n| n == "computer_info"));
+                assert_eq!(&names[2..], desktop.tools.iter().map(|(name, _)| *name).collect::<Vec<_>>());
+            }
+            let phone = t.pair_phone();
+            let sent = t.signed_offer(&phone, "desk", false);
+            if let Some(reason) = refusal {
+                assert_eq!(sent, [json!({ "type": "bye", "session": "desk", "reason": reason })]);
+                assert!(t.host.sessions.of(Seat::Desk).current().is_none());
+            } else {
+                assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "desk");
+            }
+        }
+    }
+
+    #[test]
     fn an_offer_from_a_device_paired_here_with_a_wrong_proof_is_auth_else_unpaired() {
         let mut t = Test::new("proof", true, true);
         t.pair_phone();
@@ -1265,17 +1351,15 @@ mod tests {
         assert!(t.q.control.try_iter().any(|c| c == Control::SetClipShare(true)));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn ai_facts_use_the_name_shown_when_the_mac_name_is_left_blank() {
+    fn ai_facts_use_the_platform_name_when_the_config_name_is_left_blank() {
         let mut t = Test::new("mac-name", true, true);
         t.host.on_control(Control::Report);
         assert_eq!(t.host.facts.read().unwrap().name, "Desk");
         Config::update_in(&t.dir, |c| c.name.clear()).unwrap();
         t.host.on_control(Control::Report);
         let name = t.host.facts.read().unwrap().name.clone();
-        assert_eq!(name, crate::shown_name(""));
-        assert!(!name.is_empty());
+        assert_eq!(name, crate::platform::facts_name(""));
     }
 
     #[test]
@@ -1339,6 +1423,18 @@ mod tests {
         assert!(reason(&sent, "a6").is_none(), "admitted: {sent:?}");
         assert_eq!((t.host.sessions.of(Seat::Ai).current().unwrap().id.as_str(), t.host.replaced.as_slice()), ("a6", ["a4".to_string()].as_slice()));
         assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "d1", "the person's session is untouched");
+    }
+
+    #[test]
+    fn a_host_without_a_desktop_still_requires_ai_authorization() {
+        let mut t = Test::with_features("headless-ai", false, true, Features::default());
+        let [phone, claude, _] = t.pair_all();
+        let sent = t.offer_from(&claude, CLAUDE, "off", false, "v=0");
+        assert_eq!(sent[0]["reason"], "ai_off");
+        t.switch(&phone, true, 10);
+        let _ = t.sent();
+        let sent = t.offer_from(&claude, CLAUDE, "ai", false, "v=0");
+        assert_eq!(statuses(&sent)[0]["ai_session"]["session"], "ai");
     }
 
     /// Where a browser or AI client runs: this computer answers `here` when that is itself, and

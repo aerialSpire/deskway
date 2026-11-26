@@ -3,7 +3,7 @@
 import { $app, h, loading } from '../dom.js';
 import { t } from '../i18n.js';
 import { state, device, setView } from '../state.js';
-import { statusLine, staleNote, thumbFor, topbar, heading, updateNote, hereTag } from './common.js';
+import { statusLine, staleNote, thumbFor, topbar, heading, updateNote, hereTag, noDesktop } from './common.js';
 import { accountMenu } from './account.js';
 import { computerMenu } from './computer.js';
 import { press } from './takeover.js';
@@ -19,10 +19,11 @@ export function renderDetail() {
   if (!d) { setView('list'); return; }
   // Pressing the picture takes over. With several displays, each is shown live where it sits,
   // and pressing one takes over that one.
-  const layout = d.online ? displayLayout(d) : null;
-  const preview = layout || (d.online
-    ? h('button', { class: 'preview clickable', 'aria-label': t('detail.takeOverLabel', { name: d.name }), onclick: () => press(device() || d) }, hint(), thumbFor(d))
-    : h('div', { class: 'preview offline' }, h('div', { class: 'thumb-inner' }, t('detail.offline'))));
+  const preview = noDesktop(d)
+    ? h('p', { class: 'notice' }, t('session.noDesktopText'))
+    : d.online
+      ? displayLayout(d) || h('button', { class: 'preview clickable', 'aria-label': t('detail.takeOverLabel', { name: d.name }), onclick: () => press(device() || d) }, hint(), thumbFor(d))
+      : h('div', { class: 'preview offline' }, h('div', { class: 'thumb-inner' }, t('detail.offline')));
   $app.replaceChildren(h('div', { class: 'page', 'data-page': 'detail' },
     topbar(accountMenu()),
     updateNote(),

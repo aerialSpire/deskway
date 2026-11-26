@@ -13,15 +13,48 @@
 //! late they arrive.
 
 use serde::{Deserialize, Serialize};
+use wire::types::{ClipboardError, FormatKind, Item, Labels, Locks, Mods};
 
-use crate::clipboard::Format as ClipFormat;
 use crate::display::DisplayInfo;
-use wire::types::{ClipboardError, FormatKind, Locks, Mods};
 
+mod features;
+pub use features::{DeskParams, DesktopFeatures, Features};
+
+#[cfg(all(test, desktop_host))]
+pub const TEST_DESKTOP: DesktopFeatures = DESKTOP;
+
+#[cfg(all(test, target_os = "linux"))]
+pub const TEST_DESKTOP: DesktopFeatures = DesktopFeatures {
+    // Desktop-independent signaling tests use a stand-in for the session thread.
+    caps: |_| vec![wire::caps::DESK.into()],
+    spawn: |_, _| std::sync::mpsc::channel().0,
+    ai_awake: |_| {},
+    tools: &[],
+};
+
+#[cfg(desktop_host)]
+pub const DESKTOP: DesktopFeatures = DesktopFeatures { caps: crate::session::desk::caps, spawn: crate::session::desk::spawn, ai_awake: crate::power::ai_session, tools: crate::tools::desktop::TABLE };
+
+#[cfg(desktop_host)]
+pub use crate::power::prevent_sleep;
+
+#[cfg(desktop_host)]
 mod local;
+#[cfg(desktop_host)]
 pub use local::Local;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use unix::without_echo;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::*;
+
 /// The OS power state relevant to the keep-awake setting.
+#[cfg(desktop_host)]
 #[derive(Clone, Copy, Debug)]
 pub enum PowerState {
     External,
@@ -45,6 +78,13 @@ pub use self::macos::*;
 
 #[cfg(all(target_os = "macos", not(any(target_arch = "aarch64", target_arch = "x86_64"))))]
 compile_error!("Deskway for macOS requires Apple silicon or 64-bit Intel");
+
+pub fn facts_name(name: &str) -> String {
+    #[cfg(windows)]
+    return name.to_string();
+    #[cfg(not(windows))]
+    crate::shown_name(name)
+}
 
 /// Declares the trait, the serialized form of each call, how a call is carried out on any
 /// `Platform`, which calls set state a newly connected agent must be told again, and which are
@@ -117,7 +157,7 @@ platform! {
     fn keyframe() => Keyframe;
     /// The network's estimate, in bits per second.
     fn bitrate(bps: u32) => Bitrate;
-    /// What this computer sends is queuing up (session::desk::pace): encoding waits until it drains,
+    /// What this computer sends is queuing up (`desk::pace`): encoding waits until it drains,
     /// then encodes the screen as it is then.
     fn network_behind(behind: bool) => NetworkBehind;
     /// What the viewer accepts (`video::Constraints`; 0 = not known): the encoded size follows.
@@ -169,7 +209,7 @@ platform! {
     /// Session `session` takes the computer: video starts for it at the viewer's constraints
     /// `view`, with the pointer and desktop changes; input starts from the computer's own key
     /// state; the computer stays awake. A session that held it before loses it.
-    fn video_start(session: String, view: crate::video::Constraints) => VideoStart, keep video_start;
+    fn video_start(session: String, view: Constraints) => VideoStart, keep video_start;
     /// One round of display previews, for the device list.
     fn thumbnails(on: bool) => Thumbnails, keep thumbnails;
     /// The AI client's session beside the person's (`None`: none): its input is carried out.
@@ -227,6 +267,57 @@ impl Replies {
     }
 }
 
+/// One clipboard format, as it crosses the agent pipe. The same fields as the wire `Format`,
+/// without its skipped fields (the pipe's encoding is not self-describing).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ClipFormat {
+    pub kind: FormatKind,
+    pub size: Option<u64>,
+    pub w: Option<u32>,
+    pub h: Option<u32>,
+    pub items: Option<Vec<Item>>,
+}
+
+impl ClipFormat {
+    pub fn of(kind: FormatKind) -> ClipFormat {
+        ClipFormat { kind, size: None, w: None, h: None, items: None }
+    }
+}
+
+/// What the viewer accepts. Zero means "not known".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Constraints {
+    /// Viewport, device pixels.
+    pub w: u32,
+    pub h: u32,
+    /// Largest size the viewer decodes smoothly (MediaCapabilities), as a box.
+    pub max_w: u32,
+    pub max_h: u32,
+    /// Frames a second the viewer takes: what it decodes smoothly at that size, or fewer when
+    /// the person prefers a sharper picture to a smoother one.
+    pub fps: u32,
+    /// `level_idc` from the negotiated `profile-level-id`.
+    pub level: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CursorShape {
+    pub w: usize,
+    pub h: usize,
+    pub hx: i32,
+    pub hy: i32,
+    #[serde(with = "crate::platform::raw_bytes")]
+    pub rgba: Vec<u8>,
+}
+
+/// A line for the person at this computer, beside "… is in control".
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TransferNote {
+    pub text: String,
+    /// The folder the files went to, for an “Open folder” button.
+    pub folder: Option<String>,
+}
+
 /// What the computer reports.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum PlatformEvent {
@@ -238,11 +329,11 @@ pub enum PlatformEvent {
     EncodedSize { w: u32, h: u32, max_bitrate: u32 },
     /// False while no display can be captured (none attached); true again with the next frame.
     CaptureAvailable(bool),
-    CursorShape(crate::video::CursorShape),
+    CursorShape(CursorShape),
     /// `seq`: the last pointer move applied when the position was read.
     CursorPosition { x: f64, y: f64, visible: bool, seq: u64 },
     /// The keyboard layout in use, with each key's label without and with Shift.
-    LayoutChanged { name: String, labels: crate::input::Labels, shift: crate::input::Labels },
+    LayoutChanged { name: String, labels: Labels, shift: Labels },
     /// A JPEG preview of one display.
     Thumbnail { display: String, jpeg: Bytes },
     /// The still asked for under `id`: JPEG, `w`×`h`, of `display`.
@@ -270,7 +361,7 @@ pub enum PlatformEvent {
     /// A `clipboard_read` cannot be answered.
     ClipboardFailed { gen: u64, id: String, why: ClipboardError },
     /// A line for the person at this computer about a transfer.
-    TransferNote(Option<crate::transfer::Note>),
+    TransferNote(Option<TransferNote>),
 }
 
 /// What the person at the computer is looking at. Windows shows the lock screen, the sign-in
@@ -393,7 +484,7 @@ mod tests {
         let log = Log::default();
         log.key("s1", "KeyA".into(), true);
         log.file_data("s1", Bytes(vec![0, 1, 255]));
-        log.video_start("s1".into(), crate::video::Constraints::default());
+        log.video_start("s1".into(), Constraints::default());
         log.thumbnails(true);
         let calls = std::mem::take(&mut *log.0.lock().unwrap());
         assert_eq!(calls[0], Call::Key { session: "s1".into(), code: "KeyA".into(), down: true });

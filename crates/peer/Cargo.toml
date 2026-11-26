@@ -30,3 +30,7 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Regi
 
 [target.'cfg(target_os = "macos")'.dependencies]
 str0m = { workspace = true, features = ["apple-crypto"] }
+
+# dimpl drives the DTLS handshake using the system OpenSSL already used by native-tls.
+[target.'cfg(target_os = "linux")'.dependencies]
+str0m = { workspace = true, features = ["openssl-dimpl"] }

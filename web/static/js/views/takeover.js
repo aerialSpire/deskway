@@ -14,6 +14,7 @@ import { state, setView, currentSession, setCurrentSession, device } from '../st
 import { Session } from '../session/session.js';
 import { dialog, gotIt } from '../dialogs.js';
 import { showNotAdded } from './pairing.js';
+import { noDesktop, showNoDesktop } from './common.js';
 import { MIN_VERSION } from '../proto.js';
 import { ownComputer, openWindow } from '../windows.js';
 
@@ -21,6 +22,7 @@ import { ownComputer, openWindow } from '../windows.js';
 // already). Must run inside the tap: the session goes full screen at once.
 export function press(d, again = false) {
   if (!d.online) { show(d, { reason: 'offline' }); return; }
+  if (noDesktop(d)) { showNoDesktop(); return; }
   // The page knows its socket is down: nothing can start now, and it says so at once.
   if (!socket.isOpen()) { show(d, { reason: 'unreachable' }); return; }
   if (openWindow(d)) return;
@@ -55,6 +57,7 @@ export function openSession(d, force) {
   // A delayed action uses the latest report from the online computer's current socket.
   const live = state.devices.find((x) => x.id === d.id);
   if (live?.online && live.version && live.version < MIN_VERSION) { show(d, { reason: 'old' }); return; }
+  if (noDesktop(live || d)) { showNoDesktop(); return; }
   setView('session', d.id);
   // Full screen needs a tap; a computer's own window takes it over as it opens, without one:
   // there “Full screen” is pressed by hand.
@@ -133,6 +136,7 @@ function show(d, { reason, by, same, controller, via, established, cause }) {
       if (via === 'bye' && established) dialog(t('session.restartedTitle'), t('session.restartedText'), [back, again(t('session.reconnect'))]);
       else gotIt(t('session.endedTitle'), t('session.endedText'));
       break;
+    case 'no_desktop': showNoDesktop(); break;
     case 'permissions': gotIt(t('session.permissionsTitle'), t('session.permissionsText')); break;
     case 'forbidden': gotIt(t('session.forbiddenTitle'), t('session.forbiddenText')); break;
     // C4: add this device again (or sign in again, which the sign-in page does by itself).

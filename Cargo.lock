@@ -3242,6 +3242,7 @@ dependencies = [
  "sctp-proto",
  "serde",
  "str0m-apple-crypto",
+ "str0m-openssl",
  "str0m-proto",
  "str0m-wincrypto",
  "subtle",
@@ -3271,6 +3272,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "str0m-openssl"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c4fd2de0fd9f7a6c05f620bbfe19d6b6551d16520ebf3620e770d5471a9f9a3"
+dependencies = [
+ "dimpl",
+ "libc",
+ "openssl",
+ "openssl-sys",
+ "str0m-proto",
+ "tracing",
+]
+
+[[package]]
 name = "str0m-proto"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3279,6 +3294,7 @@ dependencies = [
  "base64ct",
  "dimpl",
  "fastrand",
+ "openssl",
  "serde",
  "subtle",
  "time",

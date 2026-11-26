@@ -4,13 +4,12 @@
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-
 use crate::display::DisplayInfo;
 use crate::platform::{Bytes, Desk, PlatformEvent};
 
 pub mod size;
-pub use size::{Constraints, FPS};
+pub use crate::platform::{Constraints, CursorShape};
+pub use size::FPS;
 pub(crate) const SHARP_FPS: u32 = 2;
 
 /// Where bandwidth estimation starts; the estimate takes over from there.
@@ -50,16 +49,6 @@ pub struct CaptureChanges {
     pub image: bool,
     pub pointer: bool,
     pub shape: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CursorShape {
-    pub w: usize,
-    pub h: usize,
-    pub hx: i32,
-    pub hy: i32,
-    #[serde(with = "crate::platform::raw_bytes")]
-    pub rgba: Vec<u8>,
 }
 
 /// Owns the latest image and the native data needed to reuse it on a static screen.

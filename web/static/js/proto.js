@@ -26,7 +26,7 @@ export const CAPS = Object.freeze({
 
 const FORMAT = 's:text|html|image|files';
 // The one list of reasons a session ends or is refused for, on bye and on the control channel's end.
-export const REASONS = Object.freeze(['left', 'taken', 'ended', 'busy', 'failed', 'gone', 'offline', 'auth', 'unpaired', 'forbidden', 'permissions', 'pair', 'denied', 'full', 'ai_off', 'idle']);
+export const REASONS = Object.freeze(['left', 'taken', 'ended', 'busy', 'failed', 'gone', 'offline', 'auth', 'unpaired', 'forbidden', 'permissions', 'no_desktop', 'pair', 'denied', 'full', 'ai_off', 'idle']);
 const REASON = `s:${REASONS.join('|')}`;
 const HOST = 's:online|away';
 const CBERR = 's:cancelled|gone|denied|big|unsupported|io';

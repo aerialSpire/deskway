@@ -7,8 +7,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::{Ctx, Output, Shot};
+use crate::tools::{Ctx, Output, Shot};
 use crate::mcp::gate::{Granted, ToolError};
+
+impl Ctx {
+    fn platform(&self) -> &dyn crate::platform::Platform {
+        self.platform.as_deref().expect("screen tools are installed with a desktop")
+    }
+}
 
 const DEFAULT_WIDTH: u64 = 1280;
 const MAX_WIDTH: u64 = 1920;
@@ -29,7 +35,7 @@ fn display(ctx: &Ctx, args: &Value) -> Result<crate::display::DisplayInfo, ToolE
 fn capture(ctx: &Ctx, display: &crate::display::DisplayInfo, max: u64) -> Result<(Vec<u8>, u32, u32), ToolError> {
     let id = format!("{}-{}", ctx.session, wire::crypto::hex(&wire::crypto::random::<6>()));
     let answer = ctx.replies.expect(&id);
-    ctx.platform.snapshot(id, Some(display.id.clone()), max as u32);
+    ctx.platform().snapshot(id, Some(display.id.clone()), max as u32);
     match answer.recv_timeout(WAIT) {
         Ok(crate::platform::PlatformEvent::Snapshot { jpeg, w, h, .. }) => Ok((jpeg.0, w, h)),
         _ => Err(ToolError::new("unavailable", "the screen could not be captured now", "Check computer_info: a secure prompt or no display may be showing; try again.")),
@@ -125,8 +131,8 @@ fn button(v: &Value) -> u8 {
 /// Moves the pointer to a place of the latest screenshot.
 fn point(ctx: &Ctx, x: &Value, y: &Value) -> Result<(), ToolError> {
     let (display, nx, ny) = place(ctx, x, y)?;
-    ctx.platform.pointer_display(&ctx.session, display);
-    ctx.platform.mouse_move(&ctx.session, nx, ny, 0);
+    ctx.platform().pointer_display(&ctx.session, display);
+    ctx.platform().mouse_move(&ctx.session, nx, ny, 0);
     Ok(())
 }
 
@@ -138,8 +144,8 @@ pub fn click(_: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> 
     point(ctx, &args["x"], &args["y"])?;
     let b = button(&args["button"]);
     for _ in 0..args["count"].as_u64().unwrap_or(1).clamp(1, 3) {
-        ctx.platform.mouse_button(&ctx.session, b, true);
-        ctx.platform.mouse_button(&ctx.session, b, false);
+        ctx.platform().mouse_button(&ctx.session, b, true);
+        ctx.platform().mouse_button(&ctx.session, b, false);
     }
     done("clicked")
 }
@@ -154,14 +160,14 @@ pub fn drag(_: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> {
     let (from, to) = (place(ctx, &args["x"], &args["y"])?, place(ctx, &args["to_x"], &args["to_y"])?);
     point(ctx, &args["x"], &args["y"])?;
     let b = button(&args["button"]);
-    ctx.platform.mouse_button(&ctx.session, b, true);
+    ctx.platform().mouse_button(&ctx.session, b, true);
     // A few steps on the way: some applications start a drag only once the pointer moves.
     for i in 1..=8 {
         let t = i as f64 / 8.0;
-        ctx.platform.mouse_move(&ctx.session, from.1 + (to.1 - from.1) * t, from.2 + (to.2 - from.2) * t, 0);
+        ctx.platform().mouse_move(&ctx.session, from.1 + (to.1 - from.1) * t, from.2 + (to.2 - from.2) * t, 0);
         std::thread::sleep(Duration::from_millis(15));
     }
-    ctx.platform.mouse_button(&ctx.session, b, false);
+    ctx.platform().mouse_button(&ctx.session, b, false);
     done("dragged")
 }
 
@@ -169,7 +175,7 @@ pub fn scroll(_: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError>
     point(ctx, &args["x"], &args["y"])?;
     // The computer's input takes a browser's wheel deltas: about 100 a notch.
     let (down, right) = (args["down"].as_i64().unwrap_or(0), args["right"].as_i64().unwrap_or(0));
-    ctx.platform.wheel(&ctx.session, (right * 100) as f64, (down * 100) as f64);
+    ctx.platform().wheel(&ctx.session, (right * 100) as f64, (down * 100) as f64);
     done("scrolled")
 }
 
@@ -226,7 +232,7 @@ fn presses(keys: &str) -> Result<Vec<(String, bool)>, String> {
 fn carried_out(ctx: &Ctx) {
     let id = format!("{}-{}", ctx.session, wire::crypto::hex(&wire::crypto::random::<6>()));
     let answer = ctx.replies.expect(&id);
-    ctx.platform.input_done(&ctx.session, id);
+    ctx.platform().input_done(&ctx.session, id);
     let _ = answer.recv_timeout(Duration::from_secs(5));
 }
 
@@ -234,7 +240,7 @@ pub fn key(_: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> {
     let keys = args["keys"].as_str().unwrap_or_default();
     let presses = presses(keys).map_err(|e| ToolError::new("invalid_args", e, "Use names such as ctrl+c, Enter or F5."))?;
     for (code, down) in presses {
-        ctx.platform.key(&ctx.session, code, down);
+        ctx.platform().key(&ctx.session, code, down);
     }
     carried_out(ctx);
     done("pressed")
@@ -242,7 +248,7 @@ pub fn key(_: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> {
 
 pub fn type_text(_: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> {
     let text = args["text"].as_str().unwrap_or_default();
-    ctx.platform.text(&ctx.session, text.to_string());
+    ctx.platform().text(&ctx.session, text.to_string());
     carried_out(ctx);
     done("typed")
 }

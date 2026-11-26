@@ -31,6 +31,7 @@ use wire::signal::Signal as Wire;
 use wire::types::{AnswerAuth, IceCandidate, Reason};
 
 pub mod ai;
+#[cfg(desktop_host)]
 pub mod desk;
 
 pub enum SessionEvent {

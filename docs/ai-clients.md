@@ -32,7 +32,8 @@ Mac.
   programs in the background at startup. The administrator can also supply them as described in
   [Self-hosting, step 5](self-hosting.md#5-ai-client-programs-automatic-for-releases).
 - The computers to be controlled run a current version of Deskway Host. A computer with an older
-  version shows "This computer's Deskway is too old for AI control".
+  version shows "This computer's Deskway is too old for AI control". A Linux host without a
+  desktop offers `computer_info` and `audit_read`.
 
 ## Connect an AI client
 
@@ -125,4 +126,4 @@ of them it supports.
 | Login is refused right away | Copy the prompt again in **Add an AI client**: new sign-ins are accepted only for 10 minutes after copying |
 | The SHA-256 doesn't match | Don't run the file. Download it again from the server; if it still differs, tell the server's administrator |
 | `computers` lists a computer but calls are refused | Turn on **Allow AI control** for it on **My devices**, and check the person at the computer didn't stop AI control |
-| A tool is reported as unsupported | Update Deskway Host on that computer |
+| A tool is reported as unsupported | That computer does not offer the tool. Call `computers` to see which tools it lacks. |
