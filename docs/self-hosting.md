@@ -55,6 +55,12 @@ sudo ufw allow 3478
 sudo ufw allow 49160:49359/udp
 ```
 
+After signing in as admin, open **Relays** and choose **Check**. For the main relay and each
+online node, the check reports whether each listener is reachable and which port to open if it
+isn't. If at least one listener answers, the check also reports whether this browser passed
+traffic through the relay. If traffic did not pass, open the relay's UDP listener port and UDP
+relay port range. A network that blocks UDP for this browser gives the same result.
+
 `getent -s dns ahostsv4 desk.example.net.` should show the server's public IPv4 address.
 
 ## Install by hand

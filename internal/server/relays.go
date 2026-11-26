@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"deskway/internal/proto"
 )
 
 const (
@@ -216,6 +218,30 @@ func (s *Server) handleRelays(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, list)
 }
 
+type relayCheck struct {
+	Name string          `json:"name,omitempty"`
+	ICE  proto.ICEServer `json:"ice"`
+}
+
+func (s *Server) handleRelayCheck(w http.ResponseWriter, r *http.Request) {
+	nodes, _ := s.onlineRelays()
+	list := make([]relayCheck, 0, len(nodes)+1)
+	account := userOf(r)
+	add := func(name string, cfg TURNConfig) {
+		if ice := appendTURN(nil, cfg, account); len(ice) > 0 {
+			list = append(list, relayCheck{Name: name, ICE: ice[0]})
+		}
+	}
+	if s.turn.PublicIP != "" {
+		add("", s.turn)
+	}
+	for _, node := range nodes {
+		add(node.Name, node.turnConfig())
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, list)
+}
+
 func (s *Server) handleRelayRename(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name string `json:"name"`
@@ -282,5 +308,9 @@ func nearestRelay(main TURNConfig, online []RelayRecord, rtts map[string]int) TU
 	if chosen == nil {
 		return main
 	}
-	return TURNConfig{PublicIP: chosen.PublicIP, Port: chosen.Port, Secret: chosen.Secret}
+	return chosen.turnConfig()
+}
+
+func (r RelayRecord) turnConfig() TURNConfig {
+	return TURNConfig{PublicIP: r.PublicIP, Port: r.Port, Secret: r.Secret}
 }

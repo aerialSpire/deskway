@@ -6,9 +6,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/pion/turn/v5"
 )
 
 func relayFixture(t *testing.T) (*fixture, *atomic.Int64) {
@@ -126,11 +129,68 @@ func TestOnlyTheAdminManagesRelays(t *testing.T) {
 	f := newFixture(t)
 	member := f.signedIn("friend")
 	for _, c := range []struct{ method, path string }{
-		{"GET", "/api/relays"}, {"POST", "/api/relays/token"},
+		{"GET", "/api/relays"}, {"GET", "/api/relays/check"}, {"POST", "/api/relays/token"},
 		{"PATCH", "/api/relays/relay1"}, {"DELETE", "/api/relays/relay1"},
 	} {
 		want(t, "member "+c.method+" "+c.path, f.status(member, c.method, c.path, nil), http.StatusForbidden)
 		want(t, "signed out "+c.method+" "+c.path, f.status(f.browser(), c.method, c.path, nil), http.StatusUnauthorized)
+	}
+}
+
+func TestRelayCheck(t *testing.T) {
+	f, now := relayFixture(t)
+	f.s.turn.PublicIP, f.s.turn.Port = "203.0.113.10", 3478
+	f.s.turn.Secret, f.s.turn.TLSAddr = f.s.store.TURNSecret, "desk.example:443"
+	admin := f.signedIn("me")
+	online := func() relayJoined {
+		t.Helper()
+		node := joinRelay(f, relayToken(f, admin))
+		ts := now.Load()
+		report := relayReport{ID: node.ID, TS: ts, MAC: relayReportMAC(node.Secret, node.ID, ts)}
+		want(t, "report", f.status(f.srv.Client(), "POST", "/api/relays/report", report), http.StatusNoContent)
+		return node
+	}
+	online() // This node's report will have expired by the time of the check.
+	now.Add(int64(relayOnlineTTL / time.Second))
+	first, second := online(), online()
+	want(t, "rename", f.status(admin, "PATCH", "/api/relays/"+first.ID, map[string]string{"name": "Sydney"}), http.StatusNoContent)
+
+	var list []relayCheck
+	res := f.do(admin, "GET", "/api/relays/check", nil)
+	if res.Header.Get("Cache-Control") != "no-store" {
+		t.Fatal("the check response can be cached")
+	}
+	f.decode(res, &list)
+	if len(list) != 3 {
+		t.Fatalf("listed %d relays, want the main relay and two online nodes", len(list))
+	}
+	nodeURLs := []string{"stun:192.0.2.1:3478", "turn:192.0.2.1:3478?transport=udp", "turn:192.0.2.1:3478?transport=tcp"}
+	for i, tc := range []struct {
+		name, secret string
+		urls         []string
+	}{
+		{"", f.s.turn.Secret, []string{"stun:203.0.113.10:3478", "turn:203.0.113.10:3478?transport=udp", "turn:203.0.113.10:3478?transport=tcp", "turns:desk.example:443?transport=tcp"}},
+		{"Sydney", first.Secret, nodeURLs},
+		{second.PublicIP, second.Secret, nodeURLs},
+	} {
+		item := list[i]
+		if item.Name != tc.name || !slices.Equal(item.ICE.URLs, tc.urls) {
+			t.Errorf("entry %d: got name %q and URLs %v", i, item.Name, item.ICE.URLs)
+		}
+		auth := turn.LongTermTURNRESTAuthHandler(tc.secret, nil)
+		user, key, ok := auth(&turn.RequestAttributes{Username: item.ICE.Username, Realm: "deskway"})
+		if !ok || user != f.id("me") || !bytes.Equal(key, turn.GenerateAuthKey(item.ICE.Username, "deskway", item.ICE.Credential)) {
+			t.Errorf("entry %d: credentials do not authenticate the admin with this relay's secret", i)
+		}
+	}
+}
+
+func TestRelayCheckWithoutConfiguredRelays(t *testing.T) {
+	f := newFixture(t)
+	var list []relayCheck
+	f.decode(f.do(f.signedIn("me"), "GET", "/api/relays/check", nil), &list)
+	if list == nil || len(list) != 0 {
+		t.Fatal("expected an empty list of relays")
 	}
 }
 
