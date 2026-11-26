@@ -199,7 +199,7 @@ proxy.rs           one per user: the signaling socket, the account's computers, 
                    machine is (peer::here), one link per computer in use
 link.rs            one connection to one computer: offer signed with the device key, the
                    computer's signed answer checked against its pinned key, MCP in frames
-os.rs              starting the proxy on its own
+os.rs              per-platform state directory and file operations, starting the proxy on its own
 update.rs          keeping the program itself up to date from the server
 copy.rs            copy_to and copy_from, done on this side
 ```
@@ -255,9 +255,8 @@ DeskwayNet (Windows) / the app (macOS) / deskway-host (Linux)
 - An approved client signs in again with its key (`deskway-ai-login-v1`, with a time within 5
   minutes of the server's, and each signature accepted once). The proxy does this on its own
   when the server answers 401.
-- The device key is a P-256 key stored for the current user: with DPAPI on Windows and in the
-  login keychain on macOS (`cli/src/keys`). Other programs of the same user could read it
-  (security.md, R2).
+- The device key is a P-256 key stored for the current user (`cli/src/keys`). See
+  [Device keys](security.md#ai-client-keys) for how each platform keeps it.
 - An AI client appears on **My devices** with an AI tag.
 
 ### The AI switch
@@ -384,8 +383,7 @@ back by `audit_read` and by the account's browsers.
 
 The server distributes `deskway` for each system from the `-clients` folder (by default
 `clients`, next to the state file), under the fixed names listed in
-`internal/server/clientprograms.go` (`deskway-windows-x64.exe`, `deskway-windows-arm64.exe`,
-`deskway-macos-arm64`, `deskway-macos-x64`). The release workflow stamps the server with the
+`internal/server/clientprograms.go`. The release workflow stamps the server with the
 GitHub release tag and hashes of its final client assets. One server-owned goroutine fetches
 missing release programs at startup, verifies them and installs them atomically in the
 `.release` cache inside `-clients`, using one path per filename. The fetcher treats a cached
@@ -398,9 +396,10 @@ then for a cached program with the expected SHA-256.
 `?details=1` to also see why programs are missing.
 `GET /download/{file}` serves them to anyone, because a client downloads the program before it
 signs in. `scripts/build-ai-clients.*` builds them. `deskway mcp` compares its own file
-with the server's at start-up and every hour, and replaces itself when they differ (it
-downloads the new file, checks its SHA-256 and renames the old file aside); processes that are
-already running are not affected. `deskway update` does the same immediately.
+with the server's at start-up and every hour. If they differ, it downloads the new file,
+checks its SHA-256 and puts it in place for the next launch. On Linux a single rename replaces
+the file. On Windows and macOS the updater moves the old file aside first. `deskway update`
+does the same immediately.
 
 ## Session lifecycle
 

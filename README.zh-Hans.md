@@ -6,7 +6,7 @@
 
 <p align="center"><a href="README.md">English</a> · <b>简体中文</b> · <a href="README.zh-Hant.md">繁體中文</a></p>
 
-Deskway 是一套自行部署的远程桌面。你可以在手机、平板或另一台电脑的浏览器里打开自己的 Windows 电脑或 Mac，也可以让 Claude Code 等 AI 助手在你授权的电脑上工作。服务端、账号和中继全部运行在你自己掌控的机器上。
+Deskway 是一套自行部署的远程桌面。你可以在手机、平板或另一台电脑的浏览器里打开自己的 Windows 电脑或 Mac，也可以让 Claude Code 等 AI 助手在你授权的电脑（包括 Linux 服务器）上工作。服务端、账号和中继全部运行在你自己掌控的机器上。
 
 <p align="center"><img src="docs/images/interface-zh-hans-desktop.png" width="760" alt="Deskway 网页端的电脑列表，其中一台正由 AI 控制"></p>
 
@@ -46,9 +46,11 @@ Deskway 原生支持模型上下文协议（MCP）。在 AI 客户端里添加 `
 
 ## Deskway 适合你吗？
 
-如果你想随时随地访问自己的 Windows 或 Mac 电脑，想让 AI 助手在受控的前提下操作真实的桌面，并且能自己维护一台有域名的 Linux 服务器，Deskway 很适合你。
+如果你想随时随地访问自己的 Windows 或 Mac 桌面，或让 AI 助手在受控的前提下使用 Windows、macOS 或 Linux 电脑，并且能自己维护一台有域名的小型 Linux 服务器，Deskway 很适合你。
 
-如果你要控制的是 Linux 或 Android 设备，需要临时远程协助别人的电脑，或者完全不想维护服务器，Deskway 就不是合适的选择。
+在 Linux 上，AI 助手可以运行命令、处理文件和打开隧道。Deskway 不支持查看或控制 Linux 桌面。
+
+如果你需要查看或控制 Linux 桌面或 Android 设备，需要临时远程协助别人的电脑，或者完全不想维护服务器，Deskway 就不是合适的选择。
 
 ## 与其他工具对比
 
@@ -57,7 +59,7 @@ Deskway 原生支持模型上下文协议（MCP）。在 AI 客户端里添加 `
 | AI 通过 MCP 远控 | 原生支持 | 有社区项目；官方内置支持仍在 PR 审核中，尚未合并 | 不支持 |
 | 信令与中继 | 自己的服务器 | 默认使用官方公共服务器，也可自建 | 使用 Google 的服务 |
 | 网页端 | 由自己的服务器提供 | Server Pro 付费方案 | 由 Google 提供 |
-| 被控端 | Windows、macOS | Windows、macOS、Linux、Android | Windows、macOS、Linux |
+| 被控端 | Windows、macOS、Linux（AI 工作空间） | Windows、macOS、Linux、Android | Windows、macOS、Linux |
 
 以上截至 2026 年 11 月。[完整对比](docs/comparison.md)（英文）还涵盖账号、AI 权限控制和操作记录，每一项都附有出处。
 
@@ -66,8 +68,8 @@ Deskway 原生支持模型上下文协议（MCP）。在 AI 客户端里添加 `
 ## 快速开始
 
 1. 在一台有域名和公网 IP 的 Linux 机器上部署服务端，步骤见[自托管部署](docs/self-hosting.md)。
-2. 在每台需要远程控制的电脑上安装 Deskway Host，安装包在 [Releases 页面](https://github.com/aerialSpire/deskway/releases)下载。安装说明见 [Windows](docs/install-host-windows.md) 和 [macOS](docs/install-host-macos.md)。
-3. 用浏览器打开服务端地址，登录后选择一台电脑。
+2. 在每台需要远程控制的电脑上安装 Deskway Host，安装包在 [Releases 页面](https://github.com/aerialSpire/deskway/releases)下载。安装说明见 [Windows](docs/install-host-windows.md)、[macOS](docs/install-host-macos.md) 和 [Linux](docs/install-host-linux.md)。
+3. 用浏览器打开服务端地址，登录后在 **My devices**（我的设备）中批准这台电脑。
 4. 如需让 AI 客户端使用你的电脑，见 [AI 客户端](docs/ai-clients.md)。
 
 详细文档目前只有英文版。界面支持英文、简体中文和繁体中文，随设备语言切换。文档中的界面名称以英文界面为准，例如 **Members**（成员管理）、**My devices**（我的设备）、**Add an AI client**（添加 AI 客户端）。
@@ -78,12 +80,12 @@ Deskway 原生支持模型上下文协议（MCP）。在 AI 客户端里添加 `
 |---|---|
 | `cmd/deskway-server`、`internal/` | Go 服务端：账号、设备批准、WebSocket 信令和 TURN 中继，同时提供网页客户端 |
 | `web/static` | 网页客户端（原生 JavaScript），编译时嵌入服务端 |
-| `host/` | Deskway Host（Rust），支持 Windows 和 macOS |
+| `host/` | Deskway Host（Rust），支持 Windows、macOS 和 Linux |
 | `cli/` | `deskway`，通过 MCP 接入 AI 客户端的命令行程序（Rust） |
 | `crates/` | 主机端和 `deskway` 共用的 Rust 库：通信数据类型和 WebRTC 连接 |
 | `proto/` | 协议定义、工具列表和测试向量，各端的测试均以此为准 |
 | `tests/` | 浏览器端的单元测试、契约测试和端到端测试 |
-| `deploy/systemd` | 服务端的 systemd 单元模板 |
+| `deploy/systemd` | 服务端和 Linux 主机端的 systemd 单元模板 |
 | `scripts/` | macOS 应用和 AI 客户端程序的编译脚本，以及本机试用脚本 |
 
 ## 从源码编译
@@ -95,6 +97,9 @@ Deskway 原生支持模型上下文协议（MCP）。在 AI 客户端里添加 `
 go build -o bin/deskway-server ./cmd/deskway-server
 
 # 主机端和 deskway 命令行（在 Windows 或 macOS 上）
+cargo build --locked --release -p deskway-host -p deskway
+
+# Linux 主机端和 AI 客户端程序（需安装系统的 OpenSSL 开发库）
 cargo build --locked --release -p deskway-host -p deskway
 
 # macOS 应用和 DMG（在 Apple 芯片的 Mac 上）
@@ -120,8 +125,10 @@ node --test tests/unit/*.test.mjs tests/contract/*.test.mjs
 | `deskway-server-linux-amd64.tar.gz`、`deskway-server-linux-arm64.tar.gz` | Linux 版服务端（x86-64 和 ARM64），附许可证和 systemd 单元模板 |
 | `DeskwayHost-Setup-windows-x64.exe` | Windows（x64）版 Deskway Host 安装程序 |
 | `DeskwayHost-macos-universal.dmg` | macOS 版 Deskway Host（Apple 芯片和 Intel 通用） |
+| `deskway-host-linux-amd64.tar.gz`、`deskway-host-linux-arm64.tar.gz` | Linux 版 Deskway Host（x86-64 和 ARM64），附许可证和 systemd 单元模板 |
 | `deskway-windows-x64.exe` | Windows 版 AI 客户端程序 |
 | `deskway-macos-arm64`、`deskway-macos-x64` | macOS 版 AI 客户端程序 |
+| `deskway-linux-x64`、`deskway-linux-arm64` | Linux 版 AI 客户端程序 |
 | `SHA256SUMS` | 以上文件的 SHA-256 校验值 |
 
 服务端同时以容器镜像 `ghcr.io/aerialspire/deskway-server` 发布，支持 `linux/amd64` 和 `linux/arm64`，标签为版本号（例如 `0.1.0`）；正式版（非预发布版）同时标记为 `latest`。
@@ -130,7 +137,7 @@ AI 客户端程序的文件名与服务端要求的文件名完全一致，自�
 
 ## 文档（英文）
 
-- [概览](docs/overview.md) · [自托管部署](docs/self-hosting.md) · [Windows 主机端安装](docs/install-host-windows.md) · [macOS 主机端安装](docs/install-host-macos.md) · [AI 客户端](docs/ai-clients.md) · [账号](docs/accounts.md)
+- [概览](docs/overview.md) · [自托管部署](docs/self-hosting.md) · [Windows 主机端安装](docs/install-host-windows.md) · [macOS 主机端安装](docs/install-host-macos.md) · [Linux 主机端安装](docs/install-host-linux.md) · [AI 客户端](docs/ai-clients.md) · [账号](docs/accounts.md)
 - 开发者参考：[架构](docs/architecture.md) · [协议](docs/protocol.md) · [安全](docs/security.md) · [会话生命周期](docs/session-lifecycle.md) · [界面设计](docs/design.md) · [翻译](docs/i18n.md)
 
 ## 参与贡献与安全

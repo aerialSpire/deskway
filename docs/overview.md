@@ -12,7 +12,7 @@ run commands, work with files and open tunnels on Linux computers.
 | Server (`deskway-server`) | A Linux server you run | Accounts, device approval, signaling, the TURN relay and the web client, in one Go binary |
 | Web client | Any modern browser | Where you sign in, manage devices and control computers. Can be installed as an app (PWA) |
 | Deskway Host | Windows, macOS and Linux computers | Desktop access on Windows and macOS. AI workspace on all three |
-| `deskway` | The machine running an AI client | Connects MCP clients such as Claude Code to your computers. Windows and macOS |
+| `deskway` | The machine running an AI client | Connects MCP clients such as Claude Code to your computers. Windows, macOS and Linux |
 
 Video and input go directly between the browser and the computer over WebRTC when the network
 allows. Otherwise they go through the server's TURN relay, which only forwards encrypted traffic.
@@ -84,7 +84,7 @@ The full model is in [Security](security.md).
 | Server | Linux with systemd (x86-64 or ARM64); builds anywhere Go 1.26+ runs |
 | Web client | Current Chrome, Edge and Safari, on desktop and mobile. Other browsers with WebRTC and H.264 may work; the automated tests use Chrome |
 | Deskway Host | Windows 10 and 11 (x64), macOS 15 or later (Apple silicon and Intel), Debian 12 or Ubuntu 22.04 and later (x86-64 and ARM64, AI workspace) |
-| `deskway` (AI clients) | Windows (x64, ARM64); macOS (Apple silicon, Intel) |
+| `deskway` (AI clients) | Windows (x64, ARM64); macOS (Apple silicon, Intel); Linux (x86-64, ARM64) |
 
 ## Where to go next
 

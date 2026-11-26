@@ -2,9 +2,8 @@
 //! signed in to (`account.json`, with its two cookies), the computers' host keys as first seen
 //! (`hostkeys.json`), where the local proxy listens (`proxy.json`), and the device key (`keys`).
 //!
-//! The folder is `%LOCALAPPDATA%\Deskway\cli` on Windows and
-//! `~/Library/Application Support/Deskway/cli` on a Mac; `DESKWAY_CLI_HOME` puts it elsewhere
-//! (tests, or two accounts side by side). On a Mac the folder is made 0700.
+//! The platform chooses the default folder. `DESKWAY_CLI_HOME` puts it elsewhere
+//! (tests, or two accounts side by side). On Unix the folder is made 0700.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,36 +15,17 @@ use serde::{Deserialize, Serialize};
 pub fn dir() -> Result<PathBuf> {
     let d = match std::env::var_os("DESKWAY_CLI_HOME") {
         Some(d) => PathBuf::from(d),
-        None => base()?.join("Deskway").join("cli"),
+        None => crate::os::default_state_dir()?,
     };
-    std::fs::create_dir_all(&d).with_context(|| format!("create {}", d.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).with_context(|| format!("make {} private", d.display()))?;
-    }
+    crate::os::create_private_dir(&d)?;
     Ok(d)
 }
 
-#[cfg(windows)]
-fn base() -> Result<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).context("LOCALAPPDATA is not set")
-}
-
-#[cfg(target_os = "macos")]
-fn base() -> Result<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support")).context("HOME is not set")
-}
-
-/// Writes `bytes` so only this user reads them (the folder already is; a Mac file is 0600 too).
+/// Writes `bytes` so only this user reads them (Unix files are 0600).
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    }
+    crate::os::set_unix_mode(&tmp, 0o600)?;
     std::fs::rename(&tmp, path).with_context(|| format!("write {}", path.display()))
 }
 

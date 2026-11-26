@@ -141,11 +141,16 @@ function stepComputers() {
 function manual() {
   if (!page.files || !page.files.length) return null;
   const path = `<${t('aiclient.path')}>`;
+  const executable = page.files.some((f) => f.os !== 'windows') ? [
+    h('p', { class: 'hint' }, t('aiclient.mExecutable')),
+    copyableCode(`chmod +x "${path}"`),
+  ] : [];
   return h('details', { class: 'ai-manual', open: page.manual, ontoggle: (e) => { page.manual = e.target.open; } },
     h('summary', {}, t('aiclient.manual')),
     h('div', { class: 'ai-manual-body' },
       h('h3', {}, t('aiclient.mDownload')),
       ...page.files.map((f) => copyableCode(`${label(f)}\n${url(f)}\nSHA-256 ${f.sha256}`)),
+      ...executable,
       h('h3', {}, t('aiclient.mLogin')),
       copyableCode(`${path} login --server ${location.origin} --user ${state.me.user} --name "Claude Code"`),
       h('h3', {}, t('aiclient.mClaude')),

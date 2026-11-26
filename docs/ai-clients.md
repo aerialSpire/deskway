@@ -28,8 +28,9 @@ uses `$SHELL -l`. The default shell is `/bin/sh` when `SHELL` is unset.
 
 ## Requirements
 
-- The AI's machine runs Windows (x64 or ARM64) or macOS (Apple silicon or Intel). `deskway` does
-  not run on Linux.
+- The AI's machine runs Windows (x64 or ARM64), macOS (Apple silicon or Intel), or Linux
+  (x64 or ARM64). On Linux, release binaries require glibc 2.35 or later, OpenSSL 3.0, and CA
+  certificates. Debian 12 and Ubuntu 22.04 or later provide these. Run `deskway` as your own user.
 - The server can provide the `deskway` program for the AI's machine. Released servers fetch the
   programs in the background at startup. The administrator can also supply them as described in
   [Self-hosting, step 5](self-hosting.md#5-ai-client-programs-automatic-for-releases).
@@ -54,11 +55,12 @@ window. It lists the download for each system and the commands described below.
 ## Manual setup
 
 Download the file for your system from the server (the **Add an AI client** window lists the
-links) and save it in your user folder. On macOS, make it executable with `chmod +x deskway`.
-Then sign in:
+links) and verify its SHA-256. Save it in your user folder as `deskway` (`deskway.exe` on
+Windows). On macOS and Linux, make it executable with `chmod +x /full/path/to/deskway`.
+Copy the setup prompt to open the 10-minute sign-in window, then sign in using the full path:
 
 ```sh
-deskway login --server https://desk.example.net --user me --name "Claude Code"
+/full/path/to/deskway login --server https://desk.example.net --user me --name "Claude Code"
 ```
 
 Approve the request in the browser if the digits match. Then register the program with your AI
@@ -93,7 +95,10 @@ Several AI client windows on one machine share one connection through a local pr
 `deskway mcp` starts and stops by itself.
 
 `deskway` keeps its sign-in in `%LOCALAPPDATA%\Deskway\cli` on Windows and
-`~/Library/Application Support/Deskway/cli` on macOS. Set `DESKWAY_CLI_HOME` to use another folder.
+`~/Library/Application Support/Deskway/cli` on macOS. On Linux it uses
+`$XDG_STATE_HOME/deskway/cli` when `XDG_STATE_HOME` is absolute, or `~/.local/state/deskway/cli`
+otherwise. Set `DESKWAY_CLI_HOME` to use another folder. On Linux the state folder has mode
+`0700` and `device.json` holds the unsealed device key with mode `0600`.
 
 ## Updates
 

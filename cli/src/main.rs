@@ -66,9 +66,6 @@ fn call(args: &[String]) -> Result<()> {
     through_mcp(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": args[2], "arguments": arguments } }))
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
-compile_error!("deskway is made for Windows and macOS only");
-
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {

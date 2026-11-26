@@ -23,6 +23,8 @@ var clientFiles = [...]struct{ OS, Arch, File string }{
 	{"windows", "arm64", "deskway-windows-arm64.exe"},
 	{"macos", "arm64", "deskway-macos-arm64"},
 	{"macos", "x64", "deskway-macos-x64"},
+	{"linux", "x64", "deskway-linux-x64"},
+	{"linux", "arm64", "deskway-linux-arm64"},
 }
 
 // ClientFile is one program the server has, as GET /api/ai/clients lists it.

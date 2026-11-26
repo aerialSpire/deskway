@@ -158,6 +158,13 @@ credentials can work until they expire, and stopping the node closes active allo
   rename for each device. Names are displayed, never trusted: a new device is identified by its
   approval code.
 
+### AI client keys
+
+`deskway` protects its P-256 device key with DPAPI on Windows and stores it in the login
+keychain on macOS. On Linux, it stores the unsealed key in `device.json` (mode `0600`)
+inside its state directory (mode `0700`). Linux protects the key through file permissions
+alone. Anything running as that user, and root, can use it (R2).
+
 ### First use: adopting the account's devices
 
 A computer that has never trusted any device accepts the account's device list as the server
