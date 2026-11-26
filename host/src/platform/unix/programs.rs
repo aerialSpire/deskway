@@ -151,12 +151,7 @@ impl BrowserPty {
     }
 
     fn exited(&self) -> io::Result<bool> {
-        // Leave the leader waitable so the kernel cannot reuse its ID before the jobs are gone.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        if unsafe { libc::waitid(libc::P_PID, self.terminal.pid() as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(unsafe { info.si_pid() } != 0)
+        exited(self.terminal.pid() as libc::pid_t)
     }
 
     fn finish(&mut self) -> io::Result<()> {
@@ -264,7 +259,8 @@ impl Drop for BrowserPty {
 /// tool call while its ID is in use here.
 fn kill_session(id: libc::pid_t) -> io::Result<()> {
     // End the shell and its own group first so it cannot start more work during the scan.
-    let mut error = signal(-id).err();
+    // macOS refuses to signal a group whose only member has already exited.
+    let mut error = signal(-id).err().filter(|e| e.raw_os_error() != Some(libc::EPERM) || !exited(id).unwrap_or(false));
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let jobs = crate::platform::session_members(id)?;
@@ -286,6 +282,16 @@ fn kill_session(id: libc::pid_t) -> io::Result<()> {
         std::thread::sleep(Duration::from_millis(20));
     }
     error.map_or(Ok(()), Err)
+}
+
+/// Whether this child has exited. It stays waitable so the kernel cannot reuse its ID
+/// before its jobs are gone.
+fn exited(pid: libc::pid_t) -> io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    if unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } != 0)
 }
 
 fn signal(pid: libc::pid_t) -> io::Result<()> {
