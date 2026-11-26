@@ -23,6 +23,8 @@ jobs:
         run: |
           go vet ./...
           go test ./internal/...
+      - name: Test the server installer
+        run: sh tests/shell/install-server.test.sh
 
   web:
     runs-on: ubuntu-24.04

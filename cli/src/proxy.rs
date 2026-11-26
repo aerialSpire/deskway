@@ -292,7 +292,7 @@ fn client(stream: TcpStream, token: String, requests: Sender<PendingRequest>, cl
 fn profile(dir: &Path) -> Result<(Account, Arc<DeviceKey>)> {
     let account = Account::load_from(dir)?;
     if !account.signed_in() {
-        bail!("not signed in: run `deskway login` first");
+        return Err(crate::store::SignInLost("not signed in: run `deskway login` first").into());
     }
     Ok((account, Arc::new(DeviceKey::load_or_create()?)))
 }

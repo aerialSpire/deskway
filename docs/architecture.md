@@ -239,8 +239,9 @@ Setup is described in [ai-clients.md](ai-clients.md).
 
 The design follows these principles:
 
-- An AI client is a controller, just like a browser. It installs `deskway`, holds a device key,
-  and goes through the same end-to-end checks. The server remains untrusted.
+- An AI client is a controller, just like a browser. Its `deskway` profile holds a device key
+  and goes through the same end-to-end checks. With remote MCP enabled, the server runs
+  the profiles for approved remote applications and holds their keys.
 - The computer is the authority on tools: it implements and checks them, and it reports which
   ones it has. `deskway` does only what belongs on the AI client's machine (choosing the
   computer, sharing one connection, `copy_to`/`copy_from`). The server contains no tool code.
@@ -622,6 +623,10 @@ The source of truth is the viewer's constraints.
   | `browsers.go` | approvals, browser keys, the device log, the device-check policy |
   | `aiclients.go` | AI clients' sign-in without the password and the 10-minute window in which an account accepts new ones |
   | `clientprograms.go` | AI client program lookup, cache and HTTP responses |
+  | `mcp.go`, `mcp_start_linux.go` | opt-in MCP routes, public origin, Linux client preflight and profile lifecycle |
+  | `mcp_authorization.go`, `mcp_clients.go` | OAuth request validation, registration, metadata fetching and browser approval |
+  | `mcp_store.go` | registrations and grants bound to approved device records, resource and token validation |
+  | `mcp_gateways_linux.go` | private gateway processes for approved profiles, idle and shutdown handling, bounded HTTP forwarding |
   | `release.go` | release stamp, checksum parsing and verified downloads shared by AI client distribution and server upgrades |
   | `selfupgrade.go` | atomic replacement of the server executable from a verified release archive |
   | `computers.go` | enroll, leave, rename, remove, the device list and who holds each computer as each browser sees it; at most `maxComputersPerUser` per account |
@@ -636,6 +641,22 @@ The source of truth is the viewer's constraints.
 
   The HTTP and devlog shapes of browser keys and their log (`BrowserKey`, `LogEntry`, `Proof`)
   live in `internal/proto`, together with the signaling types.
+- With `-remote-mcp`, the server publishes `/mcp` and OAuth discovery, registration,
+  authorization and token endpoints. Valid authorization requests open the approval page at
+  the web client's root. The Linux CLI owns its profile under `mcp` beside the state file.
+  The store stages the browser's existing signed AI endorsement in memory so the CLI can sign in.
+  The first successful code exchange saves the device, signed log entry and grant together.
+  Abandoned requests expire after ten minutes and unused codes expire after two. Startup
+  removes orphan profile directories and retires grants whose directories are gone.
+- The Linux supervisor starts a gateway on demand for each grant. A gateway owns its proxy
+  and listens on a private Unix socket. Its idle limit is five minutes. The pool holds up to
+  16 processes and answers requests needing another with HTTP 503 and `Retry-After`. The
+  server caps request bodies at 2 MiB, forwards MCP headers and the body, and allows up to
+  240 seconds for a call. The child holds the profile directory lock until exit and stops when
+  the server closes its stdin. The supervisor clears stale sockets before restarting a gateway.
+  A gateway has five seconds to bind before the supervisor stops and reaps it, logs up to 4 KiB
+  of its stderr tail and waits five seconds before allowing the same profile to start again.
+  A gateway that reports loss of its sign-in retires the grant.
 - The state file belongs to a single process. The store holds an OS lock on `state.json.lock`
   while it is open and rewrites the whole file from memory. `deskway-server admin NAME`, which
   creates the server's first account (docs/accounts.md), also opens the store, so it refuses to

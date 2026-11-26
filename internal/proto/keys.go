@@ -69,6 +69,11 @@ func AILogin(name string, ts int64) string {
 	return fmt.Sprintf("deskway-ai-login-v1\n%s\n%d", name, ts)
 }
 
+// AIEndorsement is the signed device-log challenge for adding an AI key.
+func (k BrowserKey) AIEndorsement(ts int64) string {
+	return fmt.Sprintf("deskway-endorse-v2\n%s\n%d\n%s\n%s\n%s\n%d", k.Cred, k.Alg, k.Key, k.Name, RoleAI, ts)
+}
+
 // Verify checks sig on message as browsers and deskway sign: ECDSA P-256 with SHA-256 over the
 // SHA-256 of the message, r||s, base64url.
 func (k BrowserKey) Verify(message, sig string) bool {

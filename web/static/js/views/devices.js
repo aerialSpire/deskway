@@ -16,6 +16,7 @@ import { dropdown } from './menu.js';
 import { PICTURES, picture, setPicture } from '../picture.js';
 import { accountMenu } from './account.js';
 import { computerMenu } from './computer.js';
+import { aiDeviceTag } from '../mcp-approval.js';
 
 const controllerIcon = (name) => svg(/iPhone|iPad|Android/.test(name || '') ? ICONS.phone : ICONS.laptop);
 
@@ -64,7 +65,7 @@ export async function renderDevices() {
 
   const controllers = rows.map((r) => {
     const name = (r.device && r.device.name) || r.label;
-    const ai = r.device && r.device.role === 'ai';
+    const ai = aiDeviceTag(r);
     const label = r.current ? t('devices.signOut') : t('common.remove');
     const menu = dropdown(`browser:${r.id}`, h('button', { class: 'btn icon more', 'aria-label': t('computer.menu', { name }) }, svg(ICONS.more)),
       (item) => [
@@ -76,7 +77,7 @@ export async function renderDevices() {
         item(label, () => confirmRemove(r, name), { danger: true }),
       ]);
     return row(controllerIcon(name), name,
-      [ai ? [t('devices.tagAI'), 'accent'] : null, r.current ? [t('devices.tagThis'), ''] : null].filter(Boolean),
+      [ai ? [t(ai), 'accent'] : null, r.current ? [t('devices.tagThis'), ''] : null].filter(Boolean),
       r.current ? t('devices.inUse') : t('devices.lastUsed', { when: agoText(r.last_seen) || t('devices.longAgo') }),
       menu.el);
   });

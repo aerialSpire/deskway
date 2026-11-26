@@ -1,18 +1,17 @@
 # AI clients
 
 Deskway lets AI clients that speak the [Model Context Protocol](https://modelcontextprotocol.io)
-(Claude Code, Claude Desktop, Cursor and others) use your computers as tools: look at the
-screen, use the mouse and keyboard, run commands, read and write files, and open and quit apps.
+use your computers as tools. They can look at the screen, use the mouse and keyboard,
+run commands, read and write files, and open and quit apps.
 
-The AI client talks to a small program, `deskway`, that runs on the AI's machine. `deskway` signs
-in to your Deskway server as one of your account's devices and connects to your computers the
-same way a browser does.
+For a local connection, `deskway` runs on the AI client's machine. It signs in to your server
+as one of your account's devices and connects to your computers the same way a browser does.
 
 ## Safeguards
 
-An AI client never uses your password. It signs in with its own device key, and you approve it
-from an approved browser after comparing a six-digit code. The server accepts new AI sign-ins
-only within 10 minutes after you copy the setup prompt.
+A local AI client signs in with its own device key. You approve it from a trusted browser
+after comparing a six-digit code. The server accepts new local AI sign-ins only within 10 minutes
+after you copy the setup prompt. Remote applications use the browser approval described below.
 
 Approval alone does not give access to any computer. AI control is off for every computer until
 you turn on **Allow AI control** for it on the **My devices** page. While an AI client is in
@@ -28,9 +27,10 @@ uses `$SHELL -l`. The default shell is `/bin/sh` when `SHELL` is unset.
 
 ## Requirements
 
-- The AI's machine runs Windows (x64 or ARM64), macOS (Apple silicon or Intel), or Linux
-  (x64 or ARM64). On Linux, release binaries require glibc 2.35 or later, OpenSSL 3.0, and CA
-  certificates. Debian 12 and Ubuntu 22.04 or later provide these. Run `deskway` as your own user.
+- For a local connection, the AI's machine runs Windows (x64 or ARM64), macOS (Apple silicon or
+  Intel), or Linux (x64 or ARM64). On Linux, release binaries require glibc 2.35 or later, OpenSSL
+  3.0, and CA certificates. Debian 12 and Ubuntu 22.04 or later provide these. Run `deskway` as
+  your own user.
 - The server can provide the `deskway` program for the AI's machine. Released servers fetch the
   programs in the background at startup. The administrator can also supply them as described in
   [Self-hosting, step 5](self-hosting.md#5-ai-client-programs-automatic-for-releases).
@@ -52,6 +52,21 @@ uses `$SHELL -l`. The default shell is `/bin/sh` when `SHELL` is unset.
 To set up the client by hand instead, open **Connect by hand, without the prompt** in the same
 window. It lists the download for each system and the commands described below.
 
+## Connect a remote application
+
+1. In Deskway, open **My devices** and choose **Add an AI client**. If your server has remote
+   MCP enabled, it shows an HTTPS address ending in `/mcp`.
+2. Enter that address where the application asks for its MCP server URL, and start the
+   connection. The application sends you to Deskway in your browser to authorize it.
+3. Sign in on a trusted browser and check the application name and the callback host before
+   approving. Use **Cancel** to refuse access. The approved application can use the computers
+   on your account where AI control is allowed.
+
+An application appears in **My devices** as **Remote application**, even if you sign in to it
+on several devices. Open its menu and choose **Remove** to end all its sign-ins. An account
+can connect up to 32 remote applications. For server setup, see
+[Self-hosting](self-hosting.md#remote-mcp).
+
 ## Manual setup
 
 Download the file for your system from the server (the **Add an AI client** window lists the
@@ -60,18 +75,11 @@ Windows). On macOS and Linux, make it executable with `chmod +x /full/path/to/de
 Copy the setup prompt to open the 10-minute sign-in window, then sign in using the full path:
 
 ```sh
-/full/path/to/deskway login --server https://desk.example.net --user me --name "Claude Code"
+/full/path/to/deskway login --server https://desk.example.net --user me --name "Local AI client"
 ```
 
-Approve the request in the browser if the digits match. Then register the program with your AI
-client, using its full path:
-
-```sh
-# Claude Code
-claude mcp add deskway -- /full/path/to/deskway mcp
-```
-
-For other clients, add this to their MCP configuration:
+Approve the request in the browser if the digits match. Then add `deskway mcp` to the
+application's MCP configuration, using its full path:
 
 ```json
 { "command": "/full/path/to/deskway", "args": ["mcp"] }
@@ -144,7 +152,8 @@ The gateway writes one readiness line to stderr when it begins serving HTTP. The
 `Gateway listening at http://IP:PORT/mcp` for TCP, with the actual bound address and port, or
 `Gateway listening at unix:PATH` for a Unix socket. A startup failure exits nonzero with an
 error on stderr. If `deskway logout` clears the profile sign-in or the owned proxy cannot renew
-it, the gateway releases its links and exits nonzero with an error on stderr. After a forced
+it, the gateway releases its links and reports the error on stderr. It exits with status 3
+when the sign-in is gone. After a forced
 exit, an open AI seat clears when the computer detects the lost link.
 
 The gateway serves MCP `2025-06-18` and `2025-11-25` with the initialization handshake and

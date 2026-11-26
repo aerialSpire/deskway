@@ -166,6 +166,7 @@ export function renderAiClient() {
   $app.replaceChildren(h('div', { class: 'page', 'data-page': 'aiclient' },
     topbar(accountMenu()), updateNote(),
     heading(t('aiclient.title'), { back: page.from }),
+    state.me.remote_mcp ? h('p', { class: 'hint ai-lead' }, t('mcp.connect', { url: state.me.remote_mcp })) : null,
     h('p', { class: 'hint ai-lead' }, t('aiclient.lead')),
     h('ol', { class: 'ai-steps' },
       step(t('aiclient.s1'), t('aiclient.s1Sub'), stepPrompt()),

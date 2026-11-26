@@ -15,7 +15,8 @@ The installer looks up the domain's public IPv4 address in DNS for TURN, verifie
 archive, and checks that the installed service is running. Save the initial admin password
 when it appears, then follow [First sign-in](#7-first-sign-in-and-adding-people). Add
 `--version TAG` to select a release by tag. Use the [by-hand route](#install-by-hand) to build
-from source or customize the install.
+from source or customize the install. To let applications connect directly to your server's
+MCP address, see [Remote MCP](#remote-mcp).
 
 The examples use the following values. Replace them with your own:
 
@@ -330,6 +331,70 @@ Set these flags on the `ExecStart` line of the unit.
 | `-stun` | | Comma-separated STUN URLs to hand out when TURN is off |
 | `-clients` | `clients` beside the state file | Folder of AI client programs |
 | `-fetch-clients` | `true` | Fetch missing AI client programs from the server's GitHub release. Use `-fetch-clients=false` to disable outbound fetching |
+| `-remote-mcp` | off | Let approved remote applications connect over HTTPS at `/mcp` |
+| `-mcp-public-url` | inferred from HTTPS configuration where possible | Public HTTPS origin for remote MCP, for example `https://desk.example.net` |
+
+### Remote MCP
+
+Remote MCP is off by default. It requires a Linux x64 or ARM64 server and a public HTTPS
+address. The published server container cannot run the required AI client program because
+it lacks the program's shared libraries. Use a native Linux install.
+
+Install the matching current Deskway AI client from the same release as your server,
+using the [file names and download directory in step 5](#5-ai-client-programs-automatic-for-releases).
+Verify the file against the release's `SHA256SUMS` and install it with mode `755`. The program
+needs glibc 2.35 or later, OpenSSL 3 (`libssl3` on Debian 12 and Ubuntu 22.04), and the system
+CA certificates. Keep this executable current when you upgrade the server.
+
+- **With the installer**, place the executable directly in `/var/lib/deskway/clients` before
+  running the [quick install command](#quick-install) with `--remote-mcp`. For example, on x64,
+  run `sudo install -D -m 755 deskway-linux-x64 /var/lib/deskway/clients/deskway-linux-x64`.
+  Use the same option and domain to enable it on an existing installer-managed server, or
+  use `--no-remote-mcp` to turn it off. Rerunning with neither option and running
+  `deskway-server upgrade` both keep the setting. The installer can toggle only the
+  shipped `ExecStart` command with its original spacing and optional `-remote-mcp` flag.
+  Use the by-hand steps below for a customized command or an `ExecStart` drop-in.
+  The new server executable checks the AI client program before the installer enables MCP.
+  If the service fails to start after a toggle, the installer shows the recent journal,
+  restores the previous service unit, and restarts it.
+- **By hand**, add `-remote-mcp` to the unit's `ExecStart` line, then run
+  `sudo systemctl daemon-reload` and `sudo systemctl restart deskway`. Remove the flag and repeat
+  those two commands to turn it off. To check the AI client program beforehand, run
+  `deskway-server remote-mcp-check -data /var/lib/deskway/state.json` as the service user.
+  Pass the service's `-clients` directory if it sets one. The check uses programs already on
+  disk and can run while the service is active.
+
+If a reverse proxy terminates HTTPS, or the server cannot infer its public origin from its
+domain or certificate, set `-mcp-public-url https://desk.example.net` on the server command.
+Forward `/mcp`, `/.well-known/oauth-*`, `/oauth/` and the usual web client routes, including
+`/api/mcp/approval`, to Deskway. Preserve the `Authorization` and MCP headers and set
+`X-Forwarded-Proto: https`. The server's AI client must be able to reach and verify that public
+HTTPS origin for sign-in and signaling.
+
+The server holds keys for approved remote applications in the `mcp/` folder beside the state
+file. Turning remote MCP off takes its routes offline and keeps the approved applications'
+records and profiles. Remove an application from **My devices** to end all its sign-ins. See
+[Security](security.md#remote-applications-through-the-deskway-server).
+
+Copy the server's MCP address from **Add an AI client** in the web client. From a Deskway
+checkout, run this on the same machine as the browser, using Node.js 20 or later and
+substituting the copied address.
+
+```sh
+node scripts/check-mcp.mjs https://desk.example.net/mcp
+```
+
+Open the authorization URL it prints in a trusted browser and approve **Deskway MCP check**.
+The check reports discovery, authorization, initialization, the tools and the computers
+visible to the application. Add `--refresh` to check rotation and refusal of the old refresh
+token. Reusing the old token invalidates that sign-in. When finished, remove **Deskway MCP check**
+in **My devices**. Give the same HTTPS address to your application as described in
+[AI clients](ai-clients.md#connect-a-remote-application).
+
+The server allows 16 pending authorizations per address and 256 in total, 32 unused client
+registrations per address and 1,024 registrations in total, and 32 grants per account.
+A registration with no live grant expires after 24 hours without use. The MCP endpoint allows
+240 requests per minute per authenticated grant and per address for unauthenticated callers.
 
 ### Your own certificate
 
@@ -351,6 +416,8 @@ Deskway can run behind it, with the following limitations:
 - Deskway sees every request as coming from the proxy. Approval prompts show the proxy's address
   instead of the device's, and the limit on failed password attempts applies to everyone
   together, so repeated wrong passwords from one person can lock others out for a while.
+- MCP limits based on caller addresses use the proxy's socket address because Deskway does
+  not use forwarded client address headers.
 - With the plain HTTP listener behind the proxy, the relay still uses ports 3478 and 49160–49359
   directly. TURN over TLS on the HTTPS port requires Deskway to terminate TLS.
 
@@ -422,8 +489,9 @@ hour. Browsers pick up the new web client and show “A new version of Deskway i
 ## Backup and restore
 
 Everything the server keeps is in `/var/lib/deskway`: `state.json` (accounts, devices, approvals),
-`state.json.super` (super passwords), `certs/` and `clients/`. For a consistent copy, stop the
-service first:
+`state.json.super` (super passwords), `certs/`, `clients/` and, with remote MCP, `mcp/`
+(approved applications' AI profiles and device keys). For a consistent copy, stop the service
+first:
 
 ```sh
 sudo systemctl stop deskway

@@ -90,16 +90,19 @@ type RelayRecord struct {
 // Store holds persistent state in one JSON file, written atomically. The process that opened it
 // holds the file's lock until Close (statelock.go).
 type Store struct {
-	mu   sync.Mutex
-	path string
-	lock *os.File
+	mu         sync.Mutex
+	path       string
+	lock       *os.File
+	mcpPending map[string]*mcpPendingGrant
 
-	CookieKey  string                    `json:"cookie_key"`
-	TURNSecret string                    `json:"turn_secret"`
-	Users      map[string]*User          `json:"users"` // by account id
-	Devices    map[string]*DeviceRecord  `json:"devices"`
-	Browsers   map[string]*BrowserRecord `json:"browsers"`
-	Relays     []RelayRecord             `json:"relays,omitempty"` // in join order
+	CookieKey  string                     `json:"cookie_key"`
+	TURNSecret string                     `json:"turn_secret"`
+	Users      map[string]*User           `json:"users"` // by account id
+	Devices    map[string]*DeviceRecord   `json:"devices"`
+	Browsers   map[string]*BrowserRecord  `json:"browsers"`
+	Relays     []RelayRecord              `json:"relays,omitempty"` // in join order
+	MCPClients map[string]mcpRegistration `json:"mcp_clients,omitempty"`
+	MCPGrants  map[string]*mcpGrant       `json:"mcp_grants,omitempty"`
 }
 
 // OpenStore takes the state file's lock, then loads path or creates it with fresh secrets. It
@@ -350,15 +353,15 @@ func (s *Store) SetPassword(user, password string) error {
 
 // RemoveMember deletes a member account, by its id, with its browsers, computers and super
 // password. It returns the browsers and computers that went, for their connections to end.
-func (s *Store) RemoveMember(member string) (browsers, computers map[string]bool, err error) {
+func (s *Store) RemoveMember(member string) (browsers, computers map[string]bool, profiles []string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if u := s.Users[member]; u == nil || u.Admin {
-		return nil, nil, errNoUser
+		return nil, nil, nil, errNoUser
 	}
 	// The super password goes first: if its file cannot be changed, nothing is removed yet.
 	if err := updateSuper(s.path, func(hashes map[string]string) { delete(hashes, member) }); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	delete(s.Users, member)
 	browsers, computers = map[string]bool{}, map[string]bool{}
@@ -374,7 +377,8 @@ func (s *Store) RemoveMember(member string) (browsers, computers map[string]bool
 			computers[id] = true
 		}
 	}
-	return browsers, computers, s.saveLocked()
+	profiles = s.mcpRemoveLocked(browsers)
+	return browsers, computers, profiles, s.saveLocked()
 }
 
 // initialAlphabet leaves out what reads alike (0 o, 1 l i) and has no capitals, so an initial

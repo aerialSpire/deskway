@@ -75,15 +75,23 @@ func (s *Server) handleAILogin(w http.ResponseWriter, r *http.Request) {
 	}
 	user := s.store.ID(body.User)
 	id := browserFromCookie(r)
+	if owner := s.store.mcpRemoteOwner(id); owner != "" {
+		user = owner // The prepared profile's login name can predate an account rename.
+	}
 	now := time.Now().Unix()
 	key, approved, asked := s.store.AIClient(id, user)
-	if approved {
+	if !approved && body.Renew {
+		key = s.store.mcpPreparedLogin(id)
+	}
+	if approved || body.Renew && key != nil {
 		if !s.attempt(w, r, http.StatusUnauthorized, "bad AI client signature", func() bool { return s.signedNow(id, key, body.User, body.TS, body.Sig, now) }) {
 			return
 		}
-		if _, err := s.store.LoginBrowser(id, user, proto.RoleAI, now); err != nil {
-			storeError(w, err)
-			return
+		if approved {
+			if _, err := s.store.LoginBrowser(id, user, proto.RoleAI, now); err != nil {
+				storeError(w, err)
+				return
+			}
 		}
 		s.issueSession(w, r, id)
 		w.WriteHeader(http.StatusNoContent)

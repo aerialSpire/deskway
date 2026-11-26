@@ -37,6 +37,8 @@ func main() {
 			os.Exit(upgradeCommand(os.Args[2:]))
 		case "upgrade-check":
 			os.Exit(upgradeCheckCommand(os.Args[2:]))
+		case "remote-mcp-check":
+			os.Exit(remoteMCPCheckCommand(os.Args[2:]))
 		case "relay":
 			os.Exit(relayCommand(os.Args[2:]))
 		}
@@ -45,15 +47,16 @@ func main() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Usage: deskway-server [flags]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin NAME [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
+		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server remote-mcp-check [-data FILE] [-clients DIR]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+upgradeUsage)
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+relayUsage)
 		flag.PrintDefaults()
 	}
+	dataPath, clients, fetch := clientOptions(flag.CommandLine)
 	var (
 		listen    = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
-		dataPath  = flag.String("data", "deskway-data/state.json", "state file")
-		clients   = flag.String("clients", "", "folder of the AI client programs to hand out (default: clients beside the state file)")
-		fetch     = flag.Bool("fetch-clients", true, "fetch missing AI client programs from this server's GitHub release")
+		remoteMCP = flag.Bool("remote-mcp", false, "allow applications to connect to this server over MCP with OAuth")
+		mcpOrigin = flag.String("mcp-public-url", "", "public HTTPS origin for remote MCP when the server cannot infer it")
 		domain    = flag.String("domain", "", "domain name; gets a Let's Encrypt certificate automatically (listen on :443)")
 		tlsCert   = flag.String("tls-cert", "", "TLS certificate file")
 		tlsKey    = flag.String("tls-key", "", "TLS key file")
@@ -141,10 +144,26 @@ func main() {
 	}
 
 	s := server.New(store, turnCfg, stunURLs, web.Files())
-	if *clients == "" {
-		*clients = filepath.Join(filepath.Dir(*dataPath), "clients")
+	s.ServeClients(clientDirectory(*dataPath, *clients), *fetch)
+	if *remoteMCP {
+		origin := *mcpOrigin
+		if origin == "" && tlsConfig != nil {
+			host := *domain
+			if host == "" {
+				host, _ = turnTLSHost(tlsConfig.Certificates[0], *turnHost)
+			}
+			_, port, _ := net.SplitHostPort(*listen)
+			if host != "" && port != "" && port != "0" {
+				if port != "443" && port != "https" {
+					host = net.JoinHostPort(host, port)
+				}
+				origin = "https://" + host
+			}
+		}
+		if err := s.EnableRemoteMCP(origin); err != nil {
+			log.Fatal(err)
+		}
 	}
-	s.ServeClients(*clients, *fetch)
 	srv := &http.Server{
 		Addr:              *listen,
 		TLSConfig:         tlsConfig,
@@ -158,6 +177,7 @@ func main() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
+		s.StopMCP()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
@@ -219,6 +239,36 @@ func upgradeCheckCommand(args []string) int {
 	if !ready {
 		return 1
 	}
+	return 0
+}
+
+func clientOptions(flags *flag.FlagSet) (*string, *string, *bool) {
+	dataPath := flags.String("data", "deskway-data/state.json", "state file")
+	clients := flags.String("clients", "", "folder of the AI client programs to hand out (default: clients beside the state file)")
+	fetch := flags.Bool("fetch-clients", true, "fetch missing AI client programs from this server's GitHub release at startup")
+	return dataPath, clients, fetch
+}
+
+func clientDirectory(dataPath, clients string) string {
+	if clients == "" {
+		return filepath.Join(filepath.Dir(dataPath), "clients")
+	}
+	return clients
+}
+
+func remoteMCPCheckCommand(args []string) int {
+	flags := flag.NewFlagSet("remote-mcp-check", flag.ExitOnError)
+	dataPath, clients, _ := clientOptions(flags)
+	flags.Parse(args)
+	if flags.NArg() != 0 {
+		flags.Usage()
+		return 2
+	}
+	if err := server.CheckRemoteMCP(*dataPath, clientDirectory(*dataPath, *clients)); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println("Remote MCP preflight passed.")
 	return 0
 }
 

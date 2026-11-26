@@ -9,7 +9,7 @@ this document at the same time.
 | Attacker | Goal | What stops it |
 |---|---|---|
 | Someone who learns the account password | Control a computer | A new browser must be approved by an approved browser, and every session needs a signature by a device key the computer trusts. An account that turned device checks off has only the password and the approval |
-| The signaling server, or whoever takes it over | Start a session, or sit in the middle of one | Hosts accept only offers signed by a trusted device key, or a resume token they issued over an authenticated connection. Signatures cover the SDP, which holds the DTLS fingerprints. Hosts sign their answers. The server can add no device: every change to the device list is signed by a device the computer already trusts |
+| The signaling server, or whoever takes it over | Start a session, or sit in the middle of one | Hosts accept only offers signed by a trusted device key or a resume token they issued over an authenticated connection. Signatures bind both ends to their DTLS fingerprints. The server needs an existing browser's endorsement to add a trusted device. If remote MCP is enabled, it holds approved remote applications' AI device keys and can act as those devices |
 | The network between any two parties | Read or change traffic | TLS for signaling, and DTLS/SRTP for media and input, with fingerprints bound by the signatures above |
 | A bug in the network code (WebRTC, TURN, JSON) | Run code as SYSTEM | In service mode the network code runs as a low-privilege virtual account. Only a small SYSTEM agent touches the screen and input |
 | A program running as a normal user on the host | Become SYSTEM through Deskway | Admin-only install folder, private data folder, authenticated pipes, a SYSTEM side that reads no user-controlled files, and process mitigations |
@@ -374,6 +374,36 @@ profile's approved device identity. See [Serve MCP over HTTP](ai-clients.md#serv
 A local process that can reach the listener can make the HTTP library allocate memory for an
 unread body even if the gateway rejects the request. The fronting server must cap request
 bodies at 2 MiB before forwarding them.
+
+### Remote applications through the Deskway server
+
+With remote MCP enabled, the server stores a separate AI device key for each approved
+application and can act as that device. Treat the server, its state directory and backups as
+having the same AI access. The browser signs the existing AI device endorsement. The host
+still verifies the device, applies its AI and administrator switches, and records the
+device's actions. Browser and local AI client keys stay on their own devices.
+
+Authorization errors are shown by Deskway. Approve and Cancel on the approval page send the
+browser to the callback host shown there. For a repeat approval, the endorsement must be
+strictly newer than the application's last accepted endorsement and within the five-minute
+clock-skew allowance.
+
+The application receives an OAuth credential for this server's MCP endpoint. It can list the
+computers available to the approved AI client and see the results of its MCP calls, including
+any data a permitted tool returns. The application's grant provides no Deskway account
+password, browser session, or device key.
+
+Access tokens last ten minutes. An issued refresh token rotates on use within its original
+30-day lifetime. Each sign-in has its own family, and reuse invalidates only that family's
+credentials. The grant holds up to eight families. A new approval drops the oldest unredeemed
+code at capacity and is refused when all eight families are active. Removing the remote
+application in **My devices** invalidates all its credentials, stops its gateway and deletes
+its server-side profile. The signed removal also tells computers to stop trusting the key.
+Signing out of the website leaves approved applications connected.
+
+After an administrator resets the password, already-open signaling connections stay up for
+both local AI clients and remote applications, and new connections wait for the member to
+choose a password.
 
 This section describes what an AI client can do once a computer lets it in. How it works is
 described in [architecture.md](architecture.md), "AI control".

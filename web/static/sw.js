@@ -9,7 +9,8 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws/')) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname === '/mcp' ||
+      ['/api/', '/ws/', '/oauth/', '/.well-known/'].some((prefix) => url.pathname.startsWith(prefix))) return;
   e.respondWith((async () => {
     const cache = await caches.open(CACHE);
     try {

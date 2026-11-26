@@ -49,8 +49,8 @@ func TestCodesMatchTheVectors(t *testing.T) {
 	}
 }
 
-// What an approved AI client signs to sign in again matches its golden vector.
-func TestAILoginMatchesTheVector(t *testing.T) {
+// AI sign-in and endorsement match their golden vectors.
+func TestAISignaturesMatchTheVectors(t *testing.T) {
 	b, err := os.ReadFile("../../proto/vectors.json")
 	if err != nil {
 		t.Fatal(err)
@@ -59,8 +59,8 @@ func TestAILoginMatchesTheVector(t *testing.T) {
 		Vectors []struct {
 			Format string `json:"format"`
 			Inputs struct {
-				Name string `json:"name"`
-				TS   int64  `json:"ts"`
+				proto.BrowserKey
+				TS int64 `json:"ts"`
 			} `json:"inputs"`
 			String string `json:"string"`
 		} `json:"vectors"`
@@ -68,13 +68,23 @@ func TestAILoginMatchesTheVector(t *testing.T) {
 	if err := json.Unmarshal(b, &all); err != nil {
 		t.Fatal(err)
 	}
+	checked := 0
 	for _, v := range all.Vectors {
-		if v.Format == "deskway-ai-login-v1" {
-			if got := proto.AILogin(v.Inputs.Name, v.Inputs.TS); got != v.String {
-				t.Fatalf("%q, want %q", got, v.String)
-			}
-			return
+		var got string
+		switch v.Format {
+		case "deskway-ai-login-v1":
+			got = proto.AILogin(v.Inputs.Name, v.Inputs.TS)
+		case "deskway-endorse-v2":
+			got = v.Inputs.AIEndorsement(v.Inputs.TS)
+		default:
+			continue
 		}
+		if got != v.String {
+			t.Errorf("%s: %q, want %q", v.Format, got, v.String)
+		}
+		checked++
 	}
-	t.Fatal("no deskway-ai-login-v1 vector")
+	if checked != 2 {
+		t.Fatalf("checked %d AI signature vectors, want 2", checked)
+	}
 }

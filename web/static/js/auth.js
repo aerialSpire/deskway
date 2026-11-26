@@ -42,7 +42,7 @@ async function keyStore(mode, f) {
 
 const privateKey = () => keyStore('readonly', (st) => st.get('device')).catch(() => null);
 
-const hasDeviceKey = async () => !!storedPasskey() && !!(await privateKey());
+export const hasDeviceKey = async () => !!storedPasskey() && !!(await privateKey());
 
 export function deviceLabel() {
   const ua = navigator.userAgent;

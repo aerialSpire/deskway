@@ -224,6 +224,37 @@ type loginState struct {
 	until time.Time
 }
 
+// allow uses a separate, namespaced bucket for endpoints limited on all requests.
+func (l *loginLimiter) allow(key string, limit int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	st := l.state[key]
+	if st == nil || !now.Before(st.until) {
+		l.pruneLocked(now)
+		if len(l.state) >= 10000 && st == nil {
+			return false
+		}
+		st = &loginState{until: now.Add(time.Minute)}
+		l.state[key] = st
+	}
+	if st.fails >= limit {
+		return false
+	}
+	st.fails++
+	return true
+}
+
+func (l *loginLimiter) pruneLocked(now time.Time) {
+	if len(l.state) >= 10000 {
+		for k, st := range l.state {
+			if now.Sub(st.until) > time.Hour || strings.Contains(k, " ") && !now.Before(st.until) {
+				delete(l.state, k)
+			}
+		}
+	}
+}
+
 func newLoginLimiter() *loginLimiter { return &loginLimiter{state: map[string]*loginState{}} }
 
 func (l *loginLimiter) blocked(ip string) time.Duration {
@@ -238,13 +269,7 @@ func (l *loginLimiter) blocked(ip string) time.Duration {
 func (l *loginLimiter) fail(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if len(l.state) > 10000 {
-		for k, st := range l.state {
-			if time.Since(st.until) > time.Hour {
-				delete(l.state, k)
-			}
-		}
-	}
+	l.pruneLocked(time.Now())
 	st := l.state[ip]
 	if st == nil {
 		st = &loginState{}

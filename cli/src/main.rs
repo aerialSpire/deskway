@@ -39,9 +39,16 @@ fn this_machine() -> String {
 }
 
 fn login(args: &[String]) -> Result<()> {
+    if args.len() == 2 && args[1] == "--finish" {
+        return account::finish_prepared();
+    }
     let server = flag(args, "--server").context("--server URL is needed")?;
     let user = flag(args, "--user").context("--user NAME is needed")?;
     let name = flag(args, "--name").unwrap_or_else(this_machine);
+    if args.get(1).is_some_and(|arg| arg == "--prepare") {
+        println!("{}", account::prepare(&server, &user, &name)?);
+        return Ok(());
+    }
     let a = account::login(&server, &user, &name, |code| {
         eprintln!("On a browser already signed in to this account, a request from \"{name}\" waits with the numbers {} {}.", &code[..3], &code[3..]);
         eprintln!("Approve it there if the numbers match. Waiting…");
@@ -73,6 +80,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let r = match args.first().map(String::as_str) {
         Some("login") => login(&args),
+        Some("supports-remote-mcp") => Ok(()),
         Some("logout") => account::logout(has(&args, "--forget")),
         Some("mcp") => stdio::run(),
         Some("gateway") => gateway::run(&args[1..]),
@@ -88,6 +96,9 @@ fn main() {
     };
     if let Err(e) = r {
         eprintln!("deskway: {e:#}");
+        if args.first().is_some_and(|a| a == "gateway") && e.is::<store::SignInLost>() {
+            std::process::exit(3);
+        }
         std::process::exit(1);
     }
 }
