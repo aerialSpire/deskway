@@ -46,8 +46,9 @@ pub mod caps {
     pub const DESK: &str = "desk";
     /// It takes AI clients (docs/architecture.md, "AI control").
     pub const AI: &str = "ai";
+    pub const RELAY_RTT: &str = "relay-rtt";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, AI];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, AI, RELAY_RTT];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of

@@ -59,12 +59,19 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `capture` | no "no display" state |
   | `desk` | no lock-screen note |
   | `ai` | no AI seat: AI clients cannot use the computer |
+  | `relay-rtt` | the host's signaling socket does not receive `relay-list` |
 - A newer peer sends a new message or field only when the other side's version or capabilities
   show that it is understood. Receivers ignore unknown fields.
 - To add a message or field, add it to `messages.json` with its `since` and update the
   implementations that use it. When a change requires a protocol bump, update `protocol_version`
   in `version.json` and the constants checked against it. Preserve interoperability with the
   previous host protocol.
+
+On the host signaling socket, `relay-list {probe, relays}` gives STUN addresses by relay ID
+on connect. When a node comes online or is removed, the server sends an update if the
+addresses differ from the last list. The computer replies with
+`relay-rtts {probe, rtts}`, carrying the shortest measured round-trip time in milliseconds
+for each relay that answered. The server matches the reply to the current list using `probe`.
 
 ## The computer you are using
 

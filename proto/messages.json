@@ -17,7 +17,8 @@
     { "name": "chars", "who": "host", "since": 2, "meaning": "The host resolves characters with modifiers through its own layout (kc)." },
     { "name": "capture", "who": "host", "since": 2, "meaning": "The host reports when nothing can be captured (capture)." },
     { "name": "desk", "who": "host", "since": 2, "meaning": "The host reports which input desktop is active (desk): lock screen, secure prompts." },
-    { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." }
+    { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
+    { "name": "relay-rtt", "who": "host", "since": 4, "meaning": "The host accepts relay-list on its signaling socket and reports UDP round-trip times." }
   ],
   "types": {
     "View": {
@@ -507,6 +508,22 @@
           "fields": {
             "probe": { "type": "string", "optional": false, "meaning": "the server's id for that socket, for the answer; who it is stays with the server" },
             "where": { "type": "array", "items": "string", "optional": false, "meaning": "its locators, as it sent them" }
+          }
+        },
+        {
+          "type": "relay-list", "status": "current", "since": 4, "directions": ["server->host"],
+          "meaning": "The relays this host should measure.",
+          "fields": {
+            "probe": { "type": "string", "optional": false, "meaning": "identifies this list on the host's socket" },
+            "relays": { "type": "map", "values": "string", "optional": false, "meaning": "STUN address (IP:port) by relay ID; the main relay's ID is main" }
+          }
+        },
+        {
+          "type": "relay-rtts", "status": "current", "since": 4, "directions": ["host->server"],
+          "meaning": "The host's shortest UDP STUN round-trip time to each relay that answered.",
+          "fields": {
+            "probe": { "type": "string", "optional": false, "meaning": "the relay-list's probe" },
+            "rtts": { "type": "map", "values": "integer", "optional": false, "meaning": "nonnegative milliseconds by relay ID; unanswered relays are absent" }
           }
         },
         {

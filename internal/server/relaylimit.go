@@ -14,7 +14,7 @@ import (
 // rate. What is beyond it is dropped, as a congested link would: the media's congestion control
 // lowers its rate, and one account's sessions cannot crowd out another's.
 //
-// The account comes from the TURN credentials (ICEProvider names it as their user); pion's
+// The account comes from the TURN credentials (iceServers names it as their user); pion's
 // long-term auth handler returns it as the allocation's user id, and the relay socket made for
 // that allocation is wrapped with the account's bucket. Allocations are only UDP (WebRTC asks
 // for nothing else); TCP relays (RFC 6062) are refused, so none escapes the limit.

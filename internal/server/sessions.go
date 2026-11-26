@@ -27,7 +27,7 @@ import (
 type Sessions struct {
 	now      func() time.Time
 	hostOf   func(device string) *conn
-	ice      func(user string) []proto.ICEServer
+	ice      func(user string, host *conn) []proto.ICEServer
 	describe func(c *conn, h *proto.Holder) *proto.Controller
 	// credOf is the credential of a browser's device key ("" without one).
 	credOf func(browser string) string
@@ -76,7 +76,7 @@ const (
 	sweepEvery = 5 * time.Second
 )
 
-func newSessions(now func() time.Time, hostOf func(string) *conn, ice func(string) []proto.ICEServer, describe func(*conn, *proto.Holder) *proto.Controller, credOf func(string) string) *Sessions {
+func newSessions(now func() time.Time, hostOf func(string) *conn, ice func(string, *conn) []proto.ICEServer, describe func(*conn, *proto.Holder) *proto.Controller, credOf func(string) string) *Sessions {
 	return &Sessions{now: now, hostOf: hostOf, ice: ice, describe: describe, credOf: credOf, records: map[string]*record{}, reported: map[string]bool{}, down: map[string]bool{}, stop: make(chan struct{})}
 }
 
@@ -176,7 +176,7 @@ func (ss *Sessions) FromBrowser(c *conn, m proto.Msg) {
 	}
 	switch m.Type {
 	case proto.TypeOffer:
-		host.send(proto.Msg{Type: m.Type, Session: m.Session, Epoch: m.Epoch, SDP: m.SDP, ICE: ss.ice(r.user), View: m.View, Force: m.Force, User: r.user, Auth: m.Auth})
+		host.send(proto.Msg{Type: m.Type, Session: m.Session, Epoch: m.Epoch, SDP: m.SDP, ICE: ss.ice(r.user, host), View: m.View, Force: m.Force, User: r.user, Auth: m.Auth})
 	case proto.TypeRestart:
 		host.send(proto.Msg{Type: m.Type, Session: m.Session, Epoch: m.Epoch, SDP: m.SDP})
 	case proto.TypeCandidate:

@@ -574,9 +574,9 @@ The source of truth is the viewer's constraints.
   entering the password). Everything else refers to the id: the owners of computers and browsers,
   the super password, sessions, and the `user` that a host is given and reports.
 - Connect signatures use a nonce issued by the host, not the clock.
-- Connecting waits only for what it must. The server sends a browser its ICE servers on every
-  socket, updates them when the relay selection changes, and renews them before the TURN
-  credentials expire. The host answers with its host candidates and then trickles its STUN
+- Connecting waits only for what it must. The server sends browsers and AI clients the main
+  server's ICE entries on every socket and renews them before the TURN credentials expire.
+  The host answers with its host candidates and then trickles its STUN
   address (`crates/peer/src/stun.rs`, with probes answered
   through the sockets' own readers) and its relay candidates. Capture and the encoder start when
   the offer is accepted, at the offer's `view`, and the first frame sent after DTLS connects is a
@@ -591,8 +591,11 @@ The source of truth is the viewer's constraints.
   reports to the main server over HTTPS. The main store owns each relay record and its TURN
   secret. Join tokens are single-use and expire in 10 minutes. Tokens and last report times
   live in server memory. A node reports every 30 seconds and is online for 90 seconds from the
-  last accepted report. The ICE provider appends the three newest online nodes at most. It
-  makes TURN credentials with each relay's own secret.
+  last accepted report. Each computer measures UDP STUN round-trip times to the main relay and
+  online nodes when it receives a relay list. The server keeps those measurements on the computer's
+  signaling connection and offers the host the nearest measured online relay for each new session,
+  using that relay's own secret. With no usable measurement, the server falls back to the main
+  relay when configured or the first online node otherwise.
 
 ## Power
 

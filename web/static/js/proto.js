@@ -21,6 +21,7 @@ export const CAPS = Object.freeze({
   CAPTURE: 'capture',
   DESK: 'desk',
   AI: 'ai',
+  RELAY_RTT: 'relay-rtt',
 });
 
 const FORMAT = 's:text|html|image|files';

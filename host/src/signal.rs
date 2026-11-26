@@ -558,6 +558,7 @@ impl Host {
                 }
             }
             "locate" => self.on_locate(&m),
+            "relay-list" => self.on_relay_list(m),
             // A browser of the account reads what AI clients did here, a page at a time.
             "auditreq" => {
                 if let Ok(Wire::AuditRequest { probe, query }) = serde_json::from_value::<Wire>(m.clone()) {
@@ -580,6 +581,17 @@ impl Host {
             if peer::here::any_here(&place) {
                 let _ = out.send(serde_json::to_string(&Wire::Here { probe }).expect("signal serializes"));
             }
+        });
+    }
+
+    fn on_relay_list(&self, m: Value) {
+        let Ok(Wire::RelayList { probe, relays }) = serde_json::from_value::<Wire>(m) else { return };
+        let out = self.out_tx.clone();
+        let _ = std::thread::Builder::new().name("relay-rtt".into()).spawn(move || {
+            let addresses: Vec<_> = relays.into_iter().filter_map(|(id, addr)| Some((id, addr.parse().ok()?))).collect();
+            let times = peer::stun::measure(addresses.iter().map(|(_, addr)| *addr));
+            let rtts = addresses.into_iter().filter_map(|(id, addr)| Some((id, times.get(&addr)?.as_millis() as u32))).collect();
+            let _ = out.send(serde_json::to_string(&Wire::RelayRtts { probe, rtts }).expect("signal serializes"));
         });
     }
 
@@ -844,7 +856,9 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Que
     // The AI tools this computer carries out: an AI client tells its own from them before it
     // calls (`unsupported`, for a computer older than it).
     let tools = crate::tools::implemented().into_iter().map(String::from).collect();
-    let hello = Wire::Hello { version: wire::PROTOCOL_VERSION, caps: session::desk::caps(host.view_only), tools: Some(tools) };
+    let mut caps = session::desk::caps(host.view_only);
+    caps.push(wire::caps::RELAY_RTT.into());
+    let hello = Wire::Hello { version: wire::PROTOCOL_VERSION, caps, tools: Some(tools) };
     ws.send(WsMessage::text(serde_json::to_string(&hello)?))?;
     host.send_status();
     let mut alive = alive::Alive::new(Instant::now());
@@ -1338,6 +1352,32 @@ mod tests {
             let got = t.q.out.recv_timeout(Duration::from_millis(1500)).ok().map(|m| serde_json::from_str::<Value>(&m).unwrap());
             assert_eq!(got, want, "{place:?}");
         }
+    }
+
+    #[test]
+    fn a_relay_list_is_answered_with_measured_round_trips() {
+        let mut t = Test::new("relay-rtt", true, true);
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let addr = socket.local_addr().unwrap();
+        let responder = std::thread::spawn(move || {
+            let mut request = [0; 20];
+            let (_, source) = socket.recv_from(&mut request).unwrap();
+            // A Binding success with a fixed XOR-MAPPED-ADDRESS. Echo the transaction ID.
+            let mut answer = [
+                0x01, 0x01, 0, 12, 0x21, 0x12, 0xa4, 0x42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0x20, 0, 8, 0, 1, 0x32, 0x9a, 0x5e, 0x12, 0xa4, 0x43,
+            ];
+            answer[8..20].copy_from_slice(&request[8..20]);
+            socket.send_to(&answer, source).unwrap();
+        });
+        t.host.on_message(&json!({ "type": "relay-list", "probe": "p1", "relays": { "node": addr.to_string() } }).to_string());
+        let report = t.q.out.recv_timeout(Duration::from_secs(5)).unwrap();
+        let Wire::RelayRtts { probe, rtts } = serde_json::from_str(&report).unwrap() else { panic!("expected a measurement report") };
+        assert_eq!(probe, "p1");
+        assert_eq!(rtts.len(), 1);
+        assert!(rtts.contains_key("node"));
+        responder.join().unwrap();
     }
 
     /// Stop at the computer, the switch turned off, the AI client removed: each ends the AI seat

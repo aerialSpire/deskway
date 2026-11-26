@@ -32,7 +32,7 @@ func newSessionsTest(t *testing.T) *sessionsTest {
 	describe := func(c *conn, h *proto.Holder) *proto.Controller {
 		return &proto.Controller{Name: h.Name, Connecting: !h.Established}
 	}
-	st.ss = newSessions(func() time.Time { return st.now }, func(d string) *conn { return st.hosts[d] }, func(user string) []proto.ICEServer { return []proto.ICEServer{{Username: user}} }, describe, credOf)
+	st.ss = newSessions(func() time.Time { return st.now }, func(d string) *conn { return st.hosts[d] }, func(user string, _ *conn) []proto.ICEServer { return []proto.ICEServer{{Username: user}} }, describe, credOf)
 	return st
 }
 

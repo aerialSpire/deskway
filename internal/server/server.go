@@ -69,6 +69,9 @@ type conn struct {
 	// Hosts: version and capabilities from this connection's hello.
 	version int
 	caps    []string
+	// Hosts: the current list's probe and the latest reported timings. Guarded by Server.mu.
+	relayProbe string
+	relayRTTs  map[string]int
 	// Hosts: the session holding its desk seat and its AI seat, and what AI clients may do there,
 	// from its latest status; nil: nobody, "": a host before version 4.
 	holder   *proto.Holder
@@ -116,7 +119,7 @@ func New(store *Store, turn TURNConfig, stun []string, web fs.FS) *Server {
 		previews: map[string]map[string]preview{},
 		asked:    map[string]time.Time{},
 	}
-	s.sessions = newSessions(time.Now, s.hostOf, s.ICEProvider, s.controllerFor, store.BrowserCred)
+	s.sessions = newSessions(time.Now, s.hostOf, s.hostICE, s.controllerFor, store.BrowserCred)
 	go s.sessions.run()
 	return s
 }

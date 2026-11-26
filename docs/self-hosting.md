@@ -216,8 +216,8 @@ relay. If the session works over mobile data, the TURN relay is working.
 
 ## Relay nodes
 
-Run relay nodes in regions near your computers to give sessions additional paths when they need
-TURN. Accounts, signaling, and the website stay on the main server. A relay node forwards
+Run relay nodes in regions near your computers to shorten the path when sessions need TURN.
+Accounts, signaling, and the website stay on the main server. A relay node forwards
 encrypted session traffic and needs a reachable public IPv4 address. Only the main server
 needs a domain and HTTPS certificate. The fallback on TCP 443 stays on the main server.
 
@@ -254,9 +254,11 @@ ExecStart=/usr/local/bin/deskway-server relay -join https://desk.example.net -da
 ```
 
 Keep any custom TURN port and range flags in the unit. On **Relays**, use **Refresh** to see
-the latest online or last-seen status. The server offers its own relay followed by up to
-three online nodes, newest joins first. Removing a node stops the main server from offering
-it and renewing its credentials. Stop the process on the node to end any remaining traffic.
+the latest online or last-seen status. The server offers each computer the relay with the
+shortest usable round-trip measurement, falling back to the main relay if configured or the
+first online node otherwise. The connection decides whether to use a relay and prefers a
+direct path. Removing a node stops the main server from offering it and renewing its credentials.
+Stop the process on the node to end any remaining traffic.
 
 ## Running in Docker
 
