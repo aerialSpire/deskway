@@ -1,4 +1,4 @@
-//! deskway: lets AI clients (Claude Code and others that speak MCP) use the account's Deskway
+//! deskway: lets AI clients that speak MCP use the account's Deskway
 //! computers (docs/architecture.md, "AI control").
 //!
 //!   deskway login --server URL --user NAME [--name NAME]   (no password: a browser approves)
@@ -11,11 +11,14 @@
 
 mod account;
 mod copy;
+mod gateway;
 mod keys;
 mod link;
 mod mcp;
 mod os;
 mod proxy;
+mod proxy_client;
+mod stdio;
 mod store;
 mod update;
 
@@ -49,7 +52,7 @@ fn login(args: &[String]) -> Result<()> {
 
 /// Asks as an MCP client would, without one: one request, its answer printed.
 fn through_mcp(request: Value) -> Result<()> {
-    let answer = mcp::answer(&request)?;
+    let answer = stdio::answer(&request)?;
     println!("{}", serde_json::to_string_pretty(&answer["result"])?);
     if answer["result"]["isError"] == true {
         bail!("the call failed");
@@ -71,13 +74,15 @@ fn main() {
     let r = match args.first().map(String::as_str) {
         Some("login") => login(&args),
         Some("logout") => account::logout(has(&args, "--forget")),
-        Some("mcp") => mcp::run(),
+        Some("mcp") => stdio::run(),
+        Some("gateway") => gateway::run(&args[1..]),
         Some("proxy") => proxy::run(),
         Some("update") => update::run(),
         Some("computers") => through_mcp(json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": "computers", "arguments": {} } })),
         Some("call") if args.len() >= 3 => call(&args),
         _ => {
             eprintln!("{}", include_str!("main.rs").lines().skip(3).take_while(|l| l.starts_with("//!")).map(|l| l.trim_start_matches("//!")).collect::<Vec<_>>().join("\n"));
+            eprintln!("{}", gateway::USAGE);
             std::process::exit(2);
         }
     };

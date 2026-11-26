@@ -119,7 +119,7 @@ mod tests {
 
     fn check_requests<T: DeserializeOwned>(handler: crate::tools::Tool) {
         for (_, name, _) in crate::tools::TOOLS.iter().filter(|(_, _, f)| std::ptr::fn_addr_eq(*f, handler)) {
-            let t = wire::tools::get(name).unwrap();
+            let t = &wire::tools::get(name).unwrap().spec;
             let mut args = serde_json::json!({});
             for r in t.input["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                 let p = &t.input["properties"][r];

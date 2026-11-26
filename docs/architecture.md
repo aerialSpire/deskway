@@ -27,7 +27,7 @@ Every change follows these rules:
 | Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
 | Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the AI seat, and the in-process workspace for commands, files and tunnels. |
-| AI client's machine | `deskway` (cli/): `login`, `mcp` for each MCP client, and one proxy per user that holds the sign-in and a link to each computer. |
+| AI client's machine | `deskway` (cli/): `login`, `mcp` for MCP over stdio, `gateway` for MCP over HTTP, and one proxy per profile that holds the sign-in and a link to each computer in use. |
 
 Each platform has exactly one process model. The network service talks to the agent only
 through `platform::Remote`, a generic proxy that implements `Platform` over the IPC pipe (calls
@@ -188,14 +188,17 @@ There are two implementations:
 ## The AI client (`cli/src`)
 
 ```
-main.rs            the commands: login, logout, mcp, computers, call, proxy, update
+main.rs            the commands: login, logout, mcp, gateway, computers, call, proxy, update
 account.rs         new clients: a browser opens the sign-in window and approves after
                    comparing six digits (code-v2); approved clients sign in with their key
 keys/              the device key (the system's key store where there is one)
 store.rs           what it keeps on this machine, in a folder only its user reads
-mcp.rs             `deskway mcp`: MCP over stdio; the tool list from proto/tools.json, each
-                   call through the proxy
-proxy.rs           one per user: the signaling socket, the account's computers, where this
+mcp.rs             the shared MCP tool list from proto/tools.json and tool dispatch
+stdio.rs           line-delimited MCP for `deskway mcp`
+gateway.rs         Streamable HTTP for `deskway gateway`: loopback, Host and Origin checks,
+                   version handling, and remote call limits
+proxy_client.rs    a persistent connection to the profile's proxy, reused across MCP requests
+proxy.rs           one per profile: the signaling socket, the account's computers, where this
                    machine is (peer::here), one link per computer in use
 link.rs            one connection to one computer: offer signed with the device key, the
                    computer's signed answer checked against its pinned key, MCP in frames
@@ -232,7 +235,8 @@ The design follows these principles:
 
 ```
 MCP client window 1 -stdio-> deskway mcp -+
-MCP client window 2 -stdio-> deskway mcp -+-127.0.0.1-> deskway proxy (one per user)
+MCP client window 2 -stdio-> deskway mcp -+-127.0.0.1-> deskway proxy (one per profile)
+HTTP client -HTTP-> deskway gateway -----+
                                                           | signaling /ws/client (login cookie)
                                                           | one WebRTC connection per computer:
                                                           |   "control", "ai", "tunnel:<port>"
@@ -283,13 +287,15 @@ with device checks off still recognizes it as an AI client (`internal/server/aut
 
 ### The local proxy
 
-The first `deskway mcp` starts `deskway proxy` (`cli/src/proxy.rs`), which every MCP client of
-this user shares, so that together they are one AI device on one AI seat. The proxy holds the
+The first `deskway mcp` or `deskway gateway` starts `deskway proxy` (`cli/src/proxy.rs`), which
+every MCP client using that state directory shares as one AI device. The proxy holds the
 sign-in, the signaling socket and one link for each computer in use (`link.rs`). It listens on
 127.0.0.1, at the port recorded in `proxy.json` together with an access token (a file only this
-user can read). `deskway mcp` only relays stdio, numbering each client's requests. When the last
-client disconnects, the proxy releases every computer at once, and after 10 minutes with no
-client and no call it exits. A new `deskway mcp` that finds a proxy of a different version
+user can read). Both transports number their proxy requests on a persistent connection.
+The gateway keeps its connection open across HTTP requests and the computer's idle rule
+releases unused seats. Calls can overlap on either transport. When the last proxy client
+disconnects, the proxy releases every computer at once, and after 10 minutes with no client
+and no call it exits. A newly started MCP process that finds a proxy of a different version
 replaces it.
 
 ### The channel
@@ -327,13 +333,14 @@ UAC); the gate's earlier `secure_desktop` answer is only a hint.
 ### MCP and tools
 
 `proto/tools.json` is the single definition of the tools (name, `screen`: `none | read | act`,
-`needs_user`, arguments). `crates/wire` reads it at build time, and the proxy answers
-`tools/list` from it before any request reaches a computer. The host implements the tools in
+`needs_user`, arguments and MCP annotations). `crates/wire` reads it at build time, and the
+shared MCP server answers `tools/list` before any request reaches a computer. The host implements its tools in
 `host/src/tools` and reports its list in its hello (`tools`, which the server keeps in
 `Device.tools`). The proxy answers `unsupported` for a tool that a computer lacks, and
-`computers` lists the `missing_tools`. The proxy itself provides `computers`, `release`,
+`computers` lists the `missing_tools`. The client catalog adds `computers`, `release`,
 `copy_to` and `copy_from` (which transfer 256 KiB pieces through `fs_write`/`fs_read`, then run
-`fs_hash` on both ends).
+`fs_hash` on both ends). The shared MCP server uses the catalog's `local_only` flag to
+exclude `copy_to`, `copy_from`, and `tunnel` from HTTP discovery and dispatch.
 
 The tools are `computer_info`, `audit_read`, `screenshot`, `wait_for`; input (`click`, `move`,
 `drag`, `scroll`, `key`, `type`, with coordinates in the pixels of the last screenshot);

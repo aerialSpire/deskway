@@ -300,11 +300,12 @@ fn pairing_codes_are_normalized_as_they_are_maced() {
 
 #[test]
 fn the_tools_are_defined_once_each_with_an_object_schema() {
-    let names: BTreeSet<&str> = crate::tools::all().iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names.len(), crate::tools::all().len(), "a tool is defined twice");
-    for t in crate::tools::all() {
+    let mut names = BTreeSet::new();
+    for t in crate::tools::catalog() {
+        assert!(names.insert(t.name.as_str()), "{} is defined twice", t.name);
         assert_eq!(t.input["type"], "object", "{}", t.name);
-        assert!(!t.description.is_empty() && t.batch >= 1, "{}", t.name);
+        assert!(!t.description.is_empty(), "{}", t.name);
         assert!(t.input["properties"].get("computer").is_none(), "{}: computer is the deskway command's, not a tool's", t.name);
     }
+    assert!(crate::tools::all().iter().all(|t| t.batch >= 1));
 }

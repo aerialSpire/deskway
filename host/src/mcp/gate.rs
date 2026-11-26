@@ -10,7 +10,7 @@ use serde_json::Value;
 use super::Facts;
 use crate::audit::{short, Audit, Record};
 use crate::platform::Desk;
-use wire::tools::{Screen, Tool};
+use wire::tools::{Screen, Tool, ToolSpec};
 
 /// Why a call was not carried out: a code the AI client can act on, what happened, and what to
 /// do next.
@@ -34,14 +34,14 @@ pub struct Granted {
 }
 
 impl Granted {
-    pub fn tool(&self) -> &'static Tool {
-        self.tool
+    pub fn tool(&self) -> &'static ToolSpec {
+        &self.tool.spec
     }
 
     /// The leave to call `name`, for tests of what tools do with it.
     #[cfg(test)]
     pub fn for_test(name: &str) -> Granted {
-        Granted { tool: wire::tools::all().iter().find(|t| t.name == name).expect("a defined tool"), started: Instant::now() }
+        Granted { tool: wire::tools::get(name).expect("a defined tool"), started: Instant::now() }
     }
 }
 
@@ -82,7 +82,7 @@ impl Gate {
             Ok(summary) => ("ok", short(summary, 200)),
             Err(e) => (e.code, short(&e.message, 200)),
         };
-        self.record(&g.tool.name, what, detail, Some(g.started.elapsed().as_millis() as u64));
+        self.record(&g.tool.spec.name, what, detail, Some(g.started.elapsed().as_millis() as u64));
     }
 
     fn record(&self, tool: &str, what: &str, detail: String, ms: Option<u64>) {
@@ -111,7 +111,7 @@ fn what_was_asked(tool: &str, args: &Value) -> String {
 
 /// What the computer's state and the tool's own definition allow.
 fn rules(tool: &Tool, args: &Value, facts: &Facts) -> Result<(), ToolError> {
-    check_args(&tool.input, args).map_err(|e| ToolError::new("invalid_args", e, "Call it again with the arguments its schema describes."))?;
+    check_args(&tool.spec.input, args).map_err(|e| ToolError::new("invalid_args", e, "Call it again with the arguments its schema describes."))?;
     if args["elevated"] == true {
         match facts.admin {
             None => return Err(ToolError::new("elevation_unavailable", crate::i18n::t("mcp.elevation_unavailable"), crate::i18n::t("mcp.elevation_next"))),
@@ -202,7 +202,13 @@ mod tests {
         let all = |_: &str| true;
         let none = |_: &str| false;
         // Tools made up here: the rules read only their flags and schema.
-        let tool = |screen, needs_user| Tool { name: "t".into(), batch: 1, screen, needs_user, description: "x".into(), input: json!({ "type": "object" }) };
+        let tool = |screen, needs_user| Tool {
+            batch: 1, screen, needs_user,
+            spec: ToolSpec {
+                name: "t".into(), description: "x".into(), input: json!({ "type": "object" }),
+                annotations: json!({}), local_only: false,
+            },
+        };
         // (tool, signed in, desktop, the refusal)
         let cases = [
             (tool(Screen::Act, false), true, Some(Desk::Default), None),

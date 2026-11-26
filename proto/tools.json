@@ -2,11 +2,13 @@
   "version": 1,
   "notes": [
     "The tools an AI client can call on a Deskway computer (docs/architecture.md, \"MCP and tools\"). The one definition: crates/wire reads it at build time, the computer implements exactly these (host/src/tools) and the deskway command lists them to MCP clients before it reaches any computer.",
-    "batch: the batch a tool comes in. screen: none, read (looks at the screen) or act (changes what the screen shows); an act is refused on a secure desktop. needs_user: the tool requires an available workspace user. Every tool also takes `computer`, added by the deskway command, which picks the computer and is not passed on."
+    "batch: the batch a tool comes in. screen: none, read (looks at the screen) or act (changes what the screen shows); an act is refused on a secure desktop. needs_user: the tool requires an available workspace user. Every tool also takes `computer`, added by the deskway command, which picks the computer and is not passed on.",
+    "client_tools: tools carried out by the Deskway client. local_only: the MCP tool requires access to the Deskway client's own machine and is available only over stdio. annotations: MCP hints about tool behavior."
   ],
   "tools": [
     {
       "name": "computer_info",
+      "annotations": {"title": "Computer information", "readOnlyHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": false,
@@ -19,6 +21,7 @@
     },
     {
       "name": "audit_read",
+      "annotations": {"title": "Read audit log", "readOnlyHint": true},
       "batch": 3,
       "screen": "none",
       "needs_user": false,
@@ -60,6 +63,7 @@
     },
     {
       "name": "screenshot",
+      "annotations": {"title": "Take screenshot", "readOnlyHint": true},
       "batch": 1,
       "screen": "read",
       "needs_user": false,
@@ -81,6 +85,7 @@
     },
     {
       "name": "wait_for",
+      "annotations": {"title": "Watch for screen changes", "readOnlyHint": true},
       "batch": 2,
       "screen": "read",
       "needs_user": false,
@@ -114,6 +119,7 @@
     },
     {
       "name": "click",
+      "annotations": {"title": "Click", "destructiveHint": true},
       "batch": 1,
       "screen": "act",
       "needs_user": false,
@@ -152,6 +158,7 @@
     },
     {
       "name": "move",
+      "annotations": {"title": "Move pointer", "destructiveHint": true},
       "batch": 1,
       "screen": "act",
       "needs_user": false,
@@ -177,6 +184,7 @@
     },
     {
       "name": "drag",
+      "annotations": {"title": "Drag pointer", "destructiveHint": true},
       "batch": 1,
       "screen": "act",
       "needs_user": false,
@@ -221,6 +229,7 @@
     },
     {
       "name": "scroll",
+      "annotations": {"title": "Scroll", "destructiveHint": true},
       "batch": 1,
       "screen": "act",
       "needs_user": false,
@@ -254,6 +263,7 @@
     },
     {
       "name": "key",
+      "annotations": {"title": "Press keys", "destructiveHint": true},
       "batch": 1,
       "screen": "act",
       "needs_user": false,
@@ -274,6 +284,7 @@
     },
     {
       "name": "type",
+      "annotations": {"title": "Type text", "destructiveHint": true},
       "batch": 1,
       "screen": "act",
       "needs_user": false,
@@ -294,6 +305,7 @@
     },
     {
       "name": "run",
+      "annotations": {"title": "Run command", "destructiveHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -326,6 +338,7 @@
     },
     {
       "name": "proc_start",
+      "annotations": {"title": "Start terminal", "destructiveHint": true},
       "batch": 2,
       "screen": "none",
       "needs_user": true,
@@ -359,6 +372,7 @@
     },
     {
       "name": "proc_write",
+      "annotations": {"title": "Send terminal input", "destructiveHint": true},
       "batch": 2,
       "screen": "none",
       "needs_user": true,
@@ -390,6 +404,7 @@
     },
     {
       "name": "proc_read",
+      "annotations": {"title": "Read program output", "readOnlyHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -418,6 +433,7 @@
     },
     {
       "name": "proc_kill",
+      "annotations": {"title": "Stop program", "destructiveHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -438,6 +454,7 @@
     },
     {
       "name": "proc_list",
+      "annotations": {"title": "List programs", "readOnlyHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -450,6 +467,7 @@
     },
     {
       "name": "fs_list",
+      "annotations": {"title": "List folder", "readOnlyHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -470,6 +488,7 @@
     },
     {
       "name": "fs_stat",
+      "annotations": {"title": "Get file information", "readOnlyHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -490,6 +509,7 @@
     },
     {
       "name": "fs_read",
+      "annotations": {"title": "Read file", "readOnlyHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -518,6 +538,7 @@
     },
     {
       "name": "fs_write",
+      "annotations": {"title": "Write file", "destructiveHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -550,6 +571,7 @@
     },
     {
       "name": "fs_hash",
+      "annotations": {"title": "Hash file", "readOnlyHint": true},
       "batch": 2,
       "screen": "none",
       "needs_user": true,
@@ -570,6 +592,7 @@
     },
     {
       "name": "fs_move",
+      "annotations": {"title": "Move file or folder", "destructiveHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -595,6 +618,7 @@
     },
     {
       "name": "fs_delete",
+      "annotations": {"title": "Delete file or folder", "destructiveHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -619,6 +643,7 @@
     },
     {
       "name": "clipboard_get",
+      "annotations": {"title": "Read clipboard", "readOnlyHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -631,6 +656,7 @@
     },
     {
       "name": "clipboard_set",
+      "annotations": {"title": "Write clipboard", "destructiveHint": true},
       "batch": 1,
       "screen": "none",
       "needs_user": true,
@@ -651,6 +677,8 @@
     },
     {
       "name": "tunnel",
+      "annotations": {"title": "Open tunnel", "destructiveHint": false},
+      "local_only": true,
       "batch": 2,
       "screen": "none",
       "needs_user": false,
@@ -671,6 +699,7 @@
     },
     {
       "name": "windows",
+      "annotations": {"title": "List windows", "readOnlyHint": true},
       "batch": 2,
       "screen": "none",
       "needs_user": true,
@@ -683,6 +712,7 @@
     },
     {
       "name": "window_act",
+      "annotations": {"title": "Control window", "destructiveHint": true},
       "batch": 2,
       "screen": "act",
       "needs_user": true,
@@ -732,6 +762,7 @@
     },
     {
       "name": "app_list",
+      "annotations": {"title": "List apps", "readOnlyHint": true},
       "batch": 2,
       "screen": "none",
       "needs_user": true,
@@ -744,6 +775,7 @@
     },
     {
       "name": "app_open",
+      "annotations": {"title": "Open app or file", "destructiveHint": true},
       "batch": 2,
       "screen": "act",
       "needs_user": true,
@@ -771,6 +803,7 @@
     },
     {
       "name": "app_quit",
+      "annotations": {"title": "Quit app", "destructiveHint": true},
       "batch": 2,
       "screen": "act",
       "needs_user": true,
@@ -796,6 +829,7 @@
     },
     {
       "name": "ui_tree",
+      "annotations": {"title": "Read accessibility tree", "readOnlyHint": true},
       "batch": 3,
       "screen": "read",
       "needs_user": true,
@@ -824,6 +858,7 @@
     },
     {
       "name": "ui_act",
+      "annotations": {"title": "Operate a control", "destructiveHint": true},
       "batch": 3,
       "screen": "act",
       "needs_user": true,
@@ -863,6 +898,88 @@
           "element",
           "action"
         ]
+      }
+    }
+  ],
+  "client_tools": [
+    {
+      "name": "computers",
+      "annotations": {
+        "title": "List computers",
+        "readOnlyHint": true
+      },
+      "description": "The computers of the account: name, id, system, whether online, and whether AI may control each (off, on, or stopped at the computer), which AI client uses it now, whether it is the computer you yourself run on (this_computer: its screen shows your own windows, and its input reaches them), and the tools it does not have (missing_tools, based on the tools the computer reports; calling one says unsupported).",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "release",
+      "annotations": {
+        "title": "Release computer",
+        "destructiveHint": true
+      },
+      "description": "Gives a computer up now. It is also given up after 10 idle minutes or when the last client of the profile's proxy disconnects. Programs started there keep running.",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "copy_to",
+      "annotations": {
+        "title": "Copy file to computer",
+        "destructiveHint": true
+      },
+      "local_only": true,
+      "description": "Copies a file from the machine you run on to the computer (replacing one there), checked by SHA-256 at both ends.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "A file's full path on the machine you run on."
+          },
+          "to": {
+            "type": "string",
+            "description": "A file's full path on the computer."
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "copy_from",
+      "annotations": {
+        "title": "Copy file from computer",
+        "destructiveHint": true
+      },
+      "local_only": true,
+      "description": "Copies a file from the computer to the machine you run on (replacing one here), checked by SHA-256 at both ends.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "A file's full path on the computer."
+          },
+          "to": {
+            "type": "string",
+            "description": "A file's full path on the machine you run on."
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
       }
     }
   ]

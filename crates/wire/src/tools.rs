@@ -1,5 +1,4 @@
-//! The tools an AI client can call on a computer, as `proto/tools.json` defines them: the one
-//! definition, read here at build time by both ends.
+//! The tool catalog in `proto/tools.json`, read by the host and the AI client.
 
 use std::sync::OnceLock;
 
@@ -19,20 +18,31 @@ pub enum Screen {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Tool {
-    pub name: String,
+    #[serde(flatten)]
+    pub spec: ToolSpec,
     pub batch: u32,
     pub screen: Screen,
     /// It works only with someone signed in at the computer.
     pub needs_user: bool,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ToolSpec {
+    pub name: String,
     pub description: String,
     /// Its arguments, as a JSON Schema object.
     pub input: Value,
+    pub annotations: Value,
+    /// The client must have access to its own machine to offer this tool.
+    #[serde(default)]
+    pub local_only: bool,
 }
 
 #[derive(Deserialize)]
 struct Definition {
     version: u32,
     tools: Vec<Tool>,
+    client_tools: Vec<ToolSpec>,
 }
 
 fn definition() -> &'static Definition {
@@ -50,5 +60,10 @@ pub fn all() -> &'static [Tool] {
 }
 
 pub fn get(name: &str) -> Option<&'static Tool> {
-    all().iter().find(|t| t.name == name)
+    all().iter().find(|t| t.spec.name == name)
+}
+
+/// The tools the client understands, including those it carries out itself.
+pub fn catalog() -> impl Iterator<Item = &'static ToolSpec> {
+    all().iter().map(|t| &t.spec).chain(&definition().client_tools)
 }

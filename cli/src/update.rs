@@ -3,7 +3,7 @@
 //! started from with it as it starts and every hour after; when they differ, it downloads the
 //! server's, checks it and puts it in that file's place. Nobody is asked or told: what runs goes
 //! on running, the AI client's next start of `deskway mcp` is the new one, and that replaces a
-//! proxy of another version (`mcp`). `deskway update` does the same at once.
+//! proxy of another version (`proxy_client`). `deskway update` does the same at once.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

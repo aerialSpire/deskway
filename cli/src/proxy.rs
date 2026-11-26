@@ -1,5 +1,5 @@
-//! The local proxy (docs/architecture.md, "The local proxy"): one per user of this machine, started by the
-//! first `deskway mcp` and shared by all of them, so every AI client window here is the same AI
+//! The local proxy (docs/architecture.md, "The local proxy"): one per profile, started by the
+//! first `deskway mcp` or `deskway gateway`, so clients using it are the same AI
 //! device on the same AI seat. It holds the signaling socket, knows the account's computers, and
 //! keeps one link per computer in use (`link`), made on the first call and given up when the
 //! computer ends it (idle, stopped) or on `release`.
@@ -7,17 +7,18 @@
 //! Its clients reach it on 127.0.0.1 at the port in `proxy.json`, and prove themselves with the
 //! token there (a file only this user reads). One JSON line per request:
 //! `{"id", "op": "computers"}`, `{"id", "op": "call", "computer", "request"}` (an MCP
-//! `tools/call`), `{"id", "op": "release", "computer"}`, `{"id", "op": "quit"}` (signing out);
-//! each answered `{"id", "result"}` or `{"id", "error"}`. With no client and no call for 10
-//! minutes it leaves.
+//! `tools/call`), `{"id", "op": "release", "computer"}`, `{"id", "op": "quit"}` (signing out).
+//! A gateway request can include an absolute `deadline`. Requests are answered
+//! `{"id", "result"}` or `{"id", "error"}` before expiry. With no client and no call for 10
+//! minutes the proxy leaves.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -45,6 +46,13 @@ enum Request {
     Quit(Sender<Value>),
 }
 
+type PendingRequest = (Request, Option<Instant>);
+
+fn next_request(requests: &Receiver<PendingRequest>) -> Option<PendingRequest> {
+    std::iter::from_fn(|| requests.try_recv().ok())
+        .find(|(_, deadline)| deadline.is_none_or(|until| Instant::now() < until))
+}
+
 /// The account's computers as this AI client sees them; `this_computer`: the one it runs on
 /// (its screen shows this AI client's own windows); `missing_tools`: what this AI client offers
 /// and the computer does not carry out, based on the tools in its hello.
@@ -55,7 +63,7 @@ fn computers(list: &Value) -> Value {
             .flatten()
             .map(|d| {
                 let mut c = json!({ "id": d["id"], "name": d["name"], "os": d["os"], "online": d["online"], "ai": d["ai"]["state"].as_str().unwrap_or("off"), "in_use_by": d["ai"]["name"], "this_computer": d["here"].as_bool().unwrap_or(false) });
-                let missing: Vec<&str> = wire::tools::all().iter().map(|t| t.name.as_str()).filter(|t| !carries(d, t)).collect();
+                let missing: Vec<&str> = wire::tools::all().iter().map(|t| t.spec.name.as_str()).filter(|t| !carries(d, t)).collect();
                 if !missing.is_empty() {
                     c["missing_tools"] = json!(missing);
                 }
@@ -139,7 +147,7 @@ impl Hub {
         }
     }
 
-    fn on_request(&mut self, r: Request) {
+    fn on_request(&mut self, r: Request, deadline: Option<Instant>) {
         self.last_call = Instant::now();
         match r {
             Request::Computers(reply) => {
@@ -188,7 +196,7 @@ impl Hub {
                     self.open(&id, d["name"].as_str().unwrap_or(&id));
                 }
                 if let Some((_, tx)) = self.links.get(&id) {
-                    let _ = tx.send(LinkEvent::Call { request, reply });
+                    let _ = tx.send(LinkEvent::Call { request, reply, deadline });
                 }
             }
         }
@@ -213,8 +221,8 @@ impl Hub {
     }
 }
 
-/// Serves one client: its token first, then its requests, each answered as soon as it can be.
-fn client(stream: TcpStream, token: String, requests: Sender<Request>, clients: Arc<AtomicUsize>) {
+/// Serves one client: its token first, then its requests, each answered before its deadline.
+fn client(stream: TcpStream, token: String, requests: Sender<PendingRequest>, clients: Arc<AtomicUsize>) {
     clients.fetch_add(1, Ordering::SeqCst);
     let writer = Arc::new(Mutex::new(stream.try_clone().expect("clone a socket")));
     let mut lines = BufReader::new(stream).lines();
@@ -222,6 +230,16 @@ fn client(stream: TcpStream, token: String, requests: Sender<Request>, clients: 
     if authed {
         for line in lines.map_while(Result::ok) {
             let Ok(m) = serde_json::from_str::<Value>(&line) else { continue };
+            let deadline = match m.get("deadline") {
+                Some(value) => {
+                    let Ok(until) = serde_json::from_value::<SystemTime>(value.clone()) else { continue };
+                    let now = Instant::now();
+                    let Ok(remaining) = until.duration_since(SystemTime::now()) else { continue };
+                    let Some(until) = now.checked_add(remaining) else { continue };
+                    Some(until)
+                }
+                None => None,
+            };
             let (reply, answer) = channel();
             let r = match m["op"].as_str().unwrap_or_default() {
                 "computers" => Request::Computers(reply),
@@ -231,14 +249,22 @@ fn client(stream: TcpStream, token: String, requests: Sender<Request>, clients: 
                 "quit" => Request::Quit(reply),
                 _ => continue,
             };
-            if requests.send(r).is_err() {
+            if requests.send((r, deadline)).is_err() {
                 break;
             }
             let (writer, id) = (writer.clone(), m["id"].clone());
             std::thread::spawn(move || {
-                let line = match answer.recv() {
+                let result = match deadline {
+                    Some(until) => answer.recv_timeout(until.saturating_duration_since(Instant::now())),
+                    None => answer.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                };
+                if deadline.is_some_and(|until| Instant::now() >= until) {
+                    return;
+                }
+                let line = match result {
                     Ok(result) => json!({ "id": id, "result": result }),
-                    Err(_) => json!({ "id": id, "error": "the proxy is leaving" }),
+                    Err(RecvTimeoutError::Disconnected) => json!({ "id": id, "error": "the proxy is leaving" }),
+                    Err(RecvTimeoutError::Timeout) => return,
                 };
                 let _ = writeln!(writer.lock().unwrap(), "{line}");
             });
@@ -257,7 +283,7 @@ pub fn run() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").context("listen on this machine")?;
     let token = URL_SAFE_NO_PAD.encode(wire::crypto::random::<24>());
     ProxyPlace { port: listener.local_addr()?.port(), token: token.clone(), version: crate::update::version().to_string() }.save()?;
-    let (req_tx, req_rx) = channel::<Request>();
+    let (req_tx, req_rx) = channel::<PendingRequest>();
     let clients = Arc::new(AtomicUsize::new(0));
     let c = clients.clone();
     std::thread::spawn(move || {
@@ -299,7 +325,7 @@ pub fn run() -> Result<()> {
 }
 
 /// One signaling connection's life. Ok when the proxy should leave.
-fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, hub: &mut Hub, requests: &Receiver<Request>, out: &Receiver<String>, ended: &Receiver<(String, Option<Reason>)>, clients: &AtomicUsize) -> Result<()> {
+fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, hub: &mut Hub, requests: &Receiver<PendingRequest>, out: &Receiver<String>, ended: &Receiver<(String, Option<Reason>)>, clients: &AtomicUsize) -> Result<()> {
     loop {
         match ws.read() {
             Ok(Message::Text(t)) => hub.on_server(t.as_str()),
@@ -310,7 +336,7 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, hub: &mut Hub, requests:
         // A call waits for the device list and the STUN and TURN servers, which come right
         // after connecting.
         if !hub.list.is_null() && !hub.ice.is_null() {
-            while let Ok(r) = requests.try_recv() {
+            while let Some((r, deadline)) = next_request(requests) {
                 if let Request::Quit(reply) = r {
                     for (_, (_, tx)) in hub.links.drain() {
                         let _ = tx.send(LinkEvent::Leave);
@@ -324,7 +350,7 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, hub: &mut Hub, requests:
                     let _ = ws.close(None);
                     return Ok(());
                 }
-                hub.on_request(r);
+                hub.on_request(r, deadline);
             }
         }
         // No AI client is connected any more (it quit, was closed or crashed): the computers it
@@ -353,6 +379,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expired_calls_are_not_dispatched_when_signaling_returns() {
+        let (tx, rx) = channel();
+        let deadline = Instant::now() + Duration::from_millis(10);
+        let (reply, expired) = channel();
+        tx.send((Request::Call { computer: "Desk".into(), request: json!({"id": 1}), reply }, Some(deadline))).unwrap();
+        for (id, deadline) in [(2, Some(deadline + Duration::from_secs(60))), (3, None)] {
+            let (reply, _) = channel();
+            tx.send((Request::Call { computer: "Desk".into(), request: json!({"id": id}), reply }, deadline)).unwrap();
+        }
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        for id in [2, 3] {
+            let Some((Request::Call { request, .. }, _)) = next_request(&rx) else { panic!("expected a call") };
+            assert_eq!(request["id"], id);
+        }
+        assert!(next_request(&rx).is_none());
+        assert_eq!(expired.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected));
+    }
+
+    #[test]
     fn a_computer_is_named_by_its_id_or_its_one_name() {
         let list = json!([{ "id": "H1", "name": "Desk" }, { "id": "H2", "name": "Mac" }, { "id": "H3", "name": "mac" }]);
         assert_eq!(resolve(&list, "H2").unwrap()["id"], "H2");
@@ -363,7 +408,7 @@ mod tests {
 
     #[test]
     fn the_computers_list_says_what_ai_may_do_on_each() {
-        let all: Vec<&str> = wire::tools::all().iter().map(|t| t.name.as_str()).collect();
+        let all: Vec<&str> = wire::tools::all().iter().map(|t| t.spec.name.as_str()).collect();
         let older: Vec<&str> = all.iter().copied().filter(|t| *t != "ui_tree").collect();
         let list = json!([
             { "id": "H1", "name": "Desk", "os": "windows", "online": true, "here": true, "tools": all, "ai": { "state": "on", "name": "Claude", "admin": false, "ts": 1 } },

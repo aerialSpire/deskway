@@ -87,12 +87,12 @@ of them allow AI control.
 | `deskway login --server URL --user NAME [--name NAME]` | Signs this machine in; a browser approves it |
 | `deskway logout [--forget]` | Signs out. `--forget` also deletes the device key |
 | `deskway mcp` | The MCP server an AI client starts (stdio) |
+| `deskway gateway --listen IP:PORT` | Serves MCP over HTTP on loopback for remote AI clients |
 | `deskway computers` | Lists the account's computers and where AI control is allowed |
 | `deskway call COMPUTER TOOL [JSON]` | Makes one tool call, as an AI client would |
 | `deskway update` | Replaces this program with the server's version now |
 
-Several AI client windows on one machine share one connection through a local proxy that
-`deskway mcp` starts and stops by itself.
+AI clients using the same Deskway profile share one proxy and one link to each computer in use.
 
 `deskway` keeps its sign-in in `%LOCALAPPDATA%\Deskway\cli` on Windows and
 `~/Library/Application Support/Deskway/cli` on macOS. On Linux it uses
@@ -100,9 +100,76 @@ Several AI client windows on one machine share one connection through a local pr
 otherwise. Set `DESKWAY_CLI_HOME` to use another folder. On Linux the state folder has mode
 `0700` and `device.json` holds the unsealed device key with mode `0600`.
 
+## Serve MCP over HTTP
+
+Run the gateway for a remote MCP client that connects over HTTPS. Sign in and approve
+`deskway` first, then start the gateway as the same user with the same profile:
+
+```sh
+deskway gateway --listen 127.0.0.1:8765
+```
+
+The gateway serves Streamable HTTP at `http://127.0.0.1:8765/mcp`. You can also listen on
+`[::1]`. Put an authenticating HTTPS server in front of it before offering remote access and
+cap request bodies at 2 MiB before forwarding them.
+Anyone who can reach the gateway can act as that approved Deskway AI client. For a fronting
+server that preserves the public Host header, set `--public-host mcp.example.net` (include a
+nondefault HTTPS port if used). If a caller sends an Origin header, its origin must match the
+request's local HTTP or configured public HTTPS authority.
+
+The gateway serves MCP `2025-06-18` and `2025-11-25` with the initialization handshake and
+`2026-07-28` with per-request metadata and `server/discover`. Requests are independent of
+the HTTP connection and responses use JSON. The gateway offers `2025-11-25` to clients that
+request the unsupported `2025-03-26` revision during initialization. Clients can use the
+offered revision if they support it. The gateway supports one approved identity per process.
+Use separate `DESKWAY_CLI_HOME` directories and processes for separate identities.
+
+Gateway calls reuse the link opened by any Deskway client in the same profile. The computer
+gives up its AI seat after 10 minutes without a tool call, when the last client of the profile's
+proxy disconnects, or immediately when you call `release`. The gateway offers the same tool
+annotations as `deskway mcp`. Use stdio for `copy_to`, `copy_from`, and `tunnel`, which use paths
+or ports on the machine running Deskway.
+
+The gateway sends its JSON-RPC error messages and tool errors in English.
+
+### Remote call limits
+
+- `--call-timeout-seconds` defaults to 240 seconds, including the time to connect to the
+  computer. The proxy discards calls still queued at the deadline. A call already sent can
+  take effect after the timeout. Check the outcome before trying again. The gateway never
+  replays a call when the connection closes.
+- `--max-result-chars` defaults to 150,000 characters of serialized tool result JSON. The
+  minimum is 512 characters to allow room for a limit error. A larger result is refused in
+  full. Ask for less where the tool supports it, or ask the gateway operator to raise the
+  limit. The link to the computer still has its own 1 MiB message limit.
+
+An HTTP POST can carry up to 2 MiB of JSON, including MCP request metadata. The gateway
+handles up to 32 requests at once and returns HTTP `503` when all slots are in use.
+
+All forwarded calls can spend time establishing or recovering a link. This table covers the
+tools' own waits and outputs after that connection is ready.
+
+| Tools | Time and result size |
+|---|---|
+| `computers`, `computer_info` | Directory and computer information return without a requested wait. The result grows with the number of computers or displays. |
+| `release` | The proxy releases the link and returns a small acknowledgment. |
+| `audit_read` | Reads the bounded audit log. A page can exceed the result limit. Lower `limit` and use `offset` to read on. |
+| `screenshot` | Capture can wait up to 15 seconds. Base64 adds about one third to the JPEG size before its JSON fields. A detailed screenshot can exceed the limit. Ask for a smaller `max_width`. |
+| `wait_for` | Can wait up to 60 seconds plus one more poll and capture. Returns a small status and timing result. |
+| `click`, `move`, `drag`, `scroll`, `key`, `type` | Send input and return small acknowledgments. |
+| `run`, `proc_read`, `proc_start` | `run` can wait up to 600 seconds and `proc_read` up to 30 seconds. Use a shorter `wait_ms`. `proc_start` waits briefly for initial output. Any of these can return large output. Redirect large output to a file and use `fs_read` in pieces. |
+| `proc_write`, `proc_kill` | Send input to or stop a program. Writing can wait for the program to take input. Stopping waits up to five seconds for exit. Both return small results. |
+| `proc_list`, `fs_list` | Program records and directory entries can exceed the result limit. List a smaller folder where possible. |
+| `fs_read` | Reads up to 256 KiB per call. Text or base64 can exceed the result limit. Use a smaller `length` and continue from `next`. |
+| `fs_stat`, `fs_write`, `fs_hash`, `fs_move`, `fs_delete` | Return small results in normal use. Filesystem time depends on the file, directory, and storage. Hashing reads the whole file and recursive deletion visits the tree. |
+| `clipboard_get`, `clipboard_set` | Reading returns the clipboard text, which can exceed the result limit. Writing returns a small acknowledgment. |
+| `windows`, `app_list`, `ui_tree` | Window, application and accessibility lists can exceed the limit. For `ui_tree`, ask for fewer levels or nodes. |
+| `window_act`, `app_open`, `app_quit`, `ui_act` | Perform an action and return a small result in normal use. `app_quit` can wait up to five seconds. |
+| `copy_to`, `copy_from`, `tunnel` | Available through stdio. |
+
 ## Updates
 
-`deskway` keeps itself up to date. When it starts, and every hour after that, it compares itself
+`deskway mcp` keeps itself up to date. When it starts, and every hour after that, it compares itself
 with the program the server serves and replaces itself if they differ. The new version takes
 effect the next time the AI client starts `deskway mcp`. Released servers fetch their own
 release's programs automatically at startup. Replace files directly in `clients` only for
