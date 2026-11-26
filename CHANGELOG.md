@@ -17,6 +17,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Changed
 
+- Computers measure relay latency so the server can offer them the nearest responding relay for their sessions.
 - Keep this computer awake pauses its request on battery below 15% and resumes on external power or at 15% or higher.
 - Server upgrades keep the previous host protocol working, show which computers need updates, and include an `upgrade-check` command.
 - Deskway Host and the web client now share a D mark formed by a screen and a circle.
@@ -26,6 +27,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Computers fall back to the first online relay node when no latency measurement is usable and the main relay is disabled.
 - Relay setup explains when to pass `-public-ip`, supports copying the join command by hand, and keeps relay authentication separate from sign-in limits.
 - The server installer uses DNS for the public TURN address, enables the service on reruns, and shows recent journal entries if startup fails.
 - Sessions can start over the HTTPS relay while attempts to reach the usual TURN port are still pending.

@@ -128,6 +128,8 @@ Each node's secret can mint TURN credentials for that node and authenticate its 
 the main server. It grants no access to accounts or signaling and cannot mint credentials
 for the main relay or other nodes.
 
+A computer learns the online relays' STUN addresses and can influence relay choice only for its own sessions.
+
 Only the admin can create a join token or manage nodes. The node exchanges the token once
 over HTTPS and stores its own secret in a private file with mode `0600` on Unix. The main
 server verifies the HMAC over the node ID and timestamp on each report and checks that the

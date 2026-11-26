@@ -3,18 +3,12 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/pion/turn/v5"
-
-	"deskway/internal/proto"
 )
 
 func relayFixture(t *testing.T) (*fixture, *atomic.Int64) {
@@ -152,21 +146,11 @@ func TestAdminRenamesAndRemovesARelay(t *testing.T) {
 		t.Fatal("admin list did not show the new name without the secret")
 	}
 
-	socket := f.browserSocket(f.srv.URL, admin)
-	if got := len(socket.next("ice").ICE); got != 0 {
-		t.Fatalf("offered %d relays before a report", got)
-	}
 	report := func(ts int64) relayReport {
 		return relayReport{ID: r.ID, TS: ts, MAC: relayReportMAC(r.Secret, r.ID, ts)}
 	}
 	want(t, "report", f.status(f.srv.Client(), "POST", "/api/relays/report", report(now.Load())), http.StatusNoContent)
-	if got := len(socket.next("ice").ICE); got != 1 {
-		t.Fatalf("offered %d relays after a report", got)
-	}
 	want(t, "remove", f.status(admin, "DELETE", path, nil), http.StatusNoContent)
-	if got := len(socket.next("ice").ICE); got != 0 {
-		t.Fatalf("still offered %d relays after removal", got)
-	}
 	want(t, "removed relay reports", f.status(f.srv.Client(), "POST", "/api/relays/report", report(now.Add(1))), http.StatusUnauthorized)
 	var stored Store
 	if err := readState(f.data, &stored); err != nil || len(stored.Relays) != 0 {
@@ -174,70 +158,34 @@ func TestAdminRenamesAndRemovesARelay(t *testing.T) {
 	}
 }
 
-func TestOpenBrowserSocketDropsAnExpiredRelay(t *testing.T) {
-	f, now := relayFixture(t)
-	admin := f.signedIn("me")
-	r := joinRelay(f, relayToken(f, admin))
-	ts := now.Load()
-	report := relayReport{ID: r.ID, TS: ts, MAC: relayReportMAC(r.Secret, r.ID, ts)}
-	want(t, "report", f.status(f.srv.Client(), "POST", "/api/relays/report", report), http.StatusNoContent)
-
-	// Leave one second on the socket's expiry timer, then advance the relay clock past it.
-	now.Add(int64(relayOnlineTTL/time.Second) - 1)
-	socket := f.browserSocket(f.srv.URL, admin)
-	if got := len(socket.next(proto.TypeICE).ICE); got != 1 {
-		t.Fatalf("offered %d relays before expiry, want 1", got)
-	}
-	now.Add(1)
-	if got := len(socket.next(proto.TypeICE).ICE); got != 0 {
-		t.Fatalf("still offered %d relays after expiry", got)
-	}
-}
-
-func TestICEProviderOffersNewestOnlineRelays(t *testing.T) {
-	f := newFixtureWithServer(t, func(s *Server) {
-		s.turn = TURNConfig{PublicIP: "203.0.113.10", Port: 3478, Secret: s.store.TURNSecret, TLSAddr: "desk.example:443"}
-		s.stun = []string{"stun:stun.example:3478"}
-	})
-	s := f.s
+func TestNearestRelay(t *testing.T) {
+	main := TURNConfig{PublicIP: "203.0.113.10", Port: 3478, Secret: "main-secret"}
+	node := RelayRecord{ID: "node", PublicIP: "192.0.2.1", Port: 3478, Secret: "node-secret"}
+	other := RelayRecord{ID: "other", PublicIP: "192.0.2.2", Port: 3478, Secret: "other-secret"}
+	online := []RelayRecord{node, other}
+	relay := TURNConfig{PublicIP: node.PublicIP, Port: node.Port, Secret: node.Secret}
+	second := TURNConfig{PublicIP: other.PublicIP, Port: other.Port, Secret: other.Secret}
 	for _, tc := range []struct {
-		n    int
-		want []int
+		name   string
+		main   TURNConfig
+		online []RelayRecord
+		rtts   map[string]int
+		want   TURNConfig
 	}{
-		{0, nil}, {1, []int{1}}, {4, []int{4, 3, 2}},
+		{"no measurement", main, online, nil, main},
+		{"main nearest", main, online, map[string]int{mainRelayID: 10, node.ID: 20}, main},
+		{"a node nearest", main, online, map[string]int{mainRelayID: 20, node.ID: 0, other.ID: 10}, relay},
+		{"nearest node offline", main, online[1:], map[string]int{mainRelayID: 20, node.ID: 5, other.ID: 10}, second},
+		{"main relay not configured", TURNConfig{}, online, map[string]int{mainRelayID: 1, node.ID: 5}, relay},
+		{"no main relay or usable measurement", TURNConfig{}, online, map[string]int{other.ID: -1}, relay},
+		{"no main relay or online node", TURNConfig{}, nil, nil, TURNConfig{}},
+		{"unknown id", main, online, map[string]int{"unknown": 1}, main},
+		{"negative measurement", main, online, map[string]int{node.ID: -1}, main},
+		{"tie", main, online, map[string]int{mainRelayID: 5, node.ID: 5}, main},
 	} {
-		t.Run(fmt.Sprint(tc.n), func(t *testing.T) {
-			s.relays.mu.Lock()
-			for i := len(s.store.relayRecords()) + 1; i <= tc.n; i++ {
-				r := RelayRecord{ID: fmt.Sprint(i), PublicIP: fmt.Sprintf("192.0.2.%d", i), Port: 3478, Secret: randomHex(32)}
-				if err := s.store.addRelay(r); err != nil {
-					s.relays.mu.Unlock()
-					t.Fatal(err)
-				}
-				s.relays.seen[r.ID] = relayPresence{received: time.Now()}
-			}
-			s.relays.mu.Unlock()
-			const account = "account"
-			ice := s.ICEProvider(account)
-			if len(ice) != len(tc.want)+2 || !slices.Equal(ice[0].URLs, s.stun) ||
-				!slices.Contains(ice[1].URLs, "turns:desk.example:443?transport=tcp") {
-				t.Fatalf("unexpected ICE entries with %d nodes", tc.n)
-			}
-			for i, id := range tc.want {
-				node := ice[i+2]
-				addr := fmt.Sprintf("192.0.2.%d:3478", id)
-				want := []string{"stun:" + addr, "turn:" + addr + "?transport=udp", "turn:" + addr + "?transport=tcp"}
-				if !slices.Equal(node.URLs, want) {
-					t.Fatalf("node %d URLs = %v, want %v", id, node.URLs, want)
-				}
-				attrs := turn.RequestAttributes{Username: node.Username, Realm: "deskway"}
-				credential := turn.GenerateAuthKey(node.Username, attrs.Realm, node.Credential)
-				for _, r := range s.store.relayRecords() {
-					user, key, ok := turn.LongTermTURNRESTAuthHandler(r.Secret, nil)(&attrs)
-					if !ok || user != account || bytes.Equal(credential, key) != (r.ID == fmt.Sprint(id)) {
-						t.Fatalf("credential for node %d has unexpected authentication against node %s", id, r.ID)
-					}
-				}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nearestRelay(tc.main, tc.online, tc.rtts); got != tc.want {
+				t.Fatalf("nearest relay address = %s, want %s", got.PublicIP, tc.want.PublicIP)
 			}
 		})
 	}

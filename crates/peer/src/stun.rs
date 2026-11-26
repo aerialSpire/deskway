@@ -1,6 +1,8 @@
-//! Minimal STUN binding client, used to learn this host's public address.
+//! STUN binding requests for discovering a public address and measuring relay latency.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::collections::HashMap;
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use crate::net::resolve_ipv4;
@@ -91,6 +93,64 @@ impl Probe {
     }
 }
 
+#[derive(Default)]
+struct RoundTrip {
+    pending: Option<(u64, Instant)>,
+    best: Option<Duration>,
+}
+
+impl RoundTrip {
+    fn sample(&mut self, id: u64, now: Instant) -> [u8; 20] {
+        self.pending = Some((id, now));
+        request(id)
+    }
+
+    fn answer(&mut self, data: &[u8], now: Instant) -> bool {
+        let Some((id, sent)) = self.pending else { return false };
+        if parse(data, id).is_none() {
+            return false;
+        }
+        let elapsed = now - sent;
+        self.best = Some(self.best.map_or(elapsed, |best| best.min(elapsed)));
+        self.pending = None;
+        true
+    }
+}
+
+/// Samples all relay addresses in parallel on one socket. Run off the signaling thread.
+pub fn measure(servers: impl IntoIterator<Item = SocketAddr>) -> HashMap<SocketAddr, Duration> {
+    let mut probes: HashMap<_, RoundTrip> = servers.into_iter().filter(SocketAddr::is_ipv4).map(|addr| (addr, RoundTrip::default())).collect();
+    let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else { return HashMap::new() };
+    let mut data = [0; 1024];
+    for _ in 0..TRIES {
+        let mut pending = 0;
+        for (addr, probe) in &mut probes {
+            let id = u64::from_be_bytes(wire::crypto::random());
+            if socket.send_to(&probe.sample(id, Instant::now()), addr).is_ok() {
+                pending += 1;
+            } else {
+                probe.pending = None;
+            }
+        }
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while pending > 0 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || socket.set_read_timeout(Some(left)).is_err() {
+                break;
+            }
+            let (len, source) = match socket.recv_from(&mut data) {
+                Ok(packet) => packet,
+                Err(e) if matches!(e.kind(), ErrorKind::ConnectionReset | ErrorKind::ConnectionRefused | ErrorKind::Interrupted) => continue,
+                Err(_) => break,
+            };
+            if probes.get_mut(&source).is_some_and(|p| p.answer(&data[..len], Instant::now())) {
+                pending -= 1;
+            }
+        }
+    }
+    probes.into_iter().filter_map(|(addr, probe)| Some((addr, probe.best?))).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +189,25 @@ mod tests {
         assert_eq!(p.answer(server, local, &answer_for(id + 1)), None, "only for its transaction");
         assert_eq!(p.answer(server, local, &answer_for(id)), Some("203.0.113.9:5000".parse().unwrap()), "a late answer still counts");
         assert_eq!(p.answer(server, local, &answer_for(id)), None, "the first answer only");
+    }
+
+    #[test]
+    fn round_trips_keep_the_fastest_answer_and_leave_out_unanswered_probes() {
+        let t0 = Instant::now();
+        let mut answered = RoundTrip::default();
+        let mut unanswered = RoundTrip::default();
+        for (i, ms) in [80, 15, 40].into_iter().enumerate() {
+            let now = t0 + Duration::from_secs(i as u64);
+            let id = i as u64;
+            answered.sample(id, now);
+            unanswered.sample(id, now);
+            assert!(!answered.answer(&answer_for(id ^ 1), now));
+            let reply = answer_for(id);
+            assert!(answered.answer(&reply, now + Duration::from_millis(ms)));
+            assert!(!answered.answer(&reply, now + Duration::from_millis(ms + 1)));
+        }
+        assert_eq!(answered.best, Some(Duration::from_millis(15)));
+        assert_eq!(unanswered.best, None);
     }
 
     #[test]

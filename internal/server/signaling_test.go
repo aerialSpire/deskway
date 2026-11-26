@@ -123,7 +123,10 @@ func (f *fixture) browserSocket(url string, c *http.Client) *peer {
 }
 
 func (f *fixture) hostSocket(url, id string) *peer {
-	h := f.dialPeer(url+"/ws/host?id="+id, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer tok-" + id}}})
+	h := f.dialPeer(url+"/ws/host?id="+id, &websocket.DialOptions{
+		HTTPClient: f.srv.Client(),
+		HTTPHeader: http.Header{"Authorization": {"Bearer tok-" + id}},
+	})
 	h.next(proto.TypeHello)
 	return h
 }
@@ -143,7 +146,7 @@ func holding(sid, user string) proto.Msg {
 }
 
 // connect runs challenge, nonce, offer and answer for session sid, and the host reports it.
-func (f *fixture) connect(t *testing.T, b, h *peer, sid string) {
+func (f *fixture) connect(t *testing.T, b, h *peer, sid string) proto.Msg {
 	t.Helper()
 	b.send(proto.Msg{Type: proto.TypeChallenge, Session: sid, Device: "pc1"})
 	if ch := h.next(proto.TypeChallenge); ch.Session != sid {
@@ -154,7 +157,8 @@ func (f *fixture) connect(t *testing.T, b, h *peer, sid string) {
 		t.Fatalf("nonce: %+v", n)
 	}
 	b.send(proto.Msg{Type: proto.TypeOffer, Session: sid, Device: "pc1", Epoch: epoch(0), SDP: "offer", User: "forged"})
-	if o := h.next(proto.TypeOffer); o.SDP != "offer" || o.User != f.id("me") || o.Epoch == nil || *o.Epoch != 0 {
+	o := h.next(proto.TypeOffer)
+	if o.SDP != "offer" || o.User != f.id("me") || o.Epoch == nil || *o.Epoch != 0 {
 		t.Fatalf("offer: identity must come from the login, the epoch passes: %+v", o)
 	}
 	h.send(proto.Msg{Type: proto.TypeAnswer, Session: sid, Epoch: epoch(0), SDP: "answer", Auth: json.RawMessage(`{"sig":"s","hk":"k"}`)})
@@ -163,6 +167,7 @@ func (f *fixture) connect(t *testing.T, b, h *peer, sid string) {
 	}
 	h.send(holding(sid, f.id("me")))
 	b.next(proto.TypeDevices)
+	return o
 }
 
 func TestHellosCarryVersionAndHostCaps(t *testing.T) {

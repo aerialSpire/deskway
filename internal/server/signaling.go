@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"maps"
 	"net/http"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -60,7 +62,8 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	}
 	s.locateOn(c)
 
-	s.pump(ctx, c, s.fromHost)
+	watchRelays := sync.OnceFunc(func() { go s.sendRelayLists(ctx, c) })
+	s.pump(ctx, c, func(c *conn, m proto.Msg) { s.fromHost(c, m, watchRelays) })
 
 	s.mu.Lock()
 	removed := s.hosts[id] == c
@@ -126,29 +129,42 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sendICE gives the browser its STUN and TURN servers now, when the relay selection
-// changes, and before the credentials expire.
+// sendICE gives browsers and AI clients the main server's entries and renews their credentials.
 func (s *Server) sendICE(ctx context.Context, c *conn) {
 	t := time.NewTicker(iceRenew)
 	defer t.Stop()
-	var previous []TURNConfig
-	renew := true
 	for {
-		nodes, untilExpiry, changed := s.offeredRelays()
-		if renew || !slices.Equal(nodes, previous) {
-			c.send(proto.Msg{Type: proto.TypeICE, ICE: s.iceServers(c.user, nodes)})
-			previous, renew = nodes, false
-		}
-		var expiry <-chan time.Time
-		if untilExpiry > 0 {
-			expiry = time.After(untilExpiry)
-		}
+		c.send(proto.Msg{Type: proto.TypeICE, ICE: s.iceServers(c.user, s.turn)})
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			renew = true
-		case <-expiry:
+		}
+	}
+}
+
+func (s *Server) sendRelayLists(ctx context.Context, c *conn) {
+	var previous map[string]string
+	for {
+		nodes, changed := s.onlineRelays()
+		addresses := make(map[string]string, len(nodes)+1)
+		if s.turn.PublicIP != "" {
+			addresses[mainRelayID] = relayAddress(s.turn.PublicIP, s.turn.Port)
+		}
+		for _, node := range nodes {
+			addresses[node.ID] = relayAddress(node.PublicIP, node.Port)
+		}
+		if previous == nil || !maps.Equal(addresses, previous) {
+			probe := randomHex(16)
+			s.mu.Lock()
+			c.relayProbe = probe
+			s.mu.Unlock()
+			c.send(proto.Msg{Type: proto.TypeRelayList, Probe: probe, Relays: &addresses})
+			previous = addresses
+		}
+		select {
+		case <-ctx.Done():
+			return
 		case <-changed:
 		}
 	}
@@ -312,7 +328,7 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 }
 
 // fromHost takes what a computer sends. A host speaks only on sessions addressed to it.
-func (s *Server) fromHost(c *conn, m proto.Msg) {
+func (s *Server) fromHost(c *conn, m proto.Msg, watchRelays func()) {
 	switch m.Type {
 	case proto.TypeHello:
 		var tools []string
@@ -328,12 +344,23 @@ func (s *Server) fromHost(c *conn, m proto.Msg) {
 		}
 		c.version = max(0, m.Version)
 		c.caps = m.Caps[:min(len(m.Caps), 64)]
+		measureRelays := slices.Contains(c.caps, proto.CapRelayRTT)
 		err := s.store.SetHostHello(c.deviceID, c.version, tools)
 		s.mu.Unlock()
 		if err != nil {
 			log.Printf("server: keep %s's hello: %v", c.deviceID, err)
 		}
+		if measureRelays {
+			watchRelays()
+		}
 		s.broadcastDevices()
+		return
+	case proto.TypeRelayRTTs:
+		s.mu.Lock()
+		if c.relayProbe != "" && m.Probe == c.relayProbe {
+			c.relayRTTs = m.RelayRTTs
+		}
+		s.mu.Unlock()
 		return
 	case proto.TypeStatus:
 		s.onStatus(c, m)

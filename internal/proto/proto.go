@@ -42,7 +42,12 @@ const (
 	TypeHere      = "here"      // host -> server: that is this computer
 	TypeAuditReq  = "auditreq"  // browser -> server -> host: the computer's record of AI clients' calls
 	TypeAudit     = "audit"     // host -> server -> browser: that record
+
+	TypeRelayList = "relay-list" // server -> host: relays to measure
+	TypeRelayRTTs = "relay-rtts" // host -> server: the measured round-trip times
 )
+
+const CapRelayRTT = "relay-rtt"
 
 // MaxAuth bounds the opaque end-to-end authentication blob carried with offers, answers and
 // pairing messages. The server never interprets it: the host and browser verify it themselves.
@@ -182,7 +187,10 @@ type Msg struct {
 	Screen     string          `json:"screen,omitempty"` // which display a thumbnail shows
 	AI         *AiSwitch       `json:"ai,omitempty"`     // devlog: the computer's latest AI switch
 	Where      []string        `json:"where,omitempty"`  // locate: where a browser or AI client runs
-	Probe      string          `json:"probe,omitempty"`  // locate, auditreq to a host, and the answers: the socket asking
+	Probe      string          `json:"probe,omitempty"`  // matches a host's reply to a request
 	Query      json.RawMessage `json:"query,omitempty"`  // auditreq: which recorded AI calls
 	Page       json.RawMessage `json:"page,omitempty"`   // audit: a page of them, from the computer
+
+	Relays    *map[string]string `json:"relays,omitempty"` // relay-list: STUN addresses by ID; send even when empty
+	RelayRTTs map[string]int     `json:"rtts,omitempty"`   // relay-rtts: milliseconds by relay ID
 }

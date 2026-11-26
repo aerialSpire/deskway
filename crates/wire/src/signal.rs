@@ -1,5 +1,7 @@
 //! `signaling.host`: the host's WebSocket to the server.
 
+use std::collections::HashMap;
+
 use super::types::{AiState, AiSwitch, AnswerAuth, Display, Holder, IceCandidate, IceServer, LogEntry, OfferAuth, PairAuth, PairedAuth, Reason, View};
 use super::wire_enum;
 
@@ -33,6 +35,8 @@ wire_enum! {
         "account" => Account { "user" user: String, "display" display: String },
         "locate" => Locate { "probe" probe: String, "where" place: Vec<String> },
         "here" => Here { "probe" probe: String },
+        "relay-list" => RelayList { "probe" probe: String, "relays" relays: HashMap<String, String> },
+        "relay-rtts" => RelayRtts { "probe" probe: String, "rtts" rtts: HashMap<String, u32> },
         "auditreq" => AuditRequest { "probe" probe: String, "query" query: serde_json::Value },
         "audit" => Audit { "probe" probe: String, "page" page: serde_json::Value },
         "challenge" => Challenge { "session" session: String },

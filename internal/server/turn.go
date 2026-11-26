@@ -95,24 +95,22 @@ func publicPeersOnly(_ net.Addr, ip net.IP) bool {
 	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified())
 }
 
-// ICEProvider returns, for an account (by its id), ICE servers with short-lived TURN credentials
-// that name it, so the relay counts its traffic against it (relaylimit.go). A browser gets its
-// account's; a host, those of the account of the session it is offered.
-func (s *Server) ICEProvider(account string) []proto.ICEServer {
-	nodes, _, _ := s.offeredRelays()
-	return s.iceServers(account, nodes)
+func (s *Server) hostICE(account string, host *conn) []proto.ICEServer {
+	s.mu.Lock()
+	rtts := host.relayRTTs
+	s.mu.Unlock()
+	nodes, _ := s.onlineRelays()
+	return s.iceServers(account, nearestRelay(s.turn, nodes, rtts))
 }
 
-func (s *Server) iceServers(account string, nodes []TURNConfig) []proto.ICEServer {
+// Credentials name the account so the relay counts its traffic against it (relaylimit.go).
+func (s *Server) iceServers(account string, relay TURNConfig) []proto.ICEServer {
 	out := []proto.ICEServer{}
 	if len(s.stun) > 0 {
 		out = append(out, proto.ICEServer{URLs: s.stun})
 	}
-	if s.turn.PublicIP != "" {
-		out = appendTURN(out, s.turn, account)
-	}
-	for _, node := range nodes {
-		out = appendTURN(out, node, account)
+	if relay.PublicIP != "" {
+		out = appendTURN(out, relay, account)
 	}
 	return out
 }
@@ -123,10 +121,14 @@ func appendTURN(out []proto.ICEServer, cfg TURNConfig, account string) []proto.I
 		log.Printf("server: TURN credentials: %v", err)
 		return out
 	}
-	base := net.JoinHostPort(cfg.PublicIP, strconv.Itoa(cfg.Port))
+	base := relayAddress(cfg.PublicIP, cfg.Port)
 	urls := []string{"stun:" + base, "turn:" + base + "?transport=udp", "turn:" + base + "?transport=tcp"}
 	if cfg.TLSAddr != "" {
 		urls = append(urls, "turns:"+cfg.TLSAddr+"?transport=tcp")
 	}
 	return append(out, proto.ICEServer{URLs: urls, Username: user, Credential: pass})
+}
+
+func relayAddress(ip string, port int) string {
+	return net.JoinHostPort(ip, strconv.Itoa(port))
 }

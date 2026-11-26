@@ -20,7 +20,7 @@ const (
 	relayJoinTTL        = 10 * time.Minute
 	relayReportInterval = 30 * time.Second
 	relayOnlineTTL      = 3 * relayReportInterval
-	maxOfferedRelays    = 3
+	mainRelayID         = "main"
 )
 
 // Only presence and pending tokens live here. The store owns the relay records and secrets.
@@ -249,26 +249,38 @@ func (s *Server) handleRelayRemove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// offeredRelays picks the newest online nodes. The deadline and change signal let open
-// browser sockets refresh their ICE list when a node expires, comes online or is removed.
-func (s *Server) offeredRelays() (nodes []TURNConfig, untilExpiry time.Duration, changed <-chan struct{}) {
+// onlineRelays snapshots online nodes and the relay change signal.
+func (s *Server) onlineRelays() (nodes []RelayRecord, changed <-chan struct{}) {
 	rs := &s.relays
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	now := rs.now()
-	for _, relay := range slices.Backward(s.store.relayRecords()) {
-		p := rs.seen[relay.ID]
-		if !p.online(now) {
-			continue
-		}
-		left := p.received.Add(relayOnlineTTL).Sub(now)
-		if untilExpiry == 0 || left < untilExpiry {
-			untilExpiry = left
-		}
-		nodes = append(nodes, TURNConfig{PublicIP: relay.PublicIP, Port: relay.Port, Secret: relay.Secret})
-		if len(nodes) == maxOfferedRelays {
-			break
+	for _, relay := range s.store.relayRecords() {
+		if rs.seen[relay.ID].online(now) {
+			nodes = append(nodes, relay)
 		}
 	}
-	return nodes, untilExpiry, rs.changed
+	return nodes, rs.changed
+}
+
+// nearestRelay chooses the fastest measured relay, with ties and fallback favoring
+// the main relay followed by online nodes in store order.
+func nearestRelay(main TURNConfig, online []RelayRecord, rtts map[string]int) TURNConfig {
+	var chosen *RelayRecord
+	if main.PublicIP == "" && len(online) > 0 {
+		chosen = &online[0]
+	}
+	best, measured := rtts[mainRelayID]
+	measured = measured && best >= 0 && main.PublicIP != ""
+	for i := range online {
+		node := &online[i]
+		if rtt, ok := rtts[node.ID]; ok && rtt >= 0 && (!measured || rtt < best) {
+			chosen = node
+			best, measured = rtt, true
+		}
+	}
+	if chosen == nil {
+		return main
+	}
+	return TURNConfig{PublicIP: chosen.PublicIP, Port: chosen.Port, Secret: chosen.Secret}
 }
