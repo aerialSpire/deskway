@@ -24,7 +24,7 @@ Every change follows these rules:
 
 | Platform | Processes |
 |---|---|
-| Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
+| Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): the ordinary workspace (browser Terminal and Files, AI programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
 | Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the desk seat's terminal, and the AI seat with its in-process workspace for commands, files and tunnels. |
 | AI client's machine | `deskway` (cli/): `login`, `mcp` for MCP over stdio, `gateway` for MCP over HTTP, and a proxy that holds the profile's sign-in and a link to each computer in use. Clients share the profile's proxy by default. A supervised gateway can own its proxy in-process. |
@@ -110,7 +110,7 @@ mcp/               an AI session's MCP requests, answered off the session thread
 tools/             the tools of proto/tools.json: mod.rs registers base, work and desktop tools
 workspace/         commands and files as the workspace user: mod.rs (Op, Workspace and errors),
                    local.rs (in this process), procs.rs (programs and retained output), files.rs
-                   and files/browse.rs (paged directory selection and Linux browser operations),
+                   and files/browse.rs (paged directory selection and browser operations),
                    files/transfer.rs (staged writes, streaming reads and partial cleanup),
                    desktop.rs (DesktopOp), remote.rs (Windows user worker pipe)
 audit.rs           what AI clients did here: JSON lines, appended only, bounded
@@ -143,8 +143,9 @@ capabilities and AI tool names, which seats can be admitted, and the tool table 
 MCP gate. Every host offers the base tools. A workspace adds work tools, including loopback
 tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
-according to the live hello's `desk` capability. Linux offers `terminal` and `terminal-keep`
-through its PTY launcher and `browse` and `file-transfer` through its local workspace.
+according to the live hello's `desk` capability. Windows and Linux offer `terminal`, `terminal-keep`,
+`browse` and `file-transfer` through the ordinary user's workspace. View-only hosts omit
+those capabilities. The host status reports why a browser workspace is unavailable.
 Verified data-only and picture browser offers contend for the same desk seat. A picture offer to a Linux host receives
 `no_desktop`. A data-only browser offer to a host without terminal support receives `no_terminal`.
 The AI seat uses the same device proofs and signed AI switch on all hosts.
@@ -157,7 +158,11 @@ The browser uses the returned path and cursor for successive pages. The AI listi
 until it has up to 2,000 readable entries, with its own `more` field. The workspace checks seat
 ownership before each transfer filesystem step. A transfer holds one worker slot so a second
 slot can service browsing. Its channel and receiver credit limit the amount of transfer data
-competing with terminal and browse traffic.
+competing with terminal and browse traffic. On Windows, file handles and ConPTY live in the
+ordinary user worker. A worker request for PTY bytes or file contents carries up to one frame
+and waits for its reply. ConPTY has a bounded input queue and supplies up to the requested
+output capacity. The foreground host uses the same Windows filesystem and ConPTY code
+in-process.
 The host keeps the current transfer record and final reply in memory, keyed to the device and
 the authenticated page's resume chain. A new channel takes over the same record after the prior
 worker returns it. The workspace owns the staged upload, its write position, and the pinned
@@ -170,7 +175,12 @@ The host's terminal registry owns the PTY even with no desk session. Only the ad
 session can attach. It owns its own input queue and credit, while the registry owns the recent
 output. A worker drains the PTY when detached, including when signaling is unavailable.
 The registry reports a detached shell's last device and departure time through host status.
-It drops the shell, jobs and replay when the terminal closes or the host stops.
+It drops the shell, jobs and replay when the terminal closes or the host stops. Windows
+WTS session notifications and the input desktop report the console state independently of
+capture. A lock or secure prompt revokes the data seat. The registry keeps draining the PTY
+into replay, and the worker gates input and filesystem calls on the live console state.
+An ended sign-in or a user switch closes the previous user's shell and discards their transfer
+record.
 
 The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
 Starting or enrolling the host takes the same exclusive `host.lock` for that state directory.
@@ -812,7 +822,8 @@ vendor/              the upstream xterm.js modules and stylesheet, loaded on ter
   `clipboard-host` (which uses the real clipboard), `relay` (which uses a fresh account and a
   relay-only host), `first-use` (which runs its own fresh server and Windows hosts), and
   `previous-protocol` (which opens a session on a previous-version host using a fresh account
-  on the current server).
+  on the current server), and `windows-workspace` (which starts an isolated Windows
+  foreground host and exercises Terminal, Files and lock).
 - Use `--areas relay --relay-tls` with an HTTPS `--url` and start the host with
   `DESKWAY_TEST_RELAY=tls` to exercise TURN over the HTTPS port. Silently drop the host's UDP
   and TCP traffic to the server's `-turn-port` (3478 by default) so both attempts time out.

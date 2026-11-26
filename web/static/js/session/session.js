@@ -315,7 +315,7 @@ export class Session {
     this.osk.toggle(false);
     this.connectionStats.stop();
     clearTimeout(this.flashTimer);
-    this.content.destroy();
+    this.content.destroy(end.reason === 'locked' && this.connection.resumable);
     this.keyboard.destroy();
     document.removeEventListener('visibilitychange', this.onFront);
     window.removeEventListener('focus', this.onFront);

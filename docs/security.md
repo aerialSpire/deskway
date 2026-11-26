@@ -222,7 +222,7 @@ checked by the server, without a device signature. The policy entry is
 Device checks are on by default. The switch is on **My devices**, and the corresponding checkbox
 is in the approve and add dialogs. The server cannot turn checks off on its own, because the
 entry must be signed by a device the computer trusts. With checks off, the account password
-alone reaches a shell on a Linux computer. The picture and the terminal inherit the same
+alone reaches a shell on Linux or an unlocked Windows workspace. The picture and the terminal inherit the same
 policy. The host treats the server as the authority for an unsigned browser offer under
 that policy.
 
@@ -448,40 +448,49 @@ The following risks remain and are accepted:
 
 ## Starting a session
 
-An approved browser can open Terminal or Files on a Linux host under the same admission
-and takeover rules as a picture session. The signed SDP selects the session kind. The terminal
-is a login shell in the home directory of the account running Deskway Host, with that
-account's access to programs and files. Deskway starts it without elevation. The shell and its
+An approved browser can open Terminal or Files on a Windows or Linux host under the same
+admission and takeover rules as a picture session. The signed SDP selects the session kind.
+These actions require control rights and are unavailable on a view-only host. On Linux, the
+workspace belongs to the account running Deskway Host. On Windows, it belongs to the ordinary
+worker of the console user. The shell starts in the user's home or profile directory with
+ordinary rights. The shell and its
 programs survive the session that opened them. Any browser admitted to the desk seat can
 return to that shell and receive the host's most recent 256 KiB of output, held only in memory.
 The shell ends on exit, when an attached browser explicitly closes it, after 24 hours detached,
-or when the host stops. Stopping the service ends the shell and its jobs and clears its output.
+when the host stops, or when the Windows sign-in ends or changes users. A Windows lock,
+sign-in screen or secure desktop blocks new data sessions and ends any attached one. This
+closes remote access and allows work in a kept shell to continue. The status comes from the
+console session and input desktop independently of capture. After sign-out or a user switch,
+Deskway clears the old shell, its replay and transfer records.
 The host logs when the terminal opens, is left, is returned to or closes, including the
-device and the reason where applicable. Systemd collects these events in the journal.
-Terminal input and output never go to the journal or to disk through Deskway.
+device and the reason where applicable. These events go to the systemd journal on Linux and
+the Deskway network service log on Windows. Terminal input and output stay out of the logs.
 
-Files uses the privileges of the account running Deskway Host across the filesystem. An
+Files uses the ordinary workspace user’s privileges across the filesystem. An
 admitted browser can see directory entries, including hidden names, wherever this account
 can read them, and can create folders, rename entries and remove files, links or empty
 directories wherever this account can make those changes. A trusted browser can download
 regular file contents and upload files as the host user. Uploads use a private staged
 file, verified with SHA-256, and a no-replace rename unless the person approves replacing a
 regular file. Under the desk-seat guard the host checks the staged path's identity and the
-approved destination's identity, size and modification time without following links. The
-replacement rename is atomic. Another local process can change an entry between these metadata
+approved destination's identity, size and modification time without following links.
+Windows publishes with `MoveFileExW` in the same directory, setting `MOVEFILE_REPLACE_EXISTING`
+only for an approved replacement. This is a single filesystem rename with no copy fallback.
+Data is verified and synced before the move. Windows file sharing and filesystem restrictions
+can cause the rename to fail. Another local process can change an entry between the metadata
 checks and the rename.
 This access includes configuration and credentials owned
 by the host account. Files performs filesystem operations without starting a shell or
 running a file. The host output records the device, operation, path and outcome on one
 line per browse operation. It records the device, direction, path, size, replacement and outcome
-with any failure reason on one line per transfer, including resumed transfers. File contents are never recorded. Systemd
-collects these lines in the journal.
+with any failure reason on one line per transfer, including resumed transfers. The same logs
+carry these lines. File contents stay out of the logs.
 
 The host checks transfer ownership at desk admission using the verified browser credential
 and the page identity carried by its authenticated resume token, and checks the current seat
 before each transfer filesystem step. A takeover discards the previous device's staged upload.
 An upload may return while its peer session remains live or recovering, or after a connection
-failure while the page's existing resume token is valid (up to eight hours from device proof).
+failure or Windows lock while the page's existing resume token is valid (up to eight hours from device proof).
 The host locks that staged file against browse rename, delete and age sweeping during this
 lifetime. It unlinks the partial when the record is dropped. After host restart the sweep uses
 the modification age of remnants.
@@ -567,8 +576,9 @@ The service mode consists of three processes, all from one binary:
 | Agent (`agent`) | SYSTEM token, console session; privileges stripped except SeChangeNotify and SeImpersonate | Capture, encode, input, file transfers (as the signed-in user); follows the input desktop (Default, Winlogon, UAC) | Network |
 | `DeskwayNet` service (`net`) | `NT SERVICE\DeskwayNet` (a virtual account): SeChangeNotify, SeCreateGlobal and SeImpersonate only | Signaling, WebRTC, TURN, device key checks, pairing | Run as SYSTEM, touch the screen |
 
-AI clients' workspace adds the user worker and the admin worker, started from the same binary;
-see [AI clients at the computer](#ai-clients-at-the-computer).
+The user worker serves browser Terminal and Files through its authenticated pipe. The admin
+worker serves elevated AI requests, as described under
+[AI clients at the computer](#ai-clients-at-the-computer).
 
 The desktop panel and the tray icon run as the signed-in user and talk to `DeskwayNet` over
 `\\.\pipe\deskway-ui`. The pipe accepts only the panel's requests (`PanelRequest` in

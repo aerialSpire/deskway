@@ -30,7 +30,7 @@ export class FilesView {
     this.refresh = button(t('files.refresh'), () => this.open(this.path));
     this.menu = dropdown('files:bar', moreButton(t('files.actions')), (item) => [
       item(t('files.home'), () => this.open()),
-      this.path && item(t('files.mkdir'), () => this.enqueue(() => this.nameDialog(this.path))),
+      this.listed && !this.roots && item(t('files.mkdir'), () => this.enqueue(() => this.nameDialog(this.path))),
     ]);
     this.rows = h('div', { role: 'list' });
     this.tail = h('div', { 'aria-hidden': 'true' });
@@ -70,7 +70,7 @@ export class FilesView {
 
   get ready() { return this.channel?.readyState === 'open' && this.s.connected; }
 
-  get canUpload() { return this.ready && this.listed && this.transfers.ready; }
+  get canUpload() { return this.ready && this.listed && !this.roots && this.transfers.ready; }
 
   bindDrop() {
     const files = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
@@ -161,6 +161,7 @@ export class FilesView {
       if (!cursor) {
         this.path = result.path;
         this.listed = true;
+        this.roots = result.roots === true;
         this.drawPath();
       }
       this.cursor = result.cursor;
@@ -174,7 +175,7 @@ export class FilesView {
 
   row(entry) {
     const name = displayName(entry.name);
-    const actions = entryActions(entry);
+    const actions = this.roots ? ['open'] : entryActions(entry);
     const path = this.path;
     const open = () => this.open([...path, entry.name]);
     const menu = dropdown(Symbol(), moreButton(t('files.entryActions', { name })), (item) => {
@@ -196,8 +197,11 @@ export class FilesView {
         target ? h('span', { class: 'files-target', title: target }, '→ ', h('bdi', {}, target)) : null),
       h('div', { class: 'files-meta' }, t(`files.kind.${entry.kind}`), ' · ', bytes.format(entry.size),
         entry.modified === undefined ? null : [' · ', modified.format(entry.modified * 1000)]),
-      h('div', { class: 'files-mode' }, permissions(entry), '  ', h('bdi', {}, safeText(entry.owner))),
-      menu.el);
+      h('div', { class: 'files-mode' },
+        entry.attributes?.map((attribute) => t('files.attribute.' + attribute)).join(' · ')
+          ?? (entry.mode === undefined ? '' : permissions(entry)),
+        entry.owner === undefined ? null : ['  ', h('bdi', {}, safeText(entry.owner))]),
+      this.roots ? null : menu.el);
   }
 
   nameDialog(path, entry) {

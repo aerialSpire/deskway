@@ -26,6 +26,8 @@ wire_enum! {
             "ai_refused" ai_refused: Option<i64>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "kept_terminal" kept_terminal: Option<KeptTerminal>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "workspace_access" workspace_access: Option<Reason>,
         },
         "thumbs" => Thumbs { "on" on: bool },
         "thumb" => Thumb { "screen" screen: String, "data" data: String },

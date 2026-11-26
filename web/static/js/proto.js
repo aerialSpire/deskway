@@ -30,7 +30,7 @@ export const CAPS = Object.freeze({
 
 const FORMAT = 's:text|html|image|files';
 // The one list of reasons a session ends or is refused for, on bye and on the control channel's end.
-export const REASONS = Object.freeze(['left', 'taken', 'ended', 'busy', 'failed', 'gone', 'offline', 'auth', 'unpaired', 'forbidden', 'permissions', 'no_desktop', 'no_terminal', 'pair', 'denied', 'full', 'ai_off', 'idle']);
+export const REASONS = Object.freeze(['left', 'taken', 'ended', 'busy', 'failed', 'gone', 'offline', 'auth', 'unpaired', 'forbidden', 'permissions', 'no_desktop', 'no_terminal', 'locked', 'no_user_session', 'user_changed', 'view_only', 'pair', 'denied', 'full', 'ai_off', 'idle']);
 const REASON = `s:${REASONS.join('|')}`;
 const HOST = 's:online|away';
 const CBERR = 's:cancelled|gone|denied|big|unsupported|io';
@@ -39,13 +39,13 @@ export const TYPES = Object.freeze({
   View: { w: 'i', h: 'i', maxW: 'i', maxH: 'i', fps: 'i' },
   ICEServer: { urls: '[s]', username: 's?', credential: 's?' },
   Display: { id: 's', x: 'i', y: 'i', w: 'i', h: 'i', primary: 'b' },
-  Device: { id: 's', name: 's', os: 's', online: 'b', last_seen: 'i?', controller: 'Controller?', kept_terminal: 'KeptTerminal?', displays: '[Display]?', version: 'i?', caps: '[s]?', ai: 'AiView?', here: 'b?', tools: '[s]?' },
+  Device: { id: 's', name: 's', os: 's', online: 'b', last_seen: 'i?', controller: 'Controller?', kept_terminal: 'KeptTerminal?', workspace_access: 's:locked|no_user_session|view_only?', displays: '[Display]?', version: 'i?', caps: '[s]?', ai: 'AiView?', here: 'b?', tools: '[s]?' },
   AiView: { state: 's:off|on|stopped', admin: 'b', ts: 'i', name: 's?', since: 'i?', refused: 'b?' },
   Controller: { device: 'b', name: 's', connecting: 'b' },
   AuditQuery: { since: 'i?', until: 'i?', tool: 's?', client: 's?', failed: 'b?', offset: 'i?', limit: 'i' },
   AuditCall: { at: 'i', client: 's', device: 's', session: 's', tool: 's', args: 's', result: 's', detail: 's', ms: 'i?' },
   AuditPage: { calls: '[AuditCall]', total: 'i', clients: '[s]', tools: '[s]' },
-  FileEntry: { name: 's', kind: 's:folder|file|link|special', size: 'i', modified: 'i?', mode: 'i', owner: 's', target: 's?', opens: 'b?' },
+  FileEntry: { name: 's', kind: 's:folder|file|link|special', size: 'i', modified: 'i?', mode: 'i?', owner: 's?', attributes: '[s]?', target: 's?', opens: 'b?' },
   KeptTerminal: { since: 'i', name: 's', cred: 's?' },
   Holder: { session: 's', cred: 's?', name: 's', user: 's', established: 'b', since: 'i?' },
   Approval: { kind: 's:browser|device', id: 's', label: 's', ip: 's', code: 's?', created: 'i', device: 'a?' },
@@ -153,7 +153,7 @@ export const CHANNELS = Object.freeze({
       mkdir: msg(B2H, { path: '[s]', name: 's' }),
       rename: msg(B2H, { path: '[s]', entry: 's', name: 's' }),
       delete: msg(B2H, { path: '[s]', entry: 's' }),
-      listing: msg(H2B, { path: '[s]', entries: '[FileEntry]', cursor: 's?' }),
+      listing: msg(H2B, { path: '[s]', entries: '[FileEntry]', roots: 'b?', cursor: 's?' }),
       changed: msg(H2B),
       error: msg(H2B, { why: 's:not_found|denied|exists|not_empty|invalid_name|invalid_path|busy|in_use|io' }),
     }),

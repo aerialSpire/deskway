@@ -6,14 +6,21 @@ import { FilesView } from './files-view.js';
 import { FileTransfers } from './file-transfers.js';
 import { TerminalView } from './terminal-view.js';
 
+// A locked host has ended the connection. This page can return with the same resume chain.
+const interrupted = new Map();
+
 export class DataView {
   constructor(s, view) {
     this.s = s;
     this.currentView = view;
     this.terminal = new TerminalView(s);
     this.strip = h('div', { class: 'file-transfer-strip' });
-    this.transfers = new FileTransfers(this.strip, () => s.connected, () => this.files.update(),
-      (path) => this.files.uploaded(path), () => this.openTransfers());
+    const transferView = [this.strip, () => s.connected, () => this.files.update(),
+      (path) => this.files.uploaded(path), () => this.openTransfers()];
+    const previous = interrupted.get(s.device.id);
+    interrupted.delete(s.device.id);
+    this.transfers = previous || new FileTransfers(...transferView);
+    if (previous) previous.mount(...transferView);
     this.files = new FilesView(s, this.transfers);
     this.buttons = this.terminal.buttons;
     this.navigation = ['terminal', 'files'].map((view) => h('button', {
@@ -103,8 +110,12 @@ export class DataView {
   placeKeypad(...args) { this.terminal.placeKeypad(...args); }
   terminate() { this.terminal.terminate(); }
 
-  destroy() {
-    this.transfers.destroy();
+  destroy(locked) {
+    if (locked && this.transfers.park()) {
+      interrupted.set(this.s.device.id, this.transfers);
+    } else {
+      this.transfers.destroy();
+    }
     this.files.destroy();
     this.terminal.destroy();
   }

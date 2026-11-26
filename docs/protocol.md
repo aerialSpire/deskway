@@ -153,7 +153,11 @@ browser                     server                        host
   session kinds share desk admission and the account's signed device-check policy.
   Linux refuses a picture with `no_desktop`. Hosts without the terminal capability refuse
   the data-only offer with `no_terminal`. The data-only session negotiates no video and its
-  signaling offer carries zero viewer constraints.
+  signaling offer carries zero viewer constraints. Windows and Linux support this session
+  kind for control. The optional `workspace_access` field in host status is forwarded in the
+  browser's device report. The values `locked`, `no_user_session` and `view_only` are also
+  refusal reasons. A lock can end a data-only session with `locked`. Sign-out ends it with
+  `no_user_session`, and a direct change to a different user ends it with `user_changed`.
 
 ## Session lifecycle
 
@@ -326,7 +330,10 @@ answer and the control hello confirm the host and its capabilities, the browser 
 request awaiting a reply. A request or reply is at most 64 KiB.
 
 `list` with no `path` starts at the host user's home. A path is an array of unpadded base64url
-components containing the original bytes. The empty array is the root. The host resolves the
+components. The empty array is the root. On Unix the tokens preserve the original bytes.
+On Windows the first token of a filesystem path is a drive or UNC share. Windows names use
+UTF-8 where possible, and a 0xff byte followed by UTF-16LE units for names with unpaired
+surrogates. The drive listing has `roots:true` and supports navigation. The host resolves the
 directory on the first page, and `listing` returns that path, entries and an optional cursor.
 Entries identified as directories by the directory scan come first, with each group ordered
 by name bytes. The cursor starts the next page strictly after the last key, even if that entry is
@@ -337,7 +344,9 @@ The browser sends the resolved path when requesting the next page or changing an
 `mkdir`, `rename` and `delete` reply with `changed` on success or `error{why}` on failure.
 New names are one UTF-8 path component. The browser uses the listed name token to act on a
 file with a non-UTF-8 name. Directory deletion requires an empty directory. Deleting a
-symbolic link removes the link itself. A filesystem failure stays on the browse channel.
+symbolic link or Windows junction removes the link itself. Entries carry Unix `mode`
+and `owner` where available, or an `attributes` list containing any of `read_only`,
+`hidden` and `system`. A filesystem failure stays on the browse channel.
 When the host's two filesystem workers are occupied, the host replies with `error{why:"busy"}`
 on the browse channel. A worker stays occupied until its call returns.
 
@@ -411,7 +420,11 @@ DECSET and DECRST settings at the cut. The browser returns its ordinary output c
 replay and shows a localized notice when `opened.dropped` is true.
 Once the emulator acknowledges replay, the host applies the latest size and attempts to
 notify the foreground program even when the dimensions are identical. It logs a failure
-and continues with live I/O.
+and continues with live I/O. On Windows the size is set with `ResizePseudoConsole`.
+ConPTY controls whether it emits a redraw at the same size. Deskway forwards the emulator's
+UTF-8 bytes and replay restores the modes observed in ConPTY's output. ConPTY can remove
+bracketed-paste markers for a program without virtual terminal input enabled, in which case
+the paste arrives as text.
 
 Host `status` carries optional `kept_terminal` only while the shell is detached. It carries
 `since` (Unix seconds), `name`, and the verified device credential when available. The server

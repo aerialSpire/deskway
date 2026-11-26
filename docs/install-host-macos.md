@@ -1,7 +1,9 @@
 # Install Deskway Host on macOS
 
 Deskway Host runs on the Mac you want to control. It lives in the menu bar and needs two macOS
-permissions: Screen Recording and Accessibility.
+permissions: Screen Recording and Accessibility. In the browser, open the Mac’s desktop to
+use its screen, keyboard, clipboard and desktop file transfer. Before you sign in to macOS,
+the login item has yet to start and the Mac appears offline.
 
 You need:
 

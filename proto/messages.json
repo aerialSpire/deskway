@@ -63,6 +63,7 @@
         "online": { "type": "boolean", "optional": false, "meaning": "connected to the server now" },
         "last_seen": { "type": "integer", "optional": true, "meaning": "unix seconds" },
         "controller": { "type": "Controller", "optional": true, "meaning": "who holds it now (established or still connecting), as this browser sees it; absent: nobody" },
+        "workspace_access": { "type": "string", "enum": ["locked", "no_user_session", "view_only"], "optional": true, "status": "current", "since": 4, "meaning": "why Terminal and Files are unavailable" },
         "kept_terminal": { "type": "KeptTerminal", "optional": true, "status": "current", "since": 4, "meaning": "a terminal is running with nobody attached" },
         "displays": { "type": "array", "items": "Display", "optional": true, "meaning": "attached displays, while online" },
         "version": { "type": "integer", "optional": true, "status": "current", "since": 2, "meaning": "protocol version from the current signaling hello while online, or the last saved version while offline; absent when unknown" },
@@ -144,8 +145,9 @@
         "kind": {"type": "string", "optional": false, "meaning": "Entry type without following links.", "enum": ["folder", "file", "link", "special"]},
         "size": {"type": "integer", "optional": false, "meaning": "Size in bytes."},
         "modified": {"type": "integer", "optional": true, "meaning": "Modification time in Unix seconds."},
-        "mode": {"type": "integer", "optional": false, "meaning": "The permission and special mode bits."},
-        "owner": {"type": "string", "optional": false, "meaning": "Owner name, or numeric user ID if unresolved."},
+        "attributes": {"type": "array", "optional": true, "items": "string", "meaning": "File attributes as labels: read_only, hidden and system."},
+        "mode": {"type": "integer", "optional": true, "meaning": "The permission and special mode bits."},
+        "owner": {"type": "string", "optional": true, "meaning": "Owner name, or numeric user ID if unresolved."},
         "target": {"type": "string", "optional": true, "meaning": "The link target’s bytes, base64url without padding."},
         "opens": {"type": "boolean", "optional": true, "meaning": "Whether a link opens as a directory."}
       }
@@ -455,7 +457,7 @@
           "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), for attach, and for pairing.",
           "fields": {
             "session": { "type": "string", "optional": false, "meaning": "session id" },
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "locked", "no_user_session", "user_changed", "view_only", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" },
             "controller": { "type": "Controller", "optional": true, "meaning": "busy: who holds the computer, as for the device list" }
@@ -511,6 +513,7 @@
             "ai_session": { "type": "Holder", "optional": true, "status": "current", "since": 4, "meaning": "the AI client's session on the AI seat, beside the holder; absent: none" },
             "ai_state": { "type": "string", "enum": ["off", "on", "stopped"], "optional": true, "status": "current", "since": 4, "meaning": "what AI clients may do here now; absent: a host before version 4" },
             "ai_refused": { "type": "integer", "optional": true, "status": "current", "since": 4, "meaning": "the time of the newest AI switch it refused, as no device it trusts signed it; absent: none" },
+            "workspace_access": { "type": "string", "enum": ["locked", "no_user_session", "view_only"], "optional": true, "status": "current", "since": 4, "meaning": "why Terminal and Files are unavailable" },
             "kept_terminal": { "type": "KeptTerminal", "optional": true, "status": "current", "since": 4, "meaning": "a terminal is running with nobody attached" }
           }
         },
@@ -653,7 +656,7 @@
           "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), and pairing refusals.",
           "fields": {
             "session": { "type": "string", "optional": false, "meaning": "session id" },
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "locked", "no_user_session", "user_changed", "view_only", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is the same device" },
             "holder": { "type": "Holder", "optional": true, "meaning": "busy: the session holding the computer" }
@@ -713,7 +716,7 @@
           "type": "end", "status": "current", "since": 1, "directions": ["browser->host", "host->browser"],
           "meaning": "Ends the session, both ways. A closed control channel ends it too.",
           "fields": {
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with bye (left: the browser left; taken: another session took over; ended: ended at the computer; unpaired: this device was removed; failed: could not be established or recovered in time; ai_off: AI clients may not control this computer now, never allowed or stopped there; no_desktop: this host has no desktop; no_terminal: this host offers no terminal; idle: an AI session unused for 10 minutes)" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "locked", "no_user_session", "user_changed", "view_only", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with bye (left: the browser left; taken: another session took over; ended: ended at the computer; unpaired: this device was removed; failed: could not be established or recovered in time; ai_off: AI clients may not control this computer now, never allowed or stopped there; no_desktop: this host has no desktop; no_terminal: this host offers no terminal; idle: an AI session unused for 10 minutes)" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" }
           }
@@ -1050,6 +1053,7 @@
           "fields": {
             "path": {"type": "array", "optional": false, "meaning": "Absolute path as base64url components, or [] for root.", "items": "string"},
             "entries": {"type": "array", "optional": false, "meaning": "Entries on this page.", "items": "FileEntry"},
+            "roots": {"type": "boolean", "optional": true, "meaning": "Entries are filesystem roots and cannot be changed here."},
             "cursor": {"type": "string", "optional": true, "meaning": "Opaque cursor from the previous listing for this path."}
           }
         },

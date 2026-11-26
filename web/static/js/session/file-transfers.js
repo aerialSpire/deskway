@@ -15,11 +15,15 @@ let lastId = 0;
 
 export class FileTransfers {
   constructor(strip, connected, update, uploaded, reopen) {
+    this.jobs = [];
+    this.mount(strip, connected, update, uploaded, reopen);
+  }
+
+  mount(strip, connected, update, uploaded, reopen) {
     this.connected = connected;
     this.update = update;
     this.uploaded = uploaded;
     this.reopen = reopen;
-    this.jobs = [];
     this.list = new TransferList(strip, this);
   }
 
@@ -157,7 +161,12 @@ export class FileTransfers {
     if (m.t === Msg.ERROR) {
       if (job.saving) {
         void job.saving.then(() => this.end(job), () => this.end(job, 'local_io'));
-      } else this.end(job, job.problem || m.why);
+      } else {
+        if (job.parked && m.why === 'expired') {
+          this.jobs = this.jobs.filter((queued) => queued.phase !== 'waiting');
+        }
+        this.end(job, job.problem || m.why);
+      }
       return;
     }
     if (m.t === Msg.DONE && m.offset === job.size && (job.request.file ? job.digest : job.saved)) {
@@ -363,6 +372,13 @@ export class FileTransfers {
   dismiss(job) {
     this.jobs = this.jobs.filter((other) => other !== job);
     this.render();
+  }
+
+  park() {
+    if (!this.current?.accepted) return false;
+    this.current.parked = true;
+    this.recover();
+    return true;
   }
 
   recover() {

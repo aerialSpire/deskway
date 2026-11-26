@@ -35,8 +35,12 @@ wire_struct! {
         "size" size: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         "modified" modified: Option<i64>,
-        "mode" mode: u32,
-        "owner" owner: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "mode" mode: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "owner" owner: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "attributes" attributes: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         "target" target: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,6 +62,8 @@ wire_enum! {
         "listing" => Listing {
             "path" path: Vec<String>,
             "entries" entries: Vec<FileEntry>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "roots" roots: Option<bool>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "cursor" cursor: Option<String>,
         },

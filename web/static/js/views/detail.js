@@ -7,6 +7,7 @@ import { statusLine, staleNote, thumbFor, topbar, heading, updateNote, hereTag, 
 import { accountMenu } from './account.js';
 import { computerMenu } from './computer.js';
 import { press } from './takeover.js';
+import { workspaceActions } from './offer-message.js';
 import { auditSection } from './audit.js';
 import { chosenDisplay, rememberDisplay, orderedDisplays } from '../session/displays.js';
 import { CAPS } from '../proto.js';
@@ -30,6 +31,8 @@ export function renderDetail() {
     : d.online
       ? displayLayout(d) || h('button', { class: 'preview clickable', 'aria-label': t('detail.takeOverLabel', { name: d.name }), onclick: () => press(device() || d) }, hint(), thumbFor(d))
       : h('div', { class: 'preview offline' }, h('div', { class: 'thumb-inner' }, t('detail.offline')));
+  const { notice, available, disabled } = workspaceActions(d, t);
+  const showActions = available && d.caps?.includes(CAPS.TERMINAL);
   const kept = keptTerminalNotice(d, t, terminalAge);
   const keptText = kept ? h('span', { class: 'text' }, kept) : null;
   const open = (view) => () => press(device() || d, false, view);
@@ -39,14 +42,16 @@ export function renderDetail() {
     heading(d.name, { back: true, beside: hereTag(d), end: computerMenu(d).el, sub: statusLine(d) }),
     state.socketDown ? staleNote('detail.stale') : null,
     preview,
-    kept ? h('div', { class: 'notice terminal-kept', role: 'status' },
+    notice || kept ? h('div', { class: 'terminal-kept' },
+      notice ? h('p', { class: 'notice', role: 'status' }, notice) : null,
+      kept ? h('div', { class: 'notice', role: 'status' },
       keptText,
-      h('button', { class: 'btn compact', type: 'button', onclick: open('terminal') }, t('terminal.return'))) : null,
-    d.online && d.caps?.includes(CAPS.TERMINAL) && (!kept || d.caps.includes(CAPS.BROWSE))
+      h('button', { class: 'btn compact', type: 'button', disabled, onclick: open('terminal') }, t('terminal.return'))) : null) : null,
+    showActions && (!kept || d.caps.includes(CAPS.BROWSE))
       ? h('div', { class: 'computer-actions' },
-        h('button', { class: 'btn', type: 'button', onclick: open('terminal') }, t('terminal.label')),
+        h('button', { class: 'btn', type: 'button', disabled, onclick: open('terminal') }, t('terminal.label')),
         d.caps.includes(CAPS.BROWSE)
-          ? h('button', { class: 'btn', type: 'button', onclick: open('files') }, t('files.label'))
+          ? h('button', { class: 'btn', type: 'button', disabled, onclick: open('files') }, t('files.label'))
           : null)
       : null,
     auditSection(d)));

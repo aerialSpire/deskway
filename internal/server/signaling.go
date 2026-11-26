@@ -327,6 +327,12 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 	}
 	c.holder, c.aiHolder, c.aiState, c.aiRefused = holder, ai, state, m.AIRefused
 	c.keptTerminal = kept
+	switch m.WorkspaceAccess {
+	case "locked", "no_user_session", "view_only":
+		c.workspaceAccess = m.WorkspaceAccess
+	default:
+		c.workspaceAccess = ""
+	}
 	s.mu.Unlock()
 	s.sessions.Status(c, holder, ai)
 	s.broadcastDevices()

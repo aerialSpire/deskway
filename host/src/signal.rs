@@ -25,7 +25,7 @@ use crate::auth::{AiState, Trust};
 use crate::config::Config;
 use crate::display::DisplayInfo;
 use crate::mcp::{Facts, SharedFacts};
-use crate::platform::{BrowserSession, Desk, DeskParams, DesktopFeatures, Features, OpenPty, Platform, PlatformEvent, Replies};
+use crate::platform::{BrowserSession, Desk, DeskParams, DesktopFeatures, Features, Platform, PlatformEvent, Replies, WorkspaceState};
 use wire::control::Control as Message;
 use wire::signal::Signal as Wire;
 use wire::types::{self as types, Reason};
@@ -132,6 +132,7 @@ fn describe(e: &anyhow::Error) -> String {
 /// What the host is asked to do, by its settings (`settings::Settings`) and by the app.
 #[derive(Debug, PartialEq)]
 pub enum Control {
+    WorkspaceChanged(WorkspaceState),
     Disconnect,
     SetAutoLock(bool),
     /// The shared clipboard on or off (already saved).
@@ -247,7 +248,7 @@ pub struct Params {
     pub cfg: Config,
     pub view_only: bool,
     pub desktop: Option<DesktopParams>,
-    pub terminal: Option<OpenPty>,
+    pub browser: Option<crate::workspace::Browser>,
     pub notify: Notifier,
     /// Where the controlling browser's clipboard switch is saved.
     pub settings: Arc<Settings>,
@@ -271,6 +272,8 @@ struct Host {
     quit: bool,
     desktop: Option<Desktop>,
     terminal: Option<Terminals>,
+    browser: Option<crate::workspace::Browser>,
+    workspace_state: WorkspaceState,
     transfers: session::file_transfer::Registry,
     out_tx: Sender<String>,
     updates_tx: Sender<SessionUpdate>,
@@ -302,18 +305,45 @@ struct Host {
 }
 
 impl Host {
-    fn browse_files(&self) -> Option<crate::workspace::BrowseFiles> {
-        self.workspace.as_ref()?.browse_files()
+    fn workspace_access(&self) -> Option<Reason> {
+        self.browser.as_ref()?;
+        self.workspace_state.refusal(self.view_only)
     }
 
-    fn file_transfers(&self) -> Option<crate::workspace::FileTransfers> {
-        self.workspace.as_ref()?.file_transfers()
+    fn refresh_workspace(&mut self) {
+        let Some(browser) = &self.browser else { return };
+        let next = (browser.state)();
+        self.workspace_changed(next);
+    }
+
+    fn workspace_changed(&mut self, next: WorkspaceState) {
+        if self.browser.is_none() { return; }
+        let previous = std::mem::replace(&mut self.workspace_state, next);
+        if previous == next {
+            return;
+        }
+        let changed_user = previous.user.is_some() && previous.user != next.user;
+        let reason = if changed_user && next.user.is_some() { Some(Reason::UserChanged) }
+            else { next.refusal(self.view_only) };
+        if let (Some(terminal), Some(reason)) = (&self.terminal, reason) {
+            if self.sessions.of(Seat::Desk).current().is_some_and(|cur| terminal.holds(&cur.id)) {
+                self.end_seat(Seat::Desk, End::plain(reason));
+            }
+        }
+        if changed_user {
+            self.transfers.clear();
+            if let Some(terminal) = &self.terminal {
+                terminal.user_changed();
+            }
+        }
+        self.send_status();
     }
 
     fn features(&self) -> Features {
         Features {
-            desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.terminal.as_ref().map(Terminals::launcher),
-            work: self.workspace.is_some(), browse: self.browse_files().is_some(), file_transfers: self.file_transfers().is_some(), view_only: self.view_only,
+            desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.browser.is_some(),
+            work: self.workspace.is_some(), browse: self.browser.is_some(),
+            file_transfers: self.browser.is_some(), view_only: self.view_only,
         }
     }
 
@@ -401,7 +431,7 @@ impl Host {
             let (holder, ai) = (self.sessions.of(Seat::Desk).holder(), self.sessions.of(Seat::Ai).holder());
             let ai_refused = self.trust.as_ref().and_then(Trust::ai_refused);
             let kept_terminal = self.terminal.as_ref().and_then(Terminals::status);
-            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused, kept_terminal });
+            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused, kept_terminal, workspace_access: self.workspace_access() });
         }
         self.report();
     }
@@ -443,6 +473,7 @@ impl Host {
     }
 
     fn on_offer(&mut self, m: &Value) {
+        self.refresh_workspace();
         let session = m["session"].as_str().unwrap_or_default().to_string();
         let sdp = m["sdp"].as_str().unwrap_or_default().to_string();
         // The offer of a session holding a seat, again (its answer may not have arrived): the
@@ -464,6 +495,7 @@ impl Host {
             return self.bye(&session, Reason::Permissions);
         }
         let features = self.features();
+        let workspace_access = self.workspace_access();
         let Some(trust) = self.trust.as_mut() else { return self.bye(&session, Reason::Auth) };
         trust.reload();
         if trust.controllers().is_empty() {
@@ -480,9 +512,22 @@ impl Host {
         let seat = Seat::of(verified.role);
         let browser = if seat == Seat::Desk {
             match features.browser_session(data_only) {
+                Ok(BrowserSession::Data) => {
+                    if let Some(reason) = workspace_access {
+                        return self.bye(&session, reason);
+                    }
+                    Some(BrowserSession::Data)
+                }
                 Ok(mode) => Some(mode),
                 Err(reason) => return self.bye(&session, reason),
             }
+        } else {
+            None
+        };
+        let data_user = if matches!(browser, Some(BrowserSession::Data)) {
+            let Some(user) = self.workspace_state.user else { return self.bye(&session, Reason::NoUserSession); };
+            let Some(files) = self.browser.as_ref().and_then(|b| (b.bind)(user)) else { return self.bye(&session, Reason::NoUserSession); };
+            Some((user, files))
         } else {
             None
         };
@@ -562,14 +607,11 @@ impl Host {
                 tx
             }
             Some(BrowserSession::Data) => {
+                let (user, browser) = data_user.expect("data session has a workspace");
                 let lease = self.terminal.as_ref().expect("a terminal was admitted")
-                    .admit(session.clone(), name.clone(), verified.controller.clone());
-                let files = self.browse_files();
-                let transfers = self.file_transfers().map(|files| {
-                    let page = self.transfers.admit(&verified.controller, &verified.page, &session, verified.resume_until());
-                    (files, page)
-                });
-                session::spawn(params, |own| session::data::Data::new(lease, files, transfers, own))
+                    .admit_user(session.clone(), name.clone(), verified.controller.clone(), user);
+                let page = self.transfers.admit(&verified.controller, &verified.page, &session, verified.resume_until());
+                session::spawn(params, |own| session::data::Data::new(lease, Some(browser.browse), Some((browser.transfers, page)), own))
             }
             None => {
                 let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };
@@ -830,6 +872,7 @@ impl Host {
 
     fn on_control(&mut self, c: Control) {
         match c {
+            Control::WorkspaceChanged(state) => self.workspace_changed(state),
             // The panel's Disconnect is the person's session.
             Control::Disconnect => self.end_seat(Seat::Desk, End::plain(Reason::Ended)),
             Control::SetAutoLock(on) => {
@@ -955,6 +998,7 @@ impl Queues {
         while let Ok(c) = self.control.try_recv() {
             host.on_control(c);
         }
+        host.refresh_workspace();
         while let Ok(u) = self.updates.try_recv() {
             host.on_update(u);
         }
@@ -1009,7 +1053,7 @@ impl Host {
     /// The host as it starts: offline, nobody in control, with the trust store of `cfg`'s
     /// folder (None refuses every offer).
     fn new(p: Params, trust: Option<Trust>, control: Receiver<Control>) -> (Host, Queues) {
-        let Params { cfg, view_only, desktop, terminal, notify, settings, workspace, admin } = p;
+        let Params { cfg, view_only, desktop, browser, notify, settings, workspace, admin } = p;
         let (out_tx, out) = channel();
         let (updates_tx, updates) = channel();
         let (share_tx, share) = channel();
@@ -1029,7 +1073,15 @@ impl Host {
             problem: None,
             quit: false,
             desktop,
-            terminal: terminal.map(|open| Terminals::new(open, updates_tx.clone())),
+            terminal: browser.as_ref().map(|b| {
+                let bind = b.bind.clone();
+                Terminals::guarded(Arc::new(move |user, rows, cols| {
+                    let browser = bind(user).ok_or(ErrorKind::PermissionDenied)?;
+                    (browser.open)(rows, cols)
+                }), b.state.clone(), updates_tx.clone())
+            }),
+            workspace_state: browser.as_ref().map_or(WorkspaceState::READY, |b| (b.state)()),
+            browser,
             transfers: Default::default(),
             out_tx,
             updates_tx,
@@ -1169,7 +1221,17 @@ mod tests {
             let trust = trust.then(|| Trust::open(dir.clone(), &cfg.id, &cfg.server).unwrap());
             let desktop = features.desktop.map(|features| DesktopParams { features, platform, events, can_host: Box::new(move || can_host) });
             let workspace = features.work.then(|| Arc::new(crate::workspace::Local::default()) as Arc<dyn crate::workspace::Workspace>);
-            let p = Params { cfg, view_only: features.view_only, desktop, terminal: features.terminal, notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
+            let p = Params { cfg, view_only: features.view_only, desktop, browser: features.terminal.then(|| crate::workspace::Browser {
+                state: Arc::new(|| WorkspaceState::READY),
+                bind: Arc::new(|_| Some(crate::workspace::BrowserUser {
+                    open: Arc::new(|_, _| panic!("admission alone must not start a shell")),
+                    browse: Arc::new(|_, _| unreachable!()),
+                    transfers: crate::workspace::FileTransfers {
+                        path: Arc::new(|_, _, _, _| unreachable!()), upload: Arc::new(|_, _, _| unreachable!()),
+                        download: Arc::new(|_, _| unreachable!()),
+                    },
+                })),
+            }), notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
             Test { host, q, shown, dir, calls }
         }
@@ -1325,17 +1387,67 @@ mod tests {
     }
 
     #[test]
-    fn terminal_offers_use_the_desk_seat_and_the_signed_device_policy() {
-        fn open_unexpected(_: u16, _: u16) -> std::io::Result<Box<dyn crate::platform::Pty>> {
-            panic!("admission alone must not start a shell");
+    fn workspace_status_admission_and_end_follow_the_console_user() {
+        for (index, native, view_only, wanted) in [
+            (0, WorkspaceState::READY, false, None),
+            (1, WorkspaceState { user: Some(1), locked: true }, false, Some(Reason::Locked)),
+            (2, WorkspaceState::NO_USER, false, Some(Reason::NoUserSession)),
+            (3, WorkspaceState::READY, true, Some(Reason::ViewOnly)),
+        ] {
+            let mut t = Test::with_features(&format!("workspace-{index}"), true, true, Features {
+                desktop: Some(crate::platform::TEST_DESKTOP), terminal: true, work: true, view_only,
+                ..Features::default()
+            });
+            let state = Arc::new(Mutex::new(native));
+            let watch = state.clone();
+            t.host.browser.as_mut().unwrap().state = Arc::new(move || *watch.lock().unwrap());
+            t.host.refresh_workspace();
+            t.host.send_status();
+            let output = t.sent();
+            let status = output.iter().rfind(|m| m["type"] == "status").unwrap();
+            assert_eq!(status["workspace_access"].as_str(), wanted.map(|why| why.as_str()));
+            let phone = t.pair_phone();
+            let offer = t.offer_from(&phone, PHONE, "workspace", false, TERMINAL_SDP);
+            if let Some(wanted) = wanted {
+                assert_eq!(offer[0]["reason"], wanted.as_str());
+                assert!(t.host.sessions.of(Seat::Desk).current().is_none());
+                continue;
+            }
+            assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "workspace");
+            t.host.on_ended("workspace");
+
+            // A data seat ends, while desktop sessions are unaffected by this signal.
+            for (why, next) in [
+                (Reason::Locked, WorkspaceState { user: Some(0), locked: true }),
+                (Reason::NoUserSession, WorkspaceState::NO_USER),
+                (Reason::UserChanged, WorkspaceState { user: Some(2), locked: false }),
+            ] {
+                *state.lock().unwrap() = WorkspaceState::READY;
+                t.host.refresh_workspace();
+                let rx = t.seated(Seat::Desk, "desk", PHONE);
+                *state.lock().unwrap() = next;
+                t.host.refresh_workspace();
+                assert!(rx.try_recv().is_err(), "a desktop session must remain seated");
+                *state.lock().unwrap() = WorkspaceState::READY;
+                t.host.refresh_workspace();
+                let rx = t.seated(Seat::Desk, "desk", PHONE);
+                t.host.terminal.as_ref().unwrap().admit("desk".into(), "browser".into(), PHONE.into());
+                *state.lock().unwrap() = next;
+                t.host.refresh_workspace();
+                assert_eq!(reason(&rx), Some(why));
+            }
         }
+    }
+
+    #[test]
+    fn terminal_offers_use_the_desk_seat_and_the_signed_device_policy() {
         use base64::Engine;
         use p256::ecdsa::signature::Signer;
         assert!(session::data::data_only(TERMINAL_SDP));
         for (case, features, cap) in [
             ("terminal-desktop", Features { desktop: Some(crate::platform::TEST_DESKTOP), ..Features::default() }, false),
             ("terminal-headless", Features { work: true, ..Features::default() }, false),
-            ("terminal-linux", Features { terminal: Some(open_unexpected), work: true, ..Features::default() }, true),
+            ("terminal-linux", Features { terminal: true, work: true, ..Features::default() }, true),
         ] {
             let mut t = Test::with_features(case, true, true, features);
             let Wire::Hello { caps, .. } = t.host.hello() else { panic!("expected hello") };

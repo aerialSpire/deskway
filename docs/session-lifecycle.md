@@ -143,6 +143,13 @@ while Files is visible. Takeover or leaving the view ends unfinished transfers a
 list. The host unlinks a partial upload when its record is dropped, including when its resume
 window expires.
 
+On Windows, a locked console or secure desktop ends the data session with the lock reason and
+offers the desktop. The computer page disables Terminal, Files and Return. The browser retains
+unfinished transfers on that page and uses its existing resume token on the next data
+connection after unlocking. The kept shell and its jobs continue to run. Sign-out and fast user
+switching end the previous user's shell and discard their transfer record. When nobody is signed
+in, the page says so and offers the desktop. A view-only host offers desktop viewing.
+
 The host keeps one browser terminal independently of the desk session. Disconnect, the end
 of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's
 page shows when the last device left and offers **Return** while the terminal is detached.
@@ -152,7 +159,7 @@ recovers in place continues its existing stream. Reconnecting after an end reope
 view that was showing when the connection ended.
 
 The shell ends on exit, **Close the terminal and disconnect**, 24 hours without an attachment,
-or host shutdown. The deliberate close is available from the attached terminal's Disconnect
+host shutdown, or the Windows sign-in ending or changing users. The deliberate close is available from the attached terminal's Disconnect
 dialog. The host discards the buffer and cleans up the PTY and jobs on every terminal end.
 
 When **Each computer in its own window** is on (a per-device setting, off by default), pressing a
@@ -195,7 +202,7 @@ computer: the mark is a hint, never a rule. This is a separate module (`peer::he
 
 The reasons on the wire form a single list in `proto/messages.json`, used by both `bye` and the
 control channel's `end`: `left`, `taken`, `ended`, `busy`, `failed`, `gone`, `offline`, `auth`,
-`unpaired`, `forbidden`, `permissions`, `no_desktop`, `no_terminal`, `pair`, `denied`, `full`, `ai_off`, `idle`.
+`unpaired`, `forbidden`, `permissions`, `no_desktop`, `no_terminal`, `locked`, `no_user_session`, `user_changed`, `view_only`, `pair`, `denied`, `full`, `ai_off`, `idle`.
 The browser handles them in `views/takeover.js`, with offer and takeover messages in
 `views/offer-message.js`. The page also has its own reasons, which never travel on the wire:
 no device key, the server being unreachable, and the computer's identity not being confirmed

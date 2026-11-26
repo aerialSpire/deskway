@@ -25,6 +25,7 @@ pub fn data_only(sdp: &str) -> bool {
 }
 
 pub struct Data {
+    lease: Lease,
     terminal: Terminal,
     terminal_id: Option<ChannelId>,
     files: Option<Files>,
@@ -34,6 +35,7 @@ pub struct Data {
 impl Data {
     pub(crate) fn new(lease: Lease, files: Option<BrowseFiles>, transfers: Option<(FileTransfers, Arc<Mutex<Page>>)>, own: Sender<SessionEvent>) -> Self {
         Self {
+            lease: lease.clone(),
             terminal: Terminal::new(lease.clone()),
             terminal_id: None,
             files: files.map(|call| Files {
@@ -90,6 +92,8 @@ impl Role for Data {
             if let Ok(Control::End { reason, .. }) = serde_json::from_slice(&d.data) {
                 return cx.signal(Signal::PeerEnded(reason));
             }
+        } else if !self.lease.holds_seat() {
+            return false;
         } else if self.terminal_id == Some(d.id) {
             self.terminal.message(cx.active(), d);
         } else if let Some(transfer) = self.transfers.as_mut().filter(|t| t.channel() == Some(d.id)) {
@@ -132,7 +136,7 @@ impl Role for Data {
     }
 
     fn before_wait(&mut self, cx: &mut Cx, _: usize) -> Option<Instant> {
-        if !cx.active() {
+        if !cx.active() || !self.lease.holds_seat() {
             return None;
         }
         let terminal = self.terminal_id.and_then(|id| self.terminal.poll(cx, id));
@@ -203,7 +207,7 @@ impl Files {
             self.work = Work::Reply(error(BrowseError::Busy));
             return;
         };
-        let (call, own, lease) = (self.call, self.own.clone(), self.lease.clone());
+        let (call, own, lease) = (self.call.clone(), self.own.clone(), self.lease.clone());
         let worker = std::thread::Builder::new().name("files".into()).spawn(move || {
             if !lease.holds_seat() {
                 return;
@@ -258,14 +262,14 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{mpsc, Mutex};
 
-    fn admitted(registry: &Registry, id: &str, call: BrowseFiles) -> (Data, mpsc::Receiver<SessionEvent>) {
+    fn admitted(registry: &Registry, id: &str, call: impl Fn(Browse, &dyn Fn() -> bool) -> (PathBuf, Browse) + Send + Sync + 'static) -> (Data, mpsc::Receiver<SessionEvent>) {
         let (own, replies) = mpsc::channel();
         let lease = registry.admit(id.into(), "browser".into(), "device".into());
-        (Data::new(lease, Some(call), None, own), replies)
+        (Data::new(lease, Some(Arc::new(call)), None, own), replies)
     }
 
     fn listing(_: Browse, _: &dyn Fn() -> bool) -> (PathBuf, Browse) {
-        (PathBuf::from("/"), Browse::Listing { path: vec![], entries: vec![], cursor: None })
+        (PathBuf::from("/"), Browse::Listing { path: vec![], entries: vec![], roots: None, cursor: None })
     }
 
     fn reply(replies: &mpsc::Receiver<SessionEvent>) -> Browse {
@@ -279,7 +283,7 @@ mod tests {
     fn browsing_on_an_admitted_connection_does_not_open_a_terminal() {
         static SHELLS: AtomicUsize = AtomicUsize::new(0);
         static WORKERS: AtomicUsize = AtomicUsize::new(0);
-        let open: crate::platform::OpenPty = |_, _| {
+        let open = |_, _| -> std::io::Result<Box<dyn crate::platform::Pty>> {
             SHELLS.fetch_add(1, Ordering::Relaxed);
             Err(std::io::ErrorKind::Unsupported.into())
         };

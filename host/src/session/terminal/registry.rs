@@ -9,7 +9,10 @@ use wire::terminal::FRAME;
 use wire::types::KeptTerminal;
 
 use crate::i18n::{t, tf};
-use crate::platform::{OpenPty, Pty};
+use crate::platform::Pty;
+#[cfg(test)]
+use crate::platform::WorkspaceState;
+use crate::workspace::BrowserState;
 use crate::session::SessionUpdate;
 use super::{replay::History, retry, Replay, POLL};
 
@@ -21,21 +24,36 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(open: OpenPty, updates: Sender<SessionUpdate>) -> Self {
-        let shared = Arc::new(Shared { open, updates, state: Mutex::default(), wake: Condvar::new() });
+    #[cfg(test)]
+    pub fn new(open: impl Fn(u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync + 'static, updates: Sender<SessionUpdate>) -> Self {
+        Self::guarded(Arc::new(move |_, rows, cols| open(rows, cols)), Arc::new(|| WorkspaceState::READY), updates)
+    }
+
+    pub fn guarded(open: Arc<Open>, access: Arc<BrowserState>, updates: Sender<SessionUpdate>) -> Self {
+        let shared = Arc::new(Shared { open, access, updates, state: Mutex::default(), wake: Condvar::new() });
         let runner = shared.clone();
         let worker = thread::Builder::new().name("terminal".into()).spawn(move || runner.drain())
             .expect("spawn terminal thread");
         Self { shared, worker: Some(worker) }
     }
 
+    #[cfg(test)]
     pub fn admit(&self, id: String, name: String, cred: String) -> Lease {
-        self.shared.state.lock().unwrap().seat = Some(id.clone());
-        Lease { shared: self.shared.clone(), id, name, cred }
+        self.admit_user(id, name, cred, WorkspaceState::READY.user.unwrap())
     }
 
-    pub fn launcher(&self) -> OpenPty {
-        self.shared.open
+    pub fn admit_user(&self, id: String, name: String, cred: String, user: u64) -> Lease {
+        self.shared.state.lock().unwrap().seat = Some(id.clone());
+        Lease { shared: self.shared.clone(), id, name, cred, user }
+    }
+
+    pub fn holds(&self, id: &str) -> bool {
+        self.shared.state.lock().unwrap().seat.as_deref() == Some(id)
+    }
+
+    pub fn user_changed(&self) {
+        self.shared.state.lock().unwrap().close(Closed::UserChanged);
+        self.shared.changed();
     }
 
     pub fn end(&self, id: &str, why: &str) {
@@ -63,8 +81,11 @@ impl Drop for Registry {
     }
 }
 
+type Open = dyn Fn(u64, u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync;
+
 struct Shared {
-    open: OpenPty,
+    open: Arc<Open>,
+    access: Arc<BrowserState>,
     updates: Sender<SessionUpdate>,
     state: Mutex<State>,
     wake: Condvar,
@@ -114,6 +135,7 @@ pub struct Lease {
     id: String,
     name: String,
     cred: String,
+    user: u64,
 }
 
 impl Lease {
@@ -131,13 +153,21 @@ impl Lease {
 
     pub(in crate::session) fn while_seated<T>(&self, run: impl FnOnce() -> T) -> Option<T> {
         let state = self.shared.state.lock().unwrap();
-        (!state.stopping && state.seat.as_deref() == Some(self.id.as_str())).then(run)
+        (!state.stopping && state.seat.as_deref() == Some(self.id.as_str()) && self.accessible()).then(run)
+    }
+
+    fn accessible(&self) -> bool {
+        let state = (self.shared.access)();
+        state.user == Some(self.user) && state.refusal(false).is_none()
     }
 
     pub(super) fn attach(&self, rows: u16, cols: u16) -> io::Result<Option<(Option<Replay>, bool)>> {
         let mut state = self.shared.state.lock().unwrap();
+        if !self.accessible() {
+            return Ok(None);
+        }
         let was_left = state.left().is_some();
-        let info = state.attach(&self.id, &self.name, &self.cred, Instant::now(), || (self.shared.open)(rows, cols))
+        let info = state.attach(&self.id, &self.name, &self.cred, Instant::now(), || (self.shared.open)(self.user, rows, cols))
             .map(|attached| attached.map(|(shell, returned)| (returned.then(|| Replay::new(&shell.replay)), shell.replay.dropped)));
         if was_left && state.left().is_none() {
             self.shared.changed();
@@ -147,7 +177,7 @@ impl Lease {
 
     pub(super) fn with_shell<T>(&self, f: impl FnOnce(&mut Shell) -> T) -> Option<T> {
         let mut state = self.shared.state.lock().unwrap();
-        state.attached(&self.id).map(f)
+        self.accessible().then(|| state.attached(&self.id).map(f)).flatten()
     }
 
     pub fn detach(&self, why: &str) {
@@ -163,7 +193,8 @@ impl Lease {
     }
 
     pub(super) fn terminate(&self) -> Option<io::Result<bool>> {
-        self.shared.state.lock().unwrap().terminate(&self.id)
+        let mut state = self.shared.state.lock().unwrap();
+        self.accessible().then(|| state.terminate(&self.id)).flatten()
     }
 }
 
@@ -196,6 +227,7 @@ pub enum Closed {
     Idle,
     Stop,
     Io,
+    UserChanged,
 }
 
 impl State {
@@ -301,6 +333,7 @@ impl State {
             Closed::Idle => t("terminal.idle"),
             Closed::Stop => t("terminal.stop"),
             Closed::Io => t("terminal.io"),
+            Closed::UserChanged => t("terminal.user_changed"),
         };
         eprintln!("{}", tf("terminal.closed", &[("reason", reason)]));
     }
@@ -421,6 +454,32 @@ mod tests {
     }
 
     #[test]
+    fn locking_revokes_the_attachment_and_user_change_closes_the_kept_shell() {
+        let (updates, _) = std::sync::mpsc::channel();
+        for next in [WorkspaceState::NO_USER, WorkspaceState { user: Some(2), locked: false }] {
+            let state = Arc::new(Mutex::new(WorkspaceState::READY));
+            let process = Arc::new(Mutex::new(Process::default()));
+            let open = process.clone();
+            let native = state.clone();
+            let registry = Registry::guarded(
+                Arc::new(move |_, _, _| Ok(Box::new(FakePty(open.clone())))),
+                Arc::new(move || *native.lock().unwrap()), updates.clone(),
+            );
+            let lease = registry.admit("one".into(), "Phone".into(), "cred".into());
+            assert!(lease.attach(24, 80).unwrap().is_some());
+            state.lock().unwrap().locked = true;
+            assert!(lease.with_shell(|_| ()).is_none());
+            registry.end("one", "locked");
+            assert_eq!(registry.status().unwrap().name, "Phone");
+            assert_eq!(process.lock().unwrap().drops, 0);
+            *state.lock().unwrap() = next;
+            registry.user_changed();
+            assert!(registry.status().is_none());
+            assert_eq!(process.lock().unwrap().drops, 1);
+        }
+    }
+
+    #[test]
     fn lifetime_ends_only_on_exit_explicit_close_idle_or_stop() {
         for (why, detached) in [
             (Closed::Exit(17), false), (Closed::Exit(17), true), (Closed::Person, false),
@@ -456,7 +515,7 @@ mod tests {
                     state.tick(now + IDLE, &mut [0; FRAME]);
                 }
                 Closed::Stop => state.stop(),
-                Closed::Io => unreachable!(),
+                Closed::Io | Closed::UserChanged => unreachable!(),
             }
             assert!(state.terminal.is_none(), "{why:?}, detached={detached}");
             assert_eq!(process.lock().unwrap().drops, 1, "{why:?}, detached={detached}");

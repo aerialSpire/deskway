@@ -43,7 +43,31 @@ pub trait Pty: Read + Write + Send {
     fn terminate(&mut self) -> io::Result<bool>;
 }
 
-pub type OpenPty = fn(u16, u16) -> io::Result<Box<dyn Pty>>;
+pub type OpenPty = Arc<dyn Fn(u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync>;
+
+/// Identity of the current sign-in and whether it accepts browser workspace access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WorkspaceState {
+    pub user: Option<u64>,
+    pub locked: bool,
+}
+
+impl WorkspaceState {
+    pub const READY: Self = Self { user: Some(0), locked: false };
+    pub const NO_USER: Self = Self { user: None, locked: false };
+
+    pub fn refusal(self, view_only: bool) -> Option<Reason> {
+        if view_only {
+            Some(Reason::ViewOnly)
+        } else if self.user.is_none() {
+            Some(Reason::NoUserSession)
+        } else if self.locked {
+            Some(Reason::Locked)
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub enum BrowserSession {
@@ -54,7 +78,7 @@ pub enum BrowserSession {
 #[derive(Clone, Copy, Default)]
 pub struct Features {
     pub desktop: Option<DesktopFeatures>,
-    pub terminal: Option<OpenPty>,
+    pub terminal: bool,
     pub work: bool,
     pub browse: bool,
     pub file_transfers: bool,
@@ -64,7 +88,7 @@ pub struct Features {
 impl Features {
     pub fn browser_session(self, data_only: bool) -> Result<BrowserSession, Reason> {
         if data_only {
-            self.terminal.map(|_| BrowserSession::Data).ok_or(Reason::NoTerminal)
+            self.terminal.then_some(BrowserSession::Data).ok_or(Reason::NoTerminal)
         } else {
             self.desktop.map(BrowserSession::Desktop).ok_or(Reason::NoDesktop)
         }
@@ -83,7 +107,7 @@ impl Features {
 
     pub fn data_caps(self) -> Vec<String> {
         let mut caps = Vec::new();
-        if self.terminal.is_some() {
+        if self.terminal && !self.view_only {
             caps.push(wire::caps::TERMINAL.into());
             caps.push(wire::caps::TERMINAL_KEEP.into());
             if self.browse {

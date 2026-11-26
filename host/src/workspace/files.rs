@@ -33,9 +33,9 @@ fn about(path: &Path, m: &std::fs::Metadata) -> Value {
     json!({ "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string()), "kind": kind, "size": m.len(), "modified": modified })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(browser_workspace)]
 pub(super) mod browse;
-#[cfg(target_os = "linux")]
+#[cfg(browser_workspace)]
 pub(super) mod transfer;
 
 fn list_entries<T>(dir: impl Iterator<Item = io::Result<T>>, mut describe: impl FnMut(T) -> Option<Value>) -> (Vec<Value>, bool) {

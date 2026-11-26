@@ -10,6 +10,20 @@ export function takeoverMessage(c, t) {
   };
 }
 
+export function workspaceActions(d, t) {
+  const notice = d.online ? workspaceNotice(d.workspace_access, t) : undefined;
+  const available = !!d.online && (!notice || d.workspace_access === 'locked');
+  return { notice, available, disabled: Boolean(notice) };
+}
+
+export function workspaceNotice(reason, t) {
+  switch (reason) {
+    case 'locked': return t('detail.workspaceLocked');
+    case 'no_user_session': return t('detail.workspaceNoUser');
+    case 'view_only': return t('audit.code.view_only');
+  }
+}
+
 export function offerMessage({ reason, by, same, controller, established, cause, via }, { view, headless, t, time }) {
   const endedText = (desktop) => t(view === 'terminal' ? 'terminal.ended' : view === 'files' ? 'files.ended' : desktop);
   switch (reason) {
@@ -40,6 +54,10 @@ export function offerMessage({ reason, by, same, controller, established, cause,
       };
     case 'auth':
       return { action: headless ? 'devices' : 'addAgain', title: t('session.authTitle'), text: t('session.authText') };
+    case 'locked':
+    case 'no_user_session': return { action: 'desktop', title: t('session.endedTitle'), text: workspaceNotice(reason, t) };
+    case 'user_changed': return { title: t('session.endedTitle'), text: t('detail.workspaceUserChanged') };
+    case 'view_only': return { title: workspaceNotice(reason, t) };
     case 'no_terminal': return { title: t('terminal.unavailable') };
     case 'permissions': return { title: t('session.permissionsTitle'), text: t('session.permissionsText') };
   }

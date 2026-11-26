@@ -58,13 +58,25 @@ device.
 The **Allowed devices** list in the panel shows every device that may control this computer, and
 you can remove devices from it there.
 
+## Terminal and Files in the browser
+
+After signing in to Windows, open the computer’s page and choose **Terminal** or **Files**.
+Terminal starts PowerShell 7 if available and uses Windows PowerShell otherwise. Files starts
+in your profile folder. The root lists drives, and you can browse, upload, replace and
+download files with your Windows account’s rights.
+
+When Windows is locked or showing a secure prompt, take over the desktop and unlock it to
+use these actions. A terminal you left keeps running while Windows is locked. When the
+Windows user signs out or changes, their terminal ends. A computer set to view only offers
+desktop viewing.
+
 ## Settings in the panel
 
 | Setting | What it does |
 |---|---|
 | **Start with Windows** | On by default. When off, the host doesn't run after a restart and shows as offline |
 | **Keep this computer awake** | Requests that Windows prevent idle sleep while Deskway Host runs. The display may still turn off |
-| **Lock when disconnected** | Locks Windows when a remote session ends |
+| **Lock when disconnected** | Locks Windows when a remote desktop session ends |
 | **Sign out** | Stops this computer using the account. The account keeps it: signing in again with the same account brings it back as it was. Removing it on **My devices** takes it off the account |
 
 On battery below 15%, Deskway releases the setting's keep-awake request. It requests keep-awake

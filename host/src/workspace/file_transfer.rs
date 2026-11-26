@@ -1,19 +1,20 @@
-use std::fs::Metadata;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 
 use wire::file_transfer::Error;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Conflict {
     pub modified: i64,
-    pub metadata: Metadata,
+    pub size: u64,
 }
 
 pub trait Upload: Send {
-    fn conflict(&self, seated: &dyn Fn() -> bool) -> Result<Option<Conflict>, Error>;
+    fn conflict(&mut self, seated: &dyn Fn() -> bool) -> Result<Option<Conflict>, Error>;
     fn prepare(&mut self, seated: &dyn Fn() -> bool) -> Result<u64, Error>;
     fn write(&mut self, bytes: &[u8], seated: &dyn Fn() -> bool) -> Result<(), Error>;
-    fn verify(&self, sha256: &str, seated: &dyn Fn() -> bool) -> Result<(), Error>;
-    fn publish(&self, approval: Option<&Conflict>) -> Result<bool, Error>;
+    fn verify(&mut self, sha256: &str, seated: &dyn Fn() -> bool) -> Result<(), Error>;
+    fn publish(&self, approved: bool) -> Result<bool, Error>;
 }
 
 pub trait Download: Send {
@@ -23,9 +24,13 @@ pub trait Download: Send {
     fn finish(&mut self, seated: &dyn Fn() -> bool) -> Result<(), Error>;
 }
 
-#[derive(Clone, Copy)]
+type PathOp = dyn Fn(&[String], &str, bool, &dyn Fn() -> bool) -> Result<PathBuf, Error> + Send + Sync;
+type UploadOp = dyn Fn(&Path, u64, &dyn Fn() -> bool) -> Result<Box<dyn Upload>, Error> + Send + Sync;
+type DownloadOp = dyn Fn(&Path, &dyn Fn() -> bool) -> Result<Box<dyn Download>, Error> + Send + Sync;
+
+#[derive(Clone)]
 pub struct FileTransfers {
-    pub path: fn(&[String], &str, bool, &dyn Fn() -> bool) -> Result<PathBuf, Error>,
-    pub upload: fn(&Path, u64, &dyn Fn() -> bool) -> Result<Box<dyn Upload>, Error>,
-    pub download: fn(&Path, &dyn Fn() -> bool) -> Result<Box<dyn Download>, Error>,
+    pub path: Arc<PathOp>,
+    pub upload: Arc<UploadOp>,
+    pub download: Arc<DownloadOp>,
 }

@@ -4,6 +4,7 @@
   "terminal.opened": "Terminal opened by {name}",
   "terminal.left": "Terminal left by {name} ({reason})",
   "terminal.returned": "{name} returned to the terminal",
+  "terminal.user_changed": "The Windows user signed out or switched",
   "terminal.closed": "Terminal closed ({reason})",
   "terminal.exit": "shell exit status {code}",
   "terminal.person": "closed by the person",

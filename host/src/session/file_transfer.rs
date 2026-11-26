@@ -76,13 +76,17 @@ impl Registry {
             }
         }
     }
+
+    pub(crate) fn clear(&mut self) {
+        if let Some(page) = self.0.take() {
+            page.lock().unwrap().record = None;
+        }
+    }
 }
 
 impl Drop for Registry {
     fn drop(&mut self) {
-        if let Some(page) = &self.0 {
-            page.lock().unwrap().record = None;
-        }
+        self.clear();
     }
 }
 
@@ -169,7 +173,7 @@ impl Transfers {
         let mut page = self.page.lock().unwrap();
         if page.session == self.lease.id() {
             page.attached = false;
-            if reason != Reason::Failed {
+            if !matches!(reason, Reason::Failed | Reason::Locked) {
                 page.record = None;
             }
         }
@@ -314,7 +318,7 @@ impl Transfers {
         let (outgoing, output) = mpsc::sync_channel(SLOTS);
         let stopped = Arc::new(Mutex::new(None));
         let io = Pipe { incoming, outgoing, stopped: stopped.clone(), lease: self.lease.clone(), wake: self.wake.clone(), wait: WAIT };
-        let files = self.files;
+        let files = self.files.clone();
         let task = record.clone();
         let thread = std::thread::Builder::new().name("file-transfer".into()).spawn(move || {
             let mut state = task.state.lock().unwrap();
@@ -523,10 +527,10 @@ impl State {
     }
 }
 
-fn approve(id: u32, file: &dyn Upload, approval: &mut Option<Conflict>, io: &Pipe) -> Result<(), Error> {
+fn approve(id: u32, file: &mut dyn Upload, approval: &mut Option<Conflict>, io: &Pipe) -> Result<(), Error> {
     let observed = file.conflict(&|| io.seated())?;
     if let Some(conflict) = &observed {
-        io.text(Msg::Conflict { id, size: conflict.metadata.len(), modified: conflict.modified,
+        io.text(Msg::Conflict { id, size: conflict.size, modified: conflict.modified,
             changed: approval.is_some().then_some(true) })?;
         if !matches!(io.receive()?, Packet::Text(Msg::Replace { .. })) {
             return Err(Error::Protocol);
@@ -563,7 +567,7 @@ fn upload(id: u32, size: u64, file: &mut dyn Upload, approval: &mut Option<Confl
         if io.stopped.lock().unwrap().is_some() {
             return Err(Error::Cancelled);
         }
-        match io.lease.while_seated(|| file.publish(approval.as_ref())).ok_or(Error::Cancelled)? {
+        match io.lease.while_seated(|| file.publish(approval.is_some())).ok_or(Error::Cancelled)? {
             Err(Error::Exists) => approve(id, file, approval, io)?,
             Err(why) => return Err(why),
             Ok(replaced) => {
@@ -577,7 +581,6 @@ fn upload(id: u32, size: u64, file: &mut dyn Upload, approval: &mut Option<Confl
 }
 
 fn download(id: u32, size: u64, file: &mut dyn Download, digest: &mut Option<String>, io: &Pipe) -> Result<(), Error> {
-    let seated = || io.seated();
     io.text(Msg::Ready { id, size, offset: 0 })?;
     let offset = match io.receive()? {
         Packet::Text(Msg::Done { offset, .. }) if offset == size && digest.is_some() => return Ok(()),
@@ -819,9 +822,9 @@ mod tests {
         let terminals = Terminals::new(|_, _| unreachable!(), updates);
         let (wake, _) = mpsc::channel();
         let files = FileTransfers {
-            path: |_, _, _, _| unreachable!(),
-            upload: |_, _, _| unreachable!(),
-            download: |_, _| unreachable!(),
+            path: Arc::new(|_, _, _, _| unreachable!()),
+            upload: Arc::new(|_, _, _| unreachable!()),
+            download: Arc::new(|_, _| unreachable!()),
         };
         let until = Instant::now() + Duration::from_secs(60);
         for (device, owner, restart, expected) in [
@@ -833,7 +836,7 @@ mod tests {
             let mut registry = Registry::default();
             let page = registry.admit("one", "page", "first", until);
             let lease = terminals.admit("first".into(), "browser".into(), "one".into());
-            let mut transfer = Transfers::new(files, page.clone(), lease, wake.clone());
+            let mut transfer = Transfers::new(files.clone(), page.clone(), lease, wake.clone());
             assert!(transfer.offer(1, vec![], "file".into(), Direction::Upload(2)));
             registry.expire(until);
             assert!(page.lock().unwrap().record.is_some(), "an attached owner may still return");
@@ -860,21 +863,21 @@ mod tests {
         let terminals = Terminals::new(|_, _| unreachable!(), updates);
         let (wake, _) = mpsc::channel();
         let files = FileTransfers {
-            path: |_, _, _, _| unreachable!(),
-            upload: |_, _, _| unreachable!(),
-            download: |_, _| unreachable!(),
+            path: Arc::new(|_, _, _, _| unreachable!()),
+            upload: Arc::new(|_, _, _| unreachable!()),
+            download: Arc::new(|_, _| unreachable!()),
         };
-        for reason in [Some(Reason::Left), Some(Reason::Taken), Some(Reason::Failed), None] {
+        for reason in [Some(Reason::Left), Some(Reason::Taken), Some(Reason::Failed), Some(Reason::Locked), None] {
             let mut registry = Registry::default();
             let deadline = Instant::now() + Duration::from_secs(60);
             let page = registry.admit("one", "page", "first", deadline);
             let lease = terminals.admit("first".into(), "browser".into(), "one".into());
-            let mut transfers = Transfers::new(files, page.clone(), lease, wake.clone());
+            let mut transfers = Transfers::new(files.clone(), page.clone(), lease, wake.clone());
             assert!(transfers.offer(1, vec![], "file".into(), Direction::Upload(2)));
             let record = Arc::downgrade(page.lock().unwrap().record.as_ref().unwrap());
             if let Some(reason) = reason {
                 transfers.ended(reason);
-                if reason == Reason::Failed {
+                if matches!(reason, Reason::Failed | Reason::Locked) {
                     assert!(record.upgrade().is_some());
                     registry.expire(deadline);
                 }

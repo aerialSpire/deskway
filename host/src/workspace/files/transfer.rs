@@ -1,9 +1,8 @@
-//! Staged writes and consistent reads for the Linux file view.
+//! Staged writes and consistent reads for the browser file view.
 
 use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -18,15 +17,18 @@ const PREFIX: &str = ".deskway-upload-";
 const SUFFIX: &str = ".partial";
 const MAX_AGE: Duration = Duration::from_secs(3600);
 
-pub const FILES: FileTransfers = FileTransfers {
-    path,
-    upload,
-    download,
-};
+pub fn files() -> FileTransfers {
+    FileTransfers {
+        path: std::sync::Arc::new(path),
+        upload: std::sync::Arc::new(upload),
+        download: std::sync::Arc::new(download),
+    }
+}
 
 fn path(folder: &[String], name: &str, upload: bool, seated: &dyn Fn() -> bool) -> Result<PathBuf, Error> {
     check(seated)?;
     let folder = directory(Some(folder)).map_err(|_| Error::InvalidPath)?;
+    if folder.as_os_str().is_empty() { return Err(Error::InvalidPath); }
     let name = if upload {
         new_name(name)
             .map_err(|_| Error::InvalidName)?
@@ -70,8 +72,7 @@ pub(super) fn sweep_entry(folder: &Path, name: &OsStr, now: SystemTime, seated: 
     let path = folder.join(name);
     let _ = (|| -> Result<(), Error> {
         let old = |meta: &fs::Metadata| {
-            meta.is_file()
-                && native::owned(meta)
+            native::is_regular(meta)
                 && meta
                     .modified()
                     .ok()
@@ -82,16 +83,18 @@ pub(super) fn sweep_entry(folder: &Path, name: &OsStr, now: SystemTime, seated: 
         let pinned = native::pin(&path).map_err(io_error)?;
         check(seated)?;
         let meta = pinned.metadata().map_err(io_error)?;
-        if !old(&meta) {
+        if !old(&meta) || !native::owned(&pinned, &meta) {
             return Ok(());
         }
         check(seated)?;
-        let file = File::open(native::pinned_path(&pinned)).map_err(io_error)?;
+        let file = native::open_pinned(&pinned).map_err(io_error)?;
         check(seated)?;
         native::lock_exclusive(&file).map_err(io_error)?;
         check(seated)?;
-        let current = fs::symlink_metadata(&path).map_err(io_error)?;
-        if old(&current) && native::same_file(&current, &meta) {
+        let current = native::pin(&path).map_err(io_error)?;
+        let current_meta = current.metadata().map_err(io_error)?;
+        if old(&current_meta) && native::owned(&current, &current_meta)
+            && native::identity(&current).map_err(io_error)? == native::identity(&pinned).map_err(io_error)? {
             check(seated)?;
             fs::remove_file(path).map_err(io_error)?;
         }
@@ -99,12 +102,12 @@ pub(super) fn sweep_entry(folder: &Path, name: &OsStr, now: SystemTime, seated: 
     })();
 }
 
-pub(crate) fn sweep_home() {
+pub(crate) fn sweep_home(seated: &dyn Fn() -> bool) {
     if let Ok(home) = directory(None) {
         let now = SystemTime::now();
         let _ = native::read_names(&home, |name, _| {
             if partial_name(name) {
-                sweep_entry(&home, name, now, &|| true);
+                sweep_entry(&home, name, now, seated);
             }
         });
     }
@@ -117,7 +120,7 @@ struct Partial {
 
 impl Partial {
     fn at_path(&self) -> io::Result<bool> {
-        Ok(native::same_file(&self.file.metadata()?, &fs::symlink_metadata(&self.path)?))
+        Ok(native::identity(&self.file)? == native::identity(&native::pin(&self.path)?)?)
     }
 }
 
@@ -132,15 +135,21 @@ impl Drop for Partial {
 struct Staged {
     partial: Option<Partial>,
     destination: PathBuf,
-    folder: File,
+    _folder: File,
+    approval: Option<(native::Identity, fs::Metadata)>,
     size: u64,
 }
 
 impl Staged {
-    fn destination(&self) -> Result<Option<fs::Metadata>, Error> {
-        match fs::symlink_metadata(&self.destination) {
-            Ok(meta) if meta.is_file() => Ok(Some(meta)),
-            Ok(_) => Err(Error::NotRegular),
+    fn destination(&self) -> Result<Option<(native::Identity, fs::Metadata)>, Error> {
+        match native::pin(&self.destination) {
+            Ok(file) => {
+                let name = native::entry_name(&self.destination).map_err(io_error)?;
+                if partial_name(&native::canonical_name(&name)) { return Err(Error::InvalidName); }
+                let meta = file.metadata().map_err(io_error)?;
+                if !native::is_regular(&meta) { return Err(Error::NotRegular); }
+                Ok(Some((native::identity(&file).map_err(io_error)?, meta)))
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(io_error(e)),
         }
@@ -149,19 +158,18 @@ impl Staged {
 
 fn upload(path: &Path, size: u64, seated: &dyn Fn() -> bool) -> Result<Box<dyn Upload>, Error> {
     check(seated)?;
-    let folder = native::pin(path.parent().ok_or(Error::InvalidPath)?).map_err(io_error)?;
-    check(seated)?;
-    if !folder.metadata().map_err(io_error)?.is_dir() {
-        return Err(Error::InvalidPath);
-    }
-    let destination = native::pinned_path(&folder).join(path.file_name().ok_or(Error::InvalidPath)?);
-    Ok(Box::new(Staged { partial: None, destination, folder, size }))
+    let (folder, resolved) = native::pin_directory(path.parent().ok_or(Error::InvalidPath)?).map_err(io_error)?;
+    let destination = resolved.join(path.file_name().ok_or(Error::InvalidPath)?);
+    Ok(Box::new(Staged { partial: None, destination, _folder: folder, approval: None, size }))
 }
 
 impl Upload for Staged {
-    fn conflict(&self, seated: &dyn Fn() -> bool) -> Result<Option<Conflict>, Error> {
+    fn conflict(&mut self, seated: &dyn Fn() -> bool) -> Result<Option<Conflict>, Error> {
         check(seated)?;
-        Ok(self.destination()?.map(|metadata| Conflict { modified: native::modified(&metadata), metadata }))
+        self.approval = self.destination()?;
+        Ok(self.approval.as_ref().map(|(_, metadata)| Conflict {
+            modified: native::modified(metadata), size: metadata.len(),
+        }))
     }
 
     fn prepare(&mut self, seated: &dyn Fn() -> bool) -> Result<u64, Error> {
@@ -171,15 +179,9 @@ impl Upload for Staged {
             return Ok(offset);
         }
         let id = wire::crypto::hex(&wire::crypto::random::<16>());
-        let path = native::pinned_path(&self.folder).join(format!("{PREFIX}{id}{SUFFIX}"));
+        let path = self.destination.with_file_name(format!("{PREFIX}{id}{SUFFIX}"));
         check(seated)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(io_error)?;
+        let file = native::create_partial(&path).map_err(io_error)?;
         let partial = Partial { file, path };
         check(seated)?;
         native::lock_exclusive(&partial.file).map_err(io_error)?;
@@ -192,24 +194,29 @@ impl Upload for Staged {
         self.partial.as_mut().ok_or(Error::Protocol)?.file.write_all(bytes).map_err(io_error)
     }
 
-    fn verify(&self, sha256: &str, seated: &dyn Fn() -> bool) -> Result<(), Error> {
-        let partial = self.partial.as_ref().ok_or(Error::Protocol)?;
+    fn verify(&mut self, sha256: &str, seated: &dyn Fn() -> bool) -> Result<(), Error> {
+        let partial = self.partial.as_mut().ok_or(Error::Protocol)?;
         check(seated)?;
         if partial.file.metadata().map_err(io_error)?.len() != self.size {
             return Err(Error::Size);
         }
         check(seated)?;
-        let mut reader = File::open(native::pinned_path(&partial.file)).map_err(io_error)?;
-        let mut hash = Sha256::new();
-        let mut buf = vec![0; 64 * 1024];
-        loop {
-            check(seated)?;
-            let n = reader.read(&mut buf).map_err(io_error)?;
-            if n == 0 {
-                break;
+        let saved = partial.file.stream_position().map_err(io_error)?;
+        partial.file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+        let result = (|| {
+            let mut hash = Sha256::new();
+            let mut buf = vec![0; 64 * 1024];
+            loop {
+                check(seated)?;
+                let n = partial.file.read(&mut buf).map_err(io_error)?;
+                if n == 0 {
+                    return Ok(hash);
+                }
+                hash.update(&buf[..n]);
             }
-            hash.update(&buf[..n]);
-        }
+        })();
+        partial.file.seek(SeekFrom::Start(saved)).map_err(io_error)?;
+        let hash = result?;
         if wire::crypto::hex(&hash.finalize()) != sha256 {
             return Err(Error::Integrity);
         }
@@ -217,15 +224,15 @@ impl Upload for Staged {
         partial.file.sync_all().map_err(io_error)
     }
 
-    fn publish(&self, approval: Option<&Conflict>) -> Result<bool, Error> {
+    fn publish(&self, approved: bool) -> Result<bool, Error> {
         let partial = self.partial.as_ref().ok_or(Error::Protocol)?;
         if !partial.at_path().unwrap_or(false) {
             return Err(Error::Integrity);
         }
-        let replacing = if let Some(approval) = approval {
-            if let Some(current) = self.destination()? {
-                let approved = &approval.metadata;
-                if !native::same_file(&current, approved) || current.len() != approved.len()
+        let replacing = if approved {
+            let (approved_id, approved) = self.approval.as_ref().ok_or(Error::Protocol)?;
+            if let Some((current_id, current)) = self.destination()? {
+                if current_id != *approved_id || current.len() != approved.len()
                     || current.modified().map_err(io_error)? != approved.modified().map_err(io_error)? {
                     return Err(Error::Exists);
                 }
@@ -237,7 +244,7 @@ impl Upload for Staged {
             false
         };
         if replacing {
-            fs::rename(&partial.path, &self.destination)
+            native::replace(&partial.path, &self.destination)
         } else {
             native::rename_new(&partial.path, &self.destination)
         }.map_err(io_error)?;
@@ -255,11 +262,11 @@ fn download(path: &Path, seated: &dyn Fn() -> bool) -> Result<Box<dyn Download>,
     let pinned = native::pin(path).map_err(io_error)?;
     check(seated)?;
     let meta = pinned.metadata().map_err(io_error)?;
-    if !meta.is_file() {
+    if !native::is_regular(&meta) {
         return Err(Error::NotRegular);
     }
     check(seated)?;
-    let file = File::open(native::pinned_path(&pinned)).map_err(io_error)?;
+    let file = native::open_pinned(&pinned).map_err(io_error)?;
     Ok(Box::new(Reading {
         file,
         size: meta.len(),
@@ -313,7 +320,7 @@ impl Reading {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::{fs::symlink, net::UnixListener};
@@ -369,7 +376,7 @@ mod tests {
             }
             staged.write(b"ew", &|| true).unwrap();
             assert!(!dest.exists());
-            let result = staged.verify(&digest(data), &|| seated).and_then(|()| staged.publish(None));
+            let result = staged.verify(&digest(data), &|| seated).and_then(|()| staged.publish(false));
             assert_eq!(result, expected);
             drop(staged);
             assert_eq!(fs::read(&dest).ok().as_deref(), expected.ok().map(|_| b"new".as_slice()));
@@ -387,7 +394,7 @@ mod tests {
             }
             let mut staged = upload(&dest, 3, &|| true).ok().unwrap();
             let mut approval = staged.conflict(&|| true).unwrap();
-            let mtime = approval.as_ref().map(|old| old.metadata.modified().unwrap());
+            let mtime = approval.as_ref().map(|_| fs::metadata(&dest).unwrap().modified().unwrap());
             staged.prepare(&|| true).unwrap();
             staged.write(b"new", &|| true).unwrap();
             match change {
@@ -411,7 +418,7 @@ mod tests {
                 _ => {}
             }
             staged.verify(&digest(b"new"), &|| true).unwrap();
-            let result = staged.publish(approval.as_ref());
+            let result = staged.publish(approval.is_some());
             if matches!(change, "directory" | "link") {
                 assert_eq!(result, Err(Error::NotRegular));
                 assert_eq!(staged.conflict(&|| true).err(), Some(Error::NotRegular));
@@ -423,7 +430,7 @@ mod tests {
                 assert_eq!(result, Err(Error::Exists), "{change}");
                 assert_eq!(fs::read(&dest).unwrap(), if change == "size" { b"long".as_slice() } else { b"alt" });
                 approval = staged.conflict(&|| true).unwrap();
-                assert_eq!(staged.publish(approval.as_ref()), Ok(true), "{change}");
+                assert_eq!(staged.publish(approval.is_some()), Ok(true), "{change}");
             }
             assert_eq!(fs::read(&dest).unwrap(), b"new");
             drop(staged);
@@ -450,7 +457,7 @@ mod tests {
                 "link" => symlink(&moved, &path).unwrap(),
                 _ => {}
             }
-            assert_eq!(staged.publish(approval.as_ref()), Err(Error::Integrity));
+            assert_eq!(staged.publish(approval.is_some()), Err(Error::Integrity));
             drop(staged);
             assert_eq!(fs::read(dest).unwrap(), b"old");
             assert_eq!(fs::symlink_metadata(path).is_ok(), replacement != "missing");
@@ -468,7 +475,8 @@ mod tests {
                 file: File::open(&path).unwrap(), path,
             }),
             destination,
-            folder: File::open(&dir.0).unwrap(),
+            _folder: File::open(&dir.0).unwrap(),
+            approval: None,
             size: 3,
         };
         assert_eq!(staged.write(b"new", &|| true), Err(Error::Io));
