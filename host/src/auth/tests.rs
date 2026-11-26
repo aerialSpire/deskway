@@ -151,7 +151,8 @@ fn resume_token_reconnects_and_dies_with_its_controller() {
     let (mut t, b) = paired("resume");
     let v = t.verify_offer("s1", "N", "x", false, &b.offer_auth("s1", "N", "x", false)).unwrap();
     let r = t.issue_resume(&v);
-    let resumed = t.verify_offer("s2", "N2", "y", false, &resume_auth(&r, "s2", "N2", "y")).unwrap();
+    let nonce = URL_SAFE_NO_PAD.encode(random::<8>());
+    let resumed = t.verify_offer("s2", &nonce, "y", false, &resume_auth(&r, "s2", &nonce, "y")).unwrap();
     assert_eq!((resumed.controller, resumed.page), (v.controller, v.page));
     t.remove(&b.cred).unwrap();
     assert!(t.verify_offer("s3", "N3", "y", false, &resume_auth(&r, "s3", "N3", "y")).is_err());
