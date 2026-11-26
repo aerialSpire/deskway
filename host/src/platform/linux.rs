@@ -19,6 +19,7 @@ use crate::signal::{self, Control};
 use crate::workspace::Local;
 
 mod programs;
+pub(crate) mod file_metadata;
 mod lock;
 use super::unix::{open_host_lock, try_lock_host};
 pub use programs::{kill_tree, session_members, start_program, start_terminal};

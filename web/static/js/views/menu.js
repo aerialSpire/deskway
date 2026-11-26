@@ -12,7 +12,7 @@ let current = null;
 // closes the menu and runs. `checked` (true or false) makes it one of a set of choices, the
 // chosen one marked; `lang` is the language its words are in.
 // Returns the element to place and `open`, for ways other than the button (holding a card).
-export function dropdown(key, button, items) {
+export function dropdown(key, button, items, { floating = false } = {}) {
   const menu = h('div', { class: 'menu', role: 'menu', hidden: true });
   const wrap = h('div', { class: 'dropdown' }, button, menu);
   const item = (label, run, { danger = false, checked = null, lang = null } = {}) => h('button', {
@@ -37,6 +37,13 @@ export function dropdown(key, button, items) {
     current?.close();
     menu.replaceChildren(...items(item).filter(Boolean));
     menu.hidden = false;
+    if (floating) {
+      menu.classList.add('floating-menu');
+      const anchor = button.getBoundingClientRect();
+      const top = anchor.bottom + menu.offsetHeight <= innerHeight ? anchor.bottom : anchor.top - menu.offsetHeight;
+      menu.style.top = `${Math.max(0, top)}px`;
+      menu.style.right = `${Math.max(0, innerWidth - anchor.right)}px`;
+    }
     button.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', outside, true);
     document.addEventListener('keydown', esc);
@@ -49,7 +56,7 @@ export function dropdown(key, button, items) {
   if (current && current.key === key) {
     queueMicrotask(() => { if (current && current.key === key && !current.wrap.isConnected && wrap.isConnected) open(); });
   }
-  return { el: wrap, open };
+  return { el: wrap, open, close };
 }
 
 export const menuSeparator = () => h('div', { class: 'menu-sep' });

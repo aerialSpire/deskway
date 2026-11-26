@@ -1,17 +1,17 @@
 // What the desk seat's offer refusals and takeover show, independent of the dialog layer.
-export function takeoverMessage(c, terminal, t) {
+export function takeoverMessage(c, t) {
   if (c.device && c.connecting) return { action: 'replace' };
   if (c.device) return { action: 'takeover', title: t('force.deviceTitle'), text: t('force.deviceText'), go: t('force.deviceGo') };
   return {
     action: 'takeover',
     title: t(c.connecting ? 'force.accountConnecting' : 'force.account', { name: c.name }),
-    text: t(terminal ? 'terminal.takeoverText' : 'force.accountText'),
+    text: t('force.accountText'),
     go: t('force.accountGo'),
   };
 }
 
-export function offerMessage({ reason, by, same, controller, established, cause, via }, { terminal, headless, t, time }) {
-  const endedText = (desktop) => t(terminal ? 'terminal.ended' : desktop);
+export function offerMessage({ reason, by, same, controller, established, cause, via }, { view, headless, t, time }) {
+  const endedText = (desktop) => t(view === 'terminal' ? 'terminal.ended' : view === 'files' ? 'files.ended' : desktop);
   switch (reason) {
     case 'failed':
     case 'gone':
@@ -19,17 +19,17 @@ export function offerMessage({ reason, by, same, controller, established, cause,
       if (cause === 'host') return { action: 'reconnect', title: t('session.offlineTitle'), text: endedText('session.offlineText') };
       return { action: 'reconnect', title: t('session.failedTitle'), text: endedText('session.failedText') };
     case 'offline':
-      return { action: 'reconnect', title: t('session.offlineTitle'), text: t(terminal ? 'terminal.offline' : 'session.offlineText') };
+      return { action: 'reconnect', title: t('session.offlineTitle'), text: t(view === 'terminal' ? 'terminal.offline' : view === 'files' ? 'files.offline' : 'session.offlineText') };
     case 'ended':
       // A server bye after establishment means the restarted computer no longer names the session.
       if (via === 'bye' && established) return { action: 'reconnect', title: t('session.restartedTitle'), text: endedText('session.restartedText') };
       return { title: t('session.endedTitle'), text: endedText('session.endedText') };
-    case 'busy': return takeoverMessage(controller, terminal, t);
+    case 'busy': return takeoverMessage(controller, t);
     case 'taken':
       return {
         action: 'takeBack',
         title: same ? t('session.takenHereTitle') : t('session.takenTitle', { name: by || t('session.someone') }),
-        text: t(terminal ? 'terminal.taken' : 'session.takenText', { time: time() }),
+        text: t(view === 'desktop' ? 'session.takenText' : 'session.dataTakenText', { time: time() }),
       };
     case 'unpaired':
       if (!headless) return { action: 'pair' };

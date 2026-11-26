@@ -35,6 +35,11 @@ impl Workspace for Local {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn browse_files(&self) -> Option<super::BrowseFiles> {
+        Some(files::browse::call)
+    }
+
     #[cfg(desktop_host)]
     fn desktop(&self, op: super::DesktopOp) -> Answer {
         super::desktop::call(op)

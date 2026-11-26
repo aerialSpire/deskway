@@ -2,6 +2,8 @@
 //! and arguments from proto/tools.json. The Windows user worker carries the same requests
 //! over its pipe; Linux and macOS run them in-process.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -168,9 +170,17 @@ impl WorkError {
 
 pub type Answer = Result<Value, WorkError>;
 
+/// A local filesystem operation and its resolved path for the host's journal.
+pub type BrowseFiles = fn(wire::browse::Browse) -> (PathBuf, wire::browse::Browse);
+
 /// Carries out requests with the workspace user's rights.
 pub trait Workspace: Send + Sync {
     fn call(&self, op: Op) -> Answer;
+
+    fn browse_files(&self) -> Option<BrowseFiles> {
+        None
+    }
+
     #[cfg(desktop_host)]
     fn desktop(&self, op: DesktopOp) -> Answer;
 

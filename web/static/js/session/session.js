@@ -1,11 +1,11 @@
-// A browser session and the chrome around its desktop or terminal view.
+// A browser session and the chrome around its desktop or data-only views.
 // Connection owns negotiation and liveness. The view owns what that connection carries.
 import { $app, h, spinner } from '../dom.js';
 import { store, randomId } from '../env.js';
 import { t } from '../i18n.js';
 import { socket, iceServers } from '../net.js';
 import { connectAuth, answerSigned, pinnedHostKey, pinHostKey } from '../auth.js';
-import { PROTOCOL_VERSION, MIN_VERSION, CAPS, Control } from '../proto.js';
+import { PROTOCOL_VERSION, MIN_VERSION, Control } from '../proto.js';
 import { dialog } from '../dialogs.js';
 import { Connection } from './connection.js';
 import { ConnectionStats } from './connection-stats.js';
@@ -14,7 +14,7 @@ import { Keyboard } from './keyboard.js';
 import { OnscreenKeyboard } from './onscreen-keyboard.js';
 import { Toolbar } from './toolbar.js';
 import { Desktop } from './desktop.js';
-import { TerminalView } from './terminal-view.js';
+import { DataView } from './data-view.js';
 import { terminalDisconnectActions } from '../terminal-ui.js';
 
 // What the stage says while the session is not active, by why.
@@ -33,9 +33,8 @@ async function verifyAnswer({ hostId, session, offerSdp, answerSdp, auth }) {
 }
 
 export class Session {
-  constructor(device, { force = false, terminal = false, full = true, onEnd = () => {} } = {}) {
+  constructor(device, { force = false, view = 'desktop', full = true, onEnd = () => {} } = {}) {
     this.device = device;
-    this.terminal = terminal;
     this.onEnd = onEnd;
     this.closed = false;
     this.id = randomId();
@@ -45,25 +44,28 @@ export class Session {
 
     this.notice = h('div', { class: 'notice dark passive', hidden: true, role: 'status' });
     this.stack = h('div', { class: 'stack' }, this.notice);
-    this.stage = h('div', { class: terminal ? 'stage terminal-stage' : 'stage', tabindex: '0', 'aria-label': t(terminal ? 'terminal.title' : 'session.screen') }, this.stack);
+    const dataOnly = view !== 'desktop';
+    this.stage = h('div', { class: dataOnly ? 'stage terminal-stage' : 'stage', tabindex: '0',
+      'aria-label': t(dataOnly ? 'terminal.title' : 'session.screen') }, dataOnly ? null : this.stack);
     this.osk = new OnscreenKeyboard(this);
-    this.content = terminal ? new TerminalView(this) : new Desktop(this);
+    this.content = dataOnly ? new DataView(this, view) : new Desktop(this);
     this.keyboard = new Keyboard(this, this.content.keyboardSink());
-    this.toolbar = new Toolbar(this, this.content.buttons, this.content.picture || []);
+    this.toolbar = new Toolbar(this, this.content.buttons, this.content.picture || [], this.content.navigation);
     const details = new ConnectionDetails(() => this.toolbar.closePanel(this.toolbar.routeButton));
     this.toolbar.addPanel('connection', this.toolbar.routeButton, () => details.el);
     this.connectionStats = new ConnectionStats(() => this.content.statsMode, (sample) => {
       this.toolbar.route(sample.path.route, details.update(sample));
     });
     this.toolbar.showAi(this.device);
-    this.root = h('div', { class: 'session' }, this.toolbar.el, this.toolbar.tab, this.stage, this.toolbar.panels);
+    this.root = h('div', { class: 'session' }, this.toolbar.el, this.toolbar.tab, this.stage,
+      dataOnly ? this.content.files.el : null, dataOnly ? this.stack : null, this.toolbar.panels);
     $app.replaceChildren(this.root);
 
     this.toolbar.bind();
     this.keyboard.bind();
     this.bindPage();
     this.content.bind();
-    this.stage.focus();
+    if (!this.stage.hidden) this.stage.focus();
     this.toolbar.show();
 
     // Taking over goes full screen, unless this device turned that off. Runs inside the tap
@@ -76,7 +78,7 @@ export class Session {
       id: this.id,
       device: device.id,
       force,
-      terminal,
+      dataOnly,
       deps: {
         socket,
         iceServers,
@@ -272,15 +274,16 @@ export class Session {
   // Ending a session by accident is costly (a long task loses its watcher), so it asks.
   confirmLeave() {
     const busy = this.content.busy;
-    const cancel = () => this.stage.focus({ preventScroll: true });
+    const cancel = () => (this.content.filesVisible ? this.content.files.el : this.stage).focus({ preventScroll: true });
     const leave = () => this.leave();
     const title = t('leave.title', { name: this.device.name });
-    if (this.terminal && this.content.keeps) {
+    if (this.content.hasTerminal && this.content.keeps) {
       dialog(title, t('terminal.leaveKeeping'),
         terminalDisconnectActions(t, cancel, () => this.content.terminate(), leave, this.connected && this.content.canClose));
       return;
     }
-    const text = this.terminal ? t('terminal.leave') : busy ? t('leave.textBusy', { n: busy }) : t('leave.text');
+    const text = this.content.hasTerminal ? t('terminal.leave')
+      : this.content.currentView ? t('files.leave') : busy ? t('leave.textBusy', { n: busy }) : t('leave.text');
     dialog(title, text, [
       { label: t('common.cancel'), run: cancel },
       { label: t('tb.disconnect'), primary: true, run: leave },

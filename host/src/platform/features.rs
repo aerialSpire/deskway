@@ -48,7 +48,7 @@ pub type OpenPty = fn(u16, u16) -> io::Result<Box<dyn Pty>>;
 #[derive(Clone, Copy)]
 pub enum BrowserSession {
     Desktop(DesktopFeatures),
-    Terminal,
+    Data,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -56,13 +56,14 @@ pub struct Features {
     pub desktop: Option<DesktopFeatures>,
     pub terminal: Option<OpenPty>,
     pub work: bool,
+    pub browse: bool,
     pub view_only: bool,
 }
 
 impl Features {
     pub fn browser_session(self, data_only: bool) -> Result<BrowserSession, Reason> {
         if data_only {
-            self.terminal.map(|_| BrowserSession::Terminal).ok_or(Reason::NoTerminal)
+            self.terminal.map(|_| BrowserSession::Data).ok_or(Reason::NoTerminal)
         } else {
             self.desktop.map(BrowserSession::Desktop).ok_or(Reason::NoDesktop)
         }
@@ -74,11 +75,20 @@ impl Features {
 
     pub fn signaling_caps(self) -> Vec<String> {
         let mut caps = self.desk_caps();
+        caps.extend(self.data_caps());
+        caps.push(wire::caps::RELAY_RTT.into());
+        caps
+    }
+
+    pub fn data_caps(self) -> Vec<String> {
+        let mut caps = Vec::new();
         if self.terminal.is_some() {
             caps.push(wire::caps::TERMINAL.into());
             caps.push(wire::caps::TERMINAL_KEEP.into());
+            if self.browse {
+                caps.push(wire::caps::BROWSE.into());
+            }
         }
-        caps.push(wire::caps::RELAY_RTT.into());
         caps
     }
 

@@ -73,6 +73,7 @@ platform/
   features.rs      the host's feature set selects seats, capabilities and tools
   linux.rs         host commands, operating-system signals, and per-user state directory
   linux/lock.rs    the running host's process id in its lock file, and the signal sent to it
+  linux/file_metadata.rs Linux ownership, permissions, modification time and no-replace rename
   linux/programs.rs process setup and enumeration on Linux
   unix/programs.rs  login shell, process groups and pseudo-terminals on Linux and macOS
   mod.rs           trait Platform + PlatformEvent (and Call, what crosses the agent pipe);
@@ -95,7 +96,8 @@ session/
   desk/            channels.rs: those channels' messages, read once and routed; pace.rs:
                    real time over a congested path, encoding waits while the queue is full;
                    media.rs: the picture's track (payload, mid, keyframes)
-  terminal.rs      the desk seat's data-only role, with one attachment's resize and credit
+  data.rs          the desk seat's data-only role, routing control, terminal and browse
+  terminal.rs      one PTY attachment's resize and credit
   terminal/        registry.rs: the host's one browser PTY, attachment and idle timeout;
                    replay.rs: the bounded recent output and its safe start
   ai.rs            the AI role, an AI client's deskway: control and ai channels (MCP in
@@ -105,7 +107,8 @@ mcp/               an AI session's MCP requests, answered off the session thread
                    host), gate.rs (the one checkpoint: Granted, the rules, the audit records)
 tools/             the tools of proto/tools.json: mod.rs registers base, work and desktop tools
 workspace/         commands and files as the workspace user: mod.rs (Op, Workspace and errors),
-                   local.rs (in this process), procs.rs (programs and retained output), files.rs,
+                   local.rs (in this process), procs.rs (programs and retained output), files.rs
+                   and files/browse.rs (paged directory selection and Linux browser operations),
                    desktop.rs (DesktopOp), remote.rs (Windows user worker pipe)
 audit.rs           what AI clients did here: JSON lines, appended only, bounded
 video/             capture loop (Pipeline: commands, capture, encode step), encoder choice,
@@ -138,10 +141,17 @@ MCP gate. Every host offers the base tools. A workspace adds work tools, includi
 tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
 according to the live hello's `desk` capability. Linux offers `terminal` and `terminal-keep`
-and supplies a PTY launcher. Verified terminal and picture offers contend for the same desk seat.
-A picture offer to a Linux host receives `no_desktop`. A terminal offer to a host without
-terminal support receives `no_terminal`. The AI seat uses the same device proofs and signed AI
-switch on all hosts.
+through its PTY launcher and `browse` through its local workspace. Verified data-only and picture
+browser offers contend for the same desk seat. A picture offer to a Linux host receives
+`no_desktop`. A data-only browser offer to a host without terminal support receives `no_terminal`.
+The AI seat uses the same device proofs and signed AI switch on all hosts.
+
+The data-only role runs one filesystem operation per session at a time, with at most two
+filesystem workers across the host. Before calling the workspace a worker checks the desk
+seat using the terminal registry's admission state. The workspace resolves the directory on
+the first page, selects each sorted page with bounded memory and applies filesystem changes.
+The browser uses the returned path and cursor for successive pages. The AI listing scans
+until it has up to 2,000 readable entries, with its own `more` field.
 
 The host's terminal registry owns the PTY even with no desk session. Only the admitted desk
 session can attach. It owns its own input queue and credit, while the registry owns the recent
@@ -744,14 +754,15 @@ js/windows.js        each computer in a window of its own, when the device chose
                      <id>; the windows find each other over a BroadcastChannel)
 js/views/            login (with choosing an initial password's replacement), list, detail,
                      devices, menu, account (with installing), members (**Members**), relays
-                     (**Relays**), computer, approvals, pairing, takeover (opening a picture or terminal: the one question, and
-                     the one mapping from end reasons to what is shown); common.js holds the
-                     pieces every page shares
+                     (**Relays**), computer, approvals, pairing, takeover (opening a browser
+                     session and mapping end reasons to messages); common.js holds shared pieces
 js/session/          connection.js (the session's lifecycle: peer connection, negotiation,
                      state, deadlines, attaching again, the end), session.js (the session's
                      parts put together), desktop.js (picture and controls), terminal-view.js
                      (emulator and layout), terminal-keys.js (keyboard input for the PTY),
-                     terminal-channel.js (byte stream and credit),
+                     terminal-channel.js (byte stream and credit), data-view.js (switch between
+                     Terminal and Files), files-view.js (browsing and folder operations) and
+                     file-listing.js (name and metadata display),
                      video, pointer, touch, mouse-pad, keyboard, onscreen-keyboard,
                      keyboard-layout.js (the on-screen US layout), text-box (every input
                      method's text), clipboard

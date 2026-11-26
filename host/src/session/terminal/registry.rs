@@ -38,8 +38,8 @@ impl Registry {
         self.shared.open
     }
 
-    pub fn detach(&self, id: &str, why: &str) {
-        self.shared.detach(id, why);
+    pub fn end(&self, id: &str, why: &str) {
+        self.shared.detach(id, why, true);
     }
 
     pub fn status(&self) -> Option<KeptTerminal> {
@@ -76,9 +76,9 @@ impl Shared {
         self.wake.notify_one();
     }
 
-    fn detach(&self, id: &str, why: &str) {
+    fn detach(&self, id: &str, why: &str, end: bool) {
         let mut state = self.state.lock().unwrap();
-        if state.detach(id, why, Instant::now(), SystemTime::now()) {
+        if state.detach(id, why, Instant::now(), SystemTime::now(), end) {
             self.changed();
         }
     }
@@ -108,6 +108,7 @@ impl Shared {
     }
 }
 
+#[derive(Clone)]
 pub struct Lease {
     shared: Arc<Shared>,
     id: String,
@@ -116,6 +117,15 @@ pub struct Lease {
 }
 
 impl Lease {
+    pub(in crate::session) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(in crate::session) fn holds_seat(&self) -> bool {
+        let state = self.shared.state.lock().unwrap();
+        !state.stopping && state.seat.as_deref() == Some(self.id.as_str())
+    }
+
     pub(super) fn attach(&self, rows: u16, cols: u16) -> io::Result<Option<(Option<Replay>, bool)>> {
         let mut state = self.shared.state.lock().unwrap();
         let was_left = state.left().is_some();
@@ -133,7 +143,11 @@ impl Lease {
     }
 
     pub fn detach(&self, why: &str) {
-        self.shared.detach(&self.id, why);
+        self.shared.detach(&self.id, why, false);
+    }
+
+    pub(super) fn end(&self, why: &str) {
+        self.shared.detach(&self.id, why, true);
     }
 
     pub fn close(&self, why: Closed) -> bool {
@@ -209,11 +223,13 @@ impl State {
         (self.seat.as_deref() == Some(id) && matches!(kept.place, Place::Attached { .. })).then_some(&mut kept.shell)
     }
 
-    fn detach(&mut self, id: &str, why: &str, now: Instant, wall: SystemTime) -> bool {
+    fn detach(&mut self, id: &str, why: &str, now: Instant, wall: SystemTime, end: bool) -> bool {
         if self.seat.as_deref() != Some(id) {
             return false;
         }
-        self.seat = None;
+        if end {
+            self.seat = None;
+        }
         let Some(kept) = &mut self.terminal else { return false };
         let Place::Attached { name, cred } = &kept.place else { return false };
         eprintln!("{}", tf("terminal.left", &[("name", name.clone()), ("reason", why.into())]));
@@ -396,9 +412,9 @@ mod tests {
             let (mut state, process) = opened(now);
             assert!(state.left().is_none());
             if detached {
-                assert!(state.detach("one", "left", now, wall));
+                assert!(state.detach("one", "left", now, wall, true));
                 assert_eq!(state.left().unwrap().report, KeptTerminal { since: 123, name: "Phone".into(), cred: Some("cred1".into()) });
-                assert!(!state.detach("one", "failed", now + Duration::from_secs(1), wall));
+                assert!(!state.detach("one", "failed", now + Duration::from_secs(1), wall, true));
                 assert!(state.terminate("one").is_none());
             }
             match why {
@@ -460,7 +476,7 @@ mod tests {
         let first = &mut Stream::new(24, 80, None);
         first.credit.outstanding = OUTPUT_WINDOW;
         assert!(first.input.receive(b"old input".to_vec()));
-        assert!(state.detach("one", "taken", now, UNIX_EPOCH));
+        assert!(state.detach("one", "taken", now, UNIX_EPOCH, true));
         assert!(state.attached("one").is_none());
         let detached = b'x';
         let live = b'y';

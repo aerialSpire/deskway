@@ -18,7 +18,7 @@ import { aiUsing } from '../views/common.js';
 import { t } from '../i18n.js';
 
 export class Toolbar {
-  constructor(s, buttons, picture) {
+  constructor(s, buttons, picture, navigation = []) {
     this.s = s;
     this.panelKind = null;
     this.isFull = false;
@@ -37,7 +37,7 @@ export class Toolbar {
     this.nameText = h('span', { class: 'tool-name-text', title: s.device.name }, s.device.name);
     // The buttons as one group: in line on a wide window, a row of their own on a narrow one.
     this.remoteButtons = buttons.filter(Boolean);
-    this.group = h('div', { class: 'tool-group' }, ...this.remoteButtons, this.fullBtn);
+    this.group = h('div', { class: 'tool-group' }, ...navigation, ...this.remoteButtons, this.fullBtn);
     this.group.addEventListener('scroll', () => this.fade(), { passive: true });
     this.main = h('div', { class: 'tool-main' },
       h('div', { class: 'tool-name' }, this.nameText),
@@ -201,6 +201,7 @@ export class Toolbar {
 
   hide() {
     clearTimeout(this.timer);
+    if (this.s.content.filesVisible) return;
     this.el.classList.remove('shown');
     if (this.el.contains(document.activeElement)) this.s.stage.focus({ preventScroll: true });
   }
