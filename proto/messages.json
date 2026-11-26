@@ -20,6 +20,7 @@
     { "name": "terminal", "who": "host", "since": 4, "meaning": "The host offers a data-only browser terminal on its desk seat." },
     { "name": "terminal-keep", "who": "host", "since": 4, "meaning": "The host keeps the browser terminal across sessions and supports explicit termination." },
     { "name": "browse", "who": "host", "since": 4, "meaning": "The data-only browser session also offers the browse channel for the host user’s files." },
+    { "name": "file-transfer", "who": "host", "since": 4, "meaning": "The data-only browser session can upload and download regular files." },
     { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
     { "name": "relay-rtt", "who": "host", "since": 4, "meaning": "The host accepts relay-list on its signaling socket and reports UDP round-trip times." }
   ],
@@ -1064,6 +1065,24 @@
             "why": {"type": "string", "optional": false, "meaning": "Reason for the failure.", "enum": ["not_found", "denied", "exists", "not_empty", "invalid_name", "invalid_path", "busy", "io"]}
           }
         }
+      ]
+    },
+    "file-transfer": {
+      "transport": "Reliable ordered WebRTC data channel file-transfer. Binary: unsigned big-endian u32 transfer id, unsigned big-endian u64 byte offset, payload.",
+      "discriminator": "t",
+      "max_bytes": 16384,
+      "header_bytes": 12,
+      "window_bytes": 65488,
+      "messages": [
+        {"type": "upload", "directions": ["browser->host"], "meaning": "Stage a new file, refusing an existing name before granting credit.", "fields": {"id": {"type": "integer", "optional": false}, "path": {"type": "array", "optional": false, "items": "string"}, "name": {"type": "string", "optional": false}, "size": {"type": "integer", "optional": false}}},
+        {"type": "download", "directions": ["browser->host"], "meaning": "Open one regular file. Refuse a size above limit when supplied.", "fields": {"id": {"type": "integer", "optional": false}, "path": {"type": "array", "optional": false, "items": "string"}, "entry": {"type": "string", "optional": false}, "limit": {"type": "integer", "optional": true}}},
+        {"type": "ready", "directions": ["host->browser"], "meaning": "Report the size. For upload this also grants the initial window.", "fields": {"id": {"type": "integer", "optional": false}, "size": {"type": "integer", "optional": false}}},
+        {"type": "start", "directions": ["browser->host"], "meaning": "Grant the initial download window at offset zero.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
+        {"type": "ack", "directions": ["browser->host", "host->browser"], "meaning": "Return receiver credit through the absolute offset consumed.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
+        {"type": "finish", "directions": ["browser->host", "host->browser"], "meaning": "All bytes were acknowledged. Receiver validates and commits the file at this size.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
+        {"type": "done", "directions": ["browser->host", "host->browser"], "meaning": "The receiver committed the file. The host echoes download completion.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
+        {"type": "cancel", "directions": ["browser->host"], "meaning": "Cancel the current transfer and discard staged data.", "fields": {"id": {"type": "integer", "optional": false}}},
+        {"type": "error", "directions": ["browser->host", "host->browser"], "meaning": "The transfer ended without completion. The browser may report io or protocol.", "fields": {"id": {"type": "integer", "optional": false}, "why": {"type": "string", "optional": false, "enum": ["not_found", "denied", "exists", "invalid_name", "invalid_path", "busy", "io", "not_regular", "changed", "size", "limit", "protocol", "cancelled"]}}}
       ]
     },
     "terminal": {

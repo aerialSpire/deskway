@@ -13,9 +13,9 @@ use wire::control::Control;
 use wire::types::Reason;
 
 use super::terminal::{registry::Lease, Terminal};
-use super::{Cx, Role, SessionEvent};
+use super::{file_transfer::Transfers, Cx, Role, SessionEvent};
 use crate::i18n::t;
-use crate::workspace::BrowseFiles;
+use crate::workspace::{BrowseFiles, FileTransfers};
 
 /// A single enabled application media section, covered by the same proof as a picture offer.
 pub fn data_only(sdp: &str) -> bool {
@@ -28,13 +28,19 @@ pub struct Data {
     terminal: Terminal,
     terminal_id: Option<ChannelId>,
     files: Option<Files>,
+    transfers: Option<Transfers>,
 }
 
 impl Data {
-    pub fn new(lease: Lease, files: Option<BrowseFiles>, own: Sender<SessionEvent>) -> Self {
-        Self { terminal: Terminal::new(lease.clone()), terminal_id: None, files: files.map(|call| Files {
-            call, lease, own, channel: None, work: Work::Idle,
-        }) }
+    pub fn new(lease: Lease, files: Option<BrowseFiles>, transfers: Option<FileTransfers>, own: Sender<SessionEvent>) -> Self {
+        Self {
+            terminal: Terminal::new(lease.clone()),
+            terminal_id: None,
+            files: files.map(|call| Files {
+                call, lease: lease.clone(), own: own.clone(), channel: None, work: Work::Idle,
+            }),
+            transfers: transfers.map(|files| Transfers::new(files, lease, own)),
+        }
     }
 }
 
@@ -58,6 +64,11 @@ impl Role for Data {
                     self.terminal_id = Some(id);
                     return false;
                 }
+                wire::file_transfer::CHANNEL => {
+                    if self.transfers.as_mut().is_some_and(|transfer| transfer.attach(id)) {
+                        return false;
+                    }
+                }
                 browse::CHANNEL => {
                     if let Some(files) = self.files.as_mut().filter(|files| files.channel.is_none()) {
                         files.channel = Some(id);
@@ -78,6 +89,11 @@ impl Role for Data {
             }
         } else if self.terminal_id == Some(d.id) {
             self.terminal.message(cx.active(), d);
+        } else if let Some(transfer) = self.transfers.as_mut().filter(|t| t.channel() == Some(d.id)) {
+            if cx.active() && !transfer.receive(d.data, d.binary) {
+                cx.rtc.direct_api().close_data_channel(d.id);
+                transfer.protocol_error();
+            }
         } else if let Some(files) = self.files.as_mut().filter(|files| files.channel == Some(d.id)) {
             if !files.request(d.binary, &d.data) {
                 cx.rtc.direct_api().close_data_channel(d.id);
@@ -93,6 +109,8 @@ impl Role for Data {
                 self.terminal.channel_closed();
             } else if self.files.as_ref().is_some_and(|files| files.channel == Some(id)) {
                 self.files = None;
+            } else if let Some(transfer) = self.transfers.as_mut().filter(|t| t.channel() == Some(id)) {
+                transfer.detach();
             }
         }
     }
@@ -105,15 +123,20 @@ impl Role for Data {
 
     fn ended(&mut self, reason: Reason) {
         self.terminal.ended(reason);
+        self.transfers = None;
     }
 
     fn before_wait(&mut self, cx: &mut Cx, _: usize) -> Option<Instant> {
         if !cx.active() {
+            if let Some(transfer) = &mut self.transfers {
+                transfer.cancel();
+            }
             return None;
         }
         let terminal = self.terminal_id.and_then(|id| self.terminal.poll(cx, id));
         let files = self.files.as_mut().and_then(|files| files.poll(cx));
-        terminal.into_iter().chain(files).min()
+        let transfer = self.transfers.as_mut().and_then(|t| t.poll(cx));
+        terminal.into_iter().chain(files).chain(transfer).min()
     }
 }
 
@@ -128,9 +151,13 @@ struct Files {
 const MAX_FILE_WORKERS: usize = 2;
 static FILE_WORKERS: AtomicUsize = AtomicUsize::new(0);
 
-struct WorkerSlot(&'static AtomicUsize);
+pub(super) struct WorkerSlot(&'static AtomicUsize);
 
 impl WorkerSlot {
+    pub fn for_files() -> Option<Self> {
+        Self::take(&FILE_WORKERS)
+    }
+
     fn take(workers: &'static AtomicUsize) -> Option<Self> {
         workers.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             (count < MAX_FILE_WORKERS).then_some(count + 1)
@@ -179,7 +206,7 @@ impl Files {
             if !lease.holds_seat() {
                 return;
             }
-            let (path, reply) = call(op);
+            let (path, reply) = call(op, &|| lease.holds_seat());
             let mut text = encode(&reply);
             let outcome = if text.len() > browse::MAX_BYTES {
                 text = error(BrowseError::Io);
@@ -232,10 +259,10 @@ mod tests {
     fn admitted(registry: &Registry, id: &str, call: BrowseFiles) -> (Data, mpsc::Receiver<SessionEvent>) {
         let (own, replies) = mpsc::channel();
         let lease = registry.admit(id.into(), "browser".into(), "device".into());
-        (Data::new(lease, Some(call), own), replies)
+        (Data::new(lease, Some(call), None, own), replies)
     }
 
-    fn listing(_: Browse) -> (PathBuf, Browse) {
+    fn listing(_: Browse, _: &dyn Fn() -> bool) -> (PathBuf, Browse) {
         (PathBuf::from("/"), Browse::Listing { path: vec![], entries: vec![], cursor: None })
     }
 
@@ -298,10 +325,10 @@ mod tests {
         let mut running = Vec::new();
         for i in 0..MAX_FILE_WORKERS {
             let id = i.to_string();
-            let (mut data, replies) = admitted(&registry, &id, |op| {
+            let (mut data, replies) = admitted(&registry, &id, |op, seated| {
                 ENTERED.lock().unwrap().as_ref().unwrap().send(()).unwrap();
                 let _blocked = BLOCK.lock().unwrap();
-                listing(op)
+                listing(op, seated)
             });
             let files = data.files.as_mut().unwrap();
             assert!(files.request(false, br#"{"t":"list"}"#));

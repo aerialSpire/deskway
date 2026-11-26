@@ -15,7 +15,7 @@ use replay::History;
 
 pub mod registry;
 mod replay;
-use super::Cx;
+use super::{credit::Credit, Cx};
 
 const HIGH: usize = 64 * 1024;
 const LOW: usize = 16 * 1024;
@@ -24,21 +24,17 @@ const POLL: Duration = Duration::from_millis(10);
 #[derive(Default)]
 struct OutputCredit {
     paused: bool,
-    outstanding: usize,
+    window: Credit,
 }
 
 impl OutputCredit {
     fn capacity(&mut self, buffered: usize) -> usize {
         self.paused = if self.paused { buffered >= LOW } else { buffered >= HIGH };
-        if self.paused { 0 } else { FRAME.min(HIGH - buffered).min(OUTPUT_WINDOW - self.outstanding) }
+        if self.paused { 0 } else { FRAME.min(HIGH - buffered).min(self.window.available(OUTPUT_WINDOW)) }
     }
 
     fn acknowledge(&mut self, bytes: usize) -> bool {
-        if bytes == 0 || bytes > self.outstanding {
-            return false;
-        }
-        self.outstanding -= bytes;
-        true
+        self.window.acknowledge(bytes)
     }
 }
 
@@ -46,11 +42,12 @@ impl OutputCredit {
 struct Input {
     queued: VecDeque<u8>,
     written: usize,
+    credit: Credit,
 }
 
 impl Input {
     fn receive(&mut self, bytes: Vec<u8>) -> bool {
-        if self.queued.len() + self.written + bytes.len() > INPUT_WINDOW {
+        if !bytes.is_empty() && !self.credit.take(bytes.len(), INPUT_WINDOW) {
             return false;
         }
         self.queued.extend(bytes);
@@ -75,6 +72,7 @@ impl Input {
         if self.written == 0 || !send(self.written)? {
             return Ok(false);
         }
+        self.credit.acknowledge(self.written);
         self.written = 0;
         Ok(true)
     }
@@ -124,13 +122,13 @@ impl Stream {
                 let sent = !self.output.is_empty() && send(true, &self.output)?;
                 if sent {
                     replay.sent += self.output.len();
-                    self.credit.outstanding += self.output.len();
+                    self.credit.window.take(self.output.len(), OUTPUT_WINDOW);
                 }
                 self.output.clear();
                 return Ok((sent, None));
             }
             // Refresh the foreground program only after the emulator consumed the replay.
-            if self.credit.outstanding != 0 {
+            if self.credit.window.outstanding() != 0 {
                 return Ok((false, None));
             }
             if code.is_none() {
@@ -148,7 +146,7 @@ impl Stream {
         }
         let sent = !self.output.is_empty() && self.output.len() <= capacity && send(true, &self.output)?;
         if sent {
-            self.credit.outstanding += self.output.len();
+            self.credit.window.take(self.output.len(), OUTPUT_WINDOW);
             self.output.clear();
         }
         if !shell.eof && code.is_none() {
@@ -346,11 +344,11 @@ mod tests {
         for (buffered, expected) in [(0, FRAME), (HIGH - 1, 1), (HIGH, 0), (LOW, 0), (LOW - 1, FRAME)] {
             assert_eq!(flow.capacity(buffered), expected);
         }
-        flow.outstanding = OUTPUT_WINDOW;
+        assert!(flow.window.take(OUTPUT_WINDOW, OUTPUT_WINDOW));
         assert_eq!(flow.capacity(0), 0);
         for invalid in [0, OUTPUT_WINDOW + 1] {
             assert!(!flow.acknowledge(invalid));
-            assert_eq!(flow.outstanding, OUTPUT_WINDOW);
+            assert_eq!(flow.window.outstanding(), OUTPUT_WINDOW);
         }
         assert!(flow.acknowledge(7));
         assert_eq!(flow.capacity(0), 7);

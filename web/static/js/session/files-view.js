@@ -2,7 +2,7 @@
 import { h, ICONS, svg } from '../dom.js';
 import { dialog, formDialog, shownError } from '../dialogs.js';
 import { t } from '../i18n.js';
-import { BrowseMsg as Msg, BROWSE_MAX_BYTES, validate } from '../proto.js';
+import { CAPS, BrowseMsg as Msg, BROWSE_MAX_BYTES, validate } from '../proto.js';
 import { dropdown } from '../views/menu.js';
 import { crumbs, decodeName, displayName, entryActions, permissions, safeText } from './file-listing.js';
 
@@ -12,11 +12,21 @@ const button = (label, action) => h('button', { class: 'btn compact', type: 'but
 const moreButton = (label) => h('button', { class: 'btn icon more', type: 'button', 'aria-label': label }, svg(ICONS.more));
 
 export class FilesView {
-  constructor(s) {
+  constructor(s, transfers) {
     this.s = s;
+    this.transfers = transfers;
     this.path = undefined;
     this.notice = h('p', { class: 'notice', role: 'status', hidden: true });
     this.breadcrumbs = h('nav', { class: 'files-path', 'aria-label': t('files.path') });
+    this.picker = h('input', { type: 'file', multiple: true, hidden: true, onchange: () => {
+      if (this.uploadPath && this.transfers.ready) this.transfers.upload(this.uploadPath, this.picker.files);
+      this.uploadPath = undefined;
+      this.picker.value = '';
+    } });
+    this.upload = button(t('files.upload'), () => {
+      this.uploadPath = this.path;
+      this.picker.click();
+    });
     this.refresh = button(t('files.refresh'), () => this.open(this.path));
     this.menu = dropdown('files:bar', moreButton(t('files.actions')), (item) => [
       item(t('files.home'), () => this.open()),
@@ -26,12 +36,13 @@ export class FilesView {
     this.tail = h('div', { 'aria-hidden': 'true' });
     this.list = h('div', { class: 'files-list' }, this.rows, this.tail);
     this.el = h('section', { class: 'files-surface', tabindex: '-1', 'aria-label': t('files.label'), hidden: true },
-      h('div', { class: 'files-bar' }, this.breadcrumbs, this.refresh, this.menu.el),
+      h('div', { class: 'files-bar' }, this.breadcrumbs, this.upload, this.refresh, this.menu.el, this.picker),
       this.notice, this.list);
     this.observer = new IntersectionObserver((entries) => {
       if (entries.some((entry) => entry.isIntersecting)) this.next();
     }, { root: this.list, rootMargin: '120px' });
     this.list.addEventListener('scroll', () => this.entryMenu?.close(), { passive: true });
+    this.bindDrop();
     this.drawPath();
     this.showNotice(t('common.loading'));
     this.update();
@@ -46,8 +57,38 @@ export class FilesView {
 
   get ready() { return this.channel?.readyState === 'open' && this.s.connected; }
 
+  get canUpload() { return this.ready && this.listed && this.transfers.ready; }
+
+  bindDrop() {
+    const files = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+    this.el.addEventListener('dragover', (e) => {
+      if (!files(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = this.canUpload ? 'copy' : 'none';
+    });
+    this.el.addEventListener('drop', (e) => {
+      if (!files(e)) return;
+      e.preventDefault();
+      if (!this.canUpload) return;
+      const items = [...e.dataTransfer.items].filter((item) => item.kind === 'file');
+      const dropped = items.filter((item) => !item.webkitGetAsEntry?.()?.isDirectory)
+        .map((item) => item.getAsFile()).filter(Boolean);
+      this.transfers.upload(this.path, dropped);
+    });
+  }
+
+  uploaded(path) {
+    this.enqueue(() => {
+      if (this.listed && this.path.length === path.length && path.every((part, i) => this.path[i] === part)) {
+        return this.loadFolder(path);
+      }
+    });
+  }
+
   update() {
     const ready = this.ready;
+    this.upload.hidden = !this.s.hasCap(CAPS.FILE_TRANSFER);
+    this.upload.disabled = !this.canUpload;
     this.refresh.disabled = !ready;
     this.menu.el.querySelector('button').disabled = !ready;
     if (!ready) this.observer.disconnect();
@@ -86,6 +127,8 @@ export class FilesView {
   async loadFolder(path) {
     this.started = true;
     this.path = path;
+    this.listed = false;
+    this.upload.disabled = true;
     this.cursor = undefined;
     this.entryMenu?.close();
     this.list.scrollTop = 0;
@@ -104,6 +147,7 @@ export class FilesView {
       const result = await this.request({ t: Msg.LIST, path: this.path, cursor }, Msg.LISTING);
       if (!cursor) {
         this.path = result.path;
+        this.listed = true;
         this.drawPath();
       }
       this.cursor = result.cursor;
@@ -124,7 +168,10 @@ export class FilesView {
       this.entryMenu = menu;
       return actions.map((action) => item(t(action === 'rename' ? 'common.rename' : `files.${action}`),
         { open, rename: () => this.nameDialog(path, entry), delete: () => this.confirmDelete(path, entry, name) }[action],
-        { danger: action === 'delete' }));
+        { danger: action === 'delete' })).concat(
+        this.transfers.ready && entry.kind === 'file'
+          ? [item(t('files.download'), () => this.transfers.download(path, entry.name, name, decodeName(entry.name).value ?? name))]
+          : []);
     }, { floating: true });
     const nameText = h('bdi', {}, name);
     const label = actions.includes('open')

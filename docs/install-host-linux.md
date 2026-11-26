@@ -10,6 +10,23 @@ entries. Deleting a symbolic link removes the link itself. Files uses the host u
 and includes dotfiles. The host writes each operation's device, path and outcome to its
 output, which systemd sends to the journal.
 
+Use **Upload** in the Files bar or drop files into the folder. To download a regular file,
+choose **Download** in its entry's menu. Transfers run one at a time. The bottom strip
+shows the current file, how many are waiting, and cancellation controls in both views.
+Uploads have no Deskway size limit. An existing destination is refused.
+
+Where the browser offers a save picker with writable file access, it streams to the selected
+file without a Deskway size limit. Cancelling before commit aborts the writable stream and
+discards the staged data. A file newly created by the picker may remain empty.
+Other browsers use an in-memory download with a 64 MiB per-file limit. This bounds both
+the Blob handed to the browser and the temporary copy needed to build it.
+
+The host stages uploads beside the destination, using reserved names
+`.deskway-upload-<32 lowercase hex digits>.partial`. It removes abandoned partial files
+older than one hour at startup in the host user's home and when any folder is listed.
+Sweeping other folders at browse time avoids walking arbitrary filesystems at startup.
+The journal records the device, direction, path, file size and outcome of each transfer.
+
 Choose **Terminal** to start or return to the shell.
 A browser this computer trusts can use the host user's login shell, starting in that user's
 home directory. Type with a physical keyboard or choose **Keyboard** for Deskway's on-screen

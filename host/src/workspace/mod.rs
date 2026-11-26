@@ -171,13 +171,23 @@ impl WorkError {
 pub type Answer = Result<Value, WorkError>;
 
 /// A local filesystem operation and its resolved path for the host's journal.
-pub type BrowseFiles = fn(wire::browse::Browse) -> (PathBuf, wire::browse::Browse);
+pub type BrowseFiles = fn(wire::browse::Browse, &dyn Fn() -> bool) -> (PathBuf, wire::browse::Browse);
+
+pub use file_transfer::{Download, FileTransfers, Upload};
+mod file_transfer;
+
+#[cfg(target_os = "linux")]
+pub(crate) use files::transfer::sweep_home;
 
 /// Carries out requests with the workspace user's rights.
 pub trait Workspace: Send + Sync {
     fn call(&self, op: Op) -> Answer;
 
     fn browse_files(&self) -> Option<BrowseFiles> {
+        None
+    }
+
+    fn file_transfers(&self) -> Option<FileTransfers> {
         None
     }
 

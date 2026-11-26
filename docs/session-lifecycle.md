@@ -130,6 +130,11 @@ reattaches the shell. Switching views leaves an attached terminal running. Takin
 detaches the prior browser. The new browser reattaches to the same shell when it shows
 Terminal. A session with no terminal has an ordinary Disconnect dialog.
 
+The Files and Terminal views share the current file transfer and its waiting queue. Changing
+views keeps both running. Recovery from a lost peer path, a takeover, a closed page or leaving
+the session cancels the active transfer and clears the queue. The host drops any staged upload
+when the worker sees cancellation or loss of the desk seat.
+
 The host keeps one browser terminal independently of the desk session. Disconnect, the end
 of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's
 page shows when the last device left and offers **Return** while the terminal is detached.

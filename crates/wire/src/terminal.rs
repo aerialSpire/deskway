@@ -3,7 +3,7 @@
 use crate::{wire_enum, wire_values};
 
 pub const CHANNEL: &str = "terminal";
-pub const FRAME: usize = 16 * 1024;
+pub const FRAME: usize = crate::DATA_CHUNK;
 pub const OUTPUT_WINDOW: usize = 128 * 1024;
 pub const INPUT_WINDOW: usize = 64 * 1024;
 

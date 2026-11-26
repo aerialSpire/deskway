@@ -1,4 +1,5 @@
 {
+  "files.transfer": "File transfer",
   "files.operation": "File operation",
   "terminal.opened": "Terminal opened by {name}",
   "terminal.left": "Terminal left by {name} ({reason})",

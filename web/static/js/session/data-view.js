@@ -3,6 +3,7 @@ import { h } from '../dom.js';
 import { t } from '../i18n.js';
 import { CAPS } from '../proto.js';
 import { FilesView } from './files-view.js';
+import { FileTransfers } from './file-transfers.js';
 import { TerminalView } from './terminal-view.js';
 
 export class DataView {
@@ -10,7 +11,10 @@ export class DataView {
     this.s = s;
     this.currentView = view;
     this.terminal = new TerminalView(s);
-    this.files = new FilesView(s);
+    this.strip = h('div', { class: 'file-transfer-strip' });
+    this.transfers = new FileTransfers(this.strip, () => s.connected, () => this.files.update(),
+      (path) => this.files.uploaded(path));
+    this.files = new FilesView(s, this.transfers);
     this.buttons = this.terminal.buttons;
     this.navigation = ['terminal', 'files'].map((view) => h('button', {
       class: 'tool', type: 'button', 'data-session-view': view, 'aria-pressed': 'false', onclick: () => this.show(view),
@@ -69,22 +73,30 @@ export class DataView {
     if (this.s.hasCap(CAPS.BROWSE) && !this.files.channel) {
       this.files.attach(this.s.connection.pc.createDataChannel('browse'));
     }
+    if (this.s.hasCap(CAPS.FILE_TRANSFER) && !this.transfers.channel) {
+      this.transfers.attach(this.s.connection.pc.createDataChannel(CAPS.FILE_TRANSFER));
+    }
     this.show(this.currentView);
   }
 
   active() {
+    this.transfers.next();
+    this.files.update();
     if (this.filesVisible) {
       if (this.s.caps) this.s.ready();
-      this.files.update();
     } else this.terminal.active();
   }
 
-  recover() { this.files.update(); }
+  recover() {
+    this.transfers.recover();
+    this.files.update();
+  }
   placeIme(...args) { this.terminal.placeIme(...args); }
   placeKeypad(...args) { this.terminal.placeKeypad(...args); }
   terminate() { this.terminal.terminate(); }
 
   destroy() {
+    this.transfers.destroy();
     this.files.destroy();
     this.terminal.destroy();
   }

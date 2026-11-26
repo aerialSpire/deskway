@@ -17,6 +17,7 @@ which defines every signed or MACed string. The Go
 | `move` | browser and host | data channel `move`: unordered, no retransmits | `t` |
 | `file` | browser and host | data channel `file`: reliable; text = messages, binary = bytes of the one transfer active in that direction | `t` |
 | `browse` | browser and host | reliable, ordered data channel `browse` with paged directory listings and folder operations | `t` |
+| `file-transfer` | browser and host | reliable, ordered data channel `file-transfer` for regular file uploads and downloads | `t` |
 | `terminal` | browser and host | data channel `terminal`: reliable, ordered. Text carries messages and binary carries raw PTY bytes | `t` |
 | `ai` | AI client and host | data channel `ai`: reliable, ordered; MCP JSON-RPC in fragments (AI sessions) | JSON-RPC |
 | `tunnel:<port>` | AI client and host | data channel: reliable, ordered; the bytes of one TCP connection to a loopback port (AI sessions) | none |
@@ -63,6 +64,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `terminal` | no browser terminal |
   | `terminal-keep` | the browser terminal ends with its session |
   | `browse` | no file view on the data-only browser session |
+  | `file-transfer` | Files has browsing and folder operations only |
   | `ai` | no AI seat: AI clients cannot use the computer |
   | `relay-rtt` | the host's signaling socket does not receive `relay-list` |
 - A newer peer sends a new message or field only when the other side's version or capabilities
@@ -336,6 +338,29 @@ file with a non-UTF-8 name. Directory deletion requires an empty directory. Dele
 symbolic link removes the link itself. A filesystem failure stays on the browse channel.
 When the host's two filesystem workers are occupied, the host replies with `error{why:"busy"}`
 on the browse channel. A worker stays occupied until its call returns.
+
+## Browser file transfers
+
+The browser opens a separate reliable, ordered `file-transfer` channel after the control hello
+confirms the capability. There is one active transfer. Attempts use increasing nonzero 32-bit
+IDs. Each binary frame starts with that ID and a 64-bit offset from the start, both unsigned
+big-endian, and carries up to 16,372 bytes. The complete frame is at most 16 KiB. A receiver
+grants four payloads of credit initially and returns credit through the absolute offset in
+`ack` after consuming data. A sender waits for credit before reading any further. The host
+services the terminal and browse channels before queuing another transfer frame.
+
+- For `upload{id,path,name,size}`, the host validates the destination and stages the file before
+  sending `ready{id,size}`, which grants initial credit. The host acknowledges writes. The
+  browser sends `finish{id,offset}` after all bytes are acknowledged. The host verifies the size
+  and commits with no replacement before replying `done{id,offset}`.
+- For `download{id,path,entry,limit?}`, the host opens one regular file and checks its size
+  against the optional byte limit. It replies `ready{id,size}`. The browser grants initial
+  credit with `start{id,offset:0}` and acknowledges bytes as it consumes them. After the last
+  acknowledgment the host rechecks the file and sends `finish{id,offset}`. The browser
+  commits its download and sends `done{id,offset}`. The host echoes that message.
+- The browser can send `cancel{id}`, or `error{id,why}` for local I/O or protocol failures. The
+  host sends `error` when a transfer fails or is cancelled, after cleaning up any upload.
+  Recovery ends active and waiting transfers. A new attempt always starts at offset zero.
 
 ## Browser terminal
 

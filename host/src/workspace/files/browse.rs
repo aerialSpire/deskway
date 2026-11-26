@@ -31,8 +31,8 @@ fn valid_component(bytes: &[u8]) -> bool {
     !matches!(bytes, b"" | b"." | b"..") && !bytes.contains(&b'/') && !bytes.contains(&0)
 }
 
-fn new_name(name: &str) -> Result<&OsStr, Error> {
-    if !valid_component(name.as_bytes()) || name.contains('\\') || name.len() > 255 {
+pub(super) fn new_name(name: &str) -> Result<&OsStr, Error> {
+    if !valid_component(name.as_bytes()) || name.contains('\\') || name.len() > 255 || super::transfer::partial_name(OsStr::new(name)) {
         return Err(Error::InvalidName);
     }
     Ok(OsStr::new(name))
@@ -42,7 +42,7 @@ fn encode(name: &OsStr) -> String {
     URL_SAFE_NO_PAD.encode(name.as_bytes())
 }
 
-fn component(encoded: &str) -> Result<OsString, Error> {
+pub(super) fn component(encoded: &str) -> Result<OsString, Error> {
     let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| Error::InvalidPath)?;
     if !valid_component(&bytes) {
         return Err(Error::InvalidPath);
@@ -50,7 +50,7 @@ fn component(encoded: &str) -> Result<OsString, Error> {
     Ok(OsString::from_vec(bytes))
 }
 
-fn directory(path: Option<&[String]>) -> Result<PathBuf, Error> {
+pub(super) fn directory(path: Option<&[String]>) -> Result<PathBuf, Error> {
     match path {
         None => std::env::home_dir().filter(|p| p.is_absolute()).ok_or(Error::NotFound),
         Some(parts) => {
@@ -100,12 +100,16 @@ fn describe(path: &Path, name: &OsStr, owners: &mut HashMap<u32, String>) -> io:
     })
 }
 
-fn list(path: &Path, cursor: Option<&str>, limit: usize) -> Result<Browse, Error> {
+fn list(path: &Path, cursor: Option<&str>, limit: usize, seated: &dyn Fn() -> bool) -> Result<Browse, Error> {
     let after = cursor.map(after).transpose()?;
     // Keep only the next sorted slice, regardless of the directory's iteration order.
     let mut page = BTreeSet::new();
     let mut more = false;
+    let now = std::time::SystemTime::now();
     native::read_names(path, |name, folder| {
+        if super::transfer::partial_name(name) {
+            super::transfer::sweep_entry(path, name, now, seated);
+        }
         let key = (!folder, name.to_os_string());
         if after.as_ref().is_some_and(|after| &key <= after) {
             return;
@@ -142,7 +146,7 @@ fn list(path: &Path, cursor: Option<&str>, limit: usize) -> Result<Browse, Error
     Ok(Browse::Listing { path, entries, cursor: last.filter(|_| more).as_ref().map(cursor_for) })
 }
 
-fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
+fn request(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Result<Browse, Error>) {
     let path = match &op {
         Browse::List { path, .. } => directory(path.as_deref()),
         Browse::Mkdir { path, .. } | Browse::Rename { path, .. } | Browse::Delete { path, .. } => directory(Some(path)),
@@ -162,7 +166,7 @@ fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
             } else {
                 path
             };
-            let response = list(&path, cursor.as_deref(), PAGE_ENTRIES);
+            let response = list(&path, cursor.as_deref(), PAGE_ENTRIES, seated);
             (path, response)
         }
         Browse::Mkdir { name, .. } => match new_name(&name) {
@@ -193,8 +197,8 @@ fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
     }
 }
 
-pub fn call(op: Browse) -> (PathBuf, Browse) {
-    let (path, result) = request(op);
+pub fn call(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Browse) {
+    let (path, result) = request(op, seated);
     (path, result.unwrap_or_else(|why| Browse::Error { why }))
 }
 
@@ -227,7 +231,7 @@ mod tests {
             fs::write(dir.join(name), []).unwrap();
         }
         let page = |cursor| {
-            let Browse::Listing { entries, cursor, .. } = list(&dir, cursor, 3).unwrap() else { panic!("expected listing") };
+            let Browse::Listing { entries, cursor, .. } = list(&dir, cursor, 3, &|| true).unwrap() else { panic!("expected listing") };
             (entries.into_iter().map(|e| component(&e.name).unwrap()).collect::<Vec<_>>(), cursor)
         };
         let (names, cursor) = page(None);
@@ -238,7 +242,7 @@ mod tests {
         let (names, cursor) = page(cursor.as_deref());
         assert_eq!(names, ["b", "c", "z"]);
         assert_eq!(cursor, None);
-        assert!(matches!(list(&dir, Some("invalid!"), 3), Err(Error::InvalidPath)));
+        assert!(matches!(list(&dir, Some("invalid!"), 3, &|| true), Err(Error::InvalidPath)));
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -248,17 +252,17 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         let path: Vec<_> = dir.iter().skip(1).map(encode).collect();
         let raw = OsStr::from_bytes(b"x\xff");
-        assert_eq!(call(Browse::Mkdir { path: path.clone(), name: "folder".into() }).1, Browse::Changed {});
+        assert_eq!(call(Browse::Mkdir { path: path.clone(), name: "folder".into() }, &|| true).1, Browse::Changed {});
         fs::write(dir.join("folder/content"), []).unwrap();
         symlink("folder", dir.join(raw)).unwrap();
-        let Browse::Listing { entries, .. } = list(&dir, None, 16).unwrap() else { panic!("expected listing") };
+        let Browse::Listing { entries, .. } = list(&dir, None, 16, &|| true).unwrap() else { panic!("expected listing") };
         assert_eq!(entries[1].name, encode(raw));
         assert_eq!(entries[1].target, Some(encode(OsStr::new("folder"))));
         assert_eq!(entries[1].opens, Some(true));
-        let rename = |name: &str| call(Browse::Rename { path: path.clone(), entry: encode(raw), name: name.into() }).1;
+        let rename = |name: &str| call(Browse::Rename { path: path.clone(), entry: encode(raw), name: name.into() }, &|| true).1;
         assert_eq!(rename("folder"), Browse::Error { why: Error::Exists });
         assert_eq!(rename("link"), Browse::Changed {});
-        let delete = |name: &str| call(Browse::Delete { path: path.clone(), entry: encode(OsStr::new(name)) }).1;
+        let delete = |name: &str| call(Browse::Delete { path: path.clone(), entry: encode(OsStr::new(name)) }, &|| true).1;
         assert_eq!(delete("link"), Browse::Changed {});
         assert!(dir.join("folder/content").is_file());
         assert_eq!(delete("folder"), Browse::Error { why: Error::NotEmpty });
@@ -282,7 +286,7 @@ mod tests {
         symlink("old", &link).unwrap();
         let Browse::Listing { path, .. } = call(Browse::List {
             path: Some(link.iter().skip(1).map(encode).collect()), cursor: None,
-        }).1 else { panic!("expected listing") };
+        }, &|| true).1 else { panic!("expected listing") };
         assert_eq!(directory(Some(&path)).unwrap(), old.canonicalize().unwrap());
         symlink("new", dir.join("replacement")).unwrap();
         fs::rename(dir.join("replacement"), &link).unwrap();
@@ -290,7 +294,7 @@ mod tests {
             ("delete", Browse::Delete { path: path.clone(), entry: encode(OsStr::new("delete")) }),
             ("rename", Browse::Rename { path, entry: encode(OsStr::new("rename")), name: "renamed".into() }),
         ] {
-            assert_eq!(call(op).1, Browse::Changed {});
+            assert_eq!(call(op, &|| true).1, Browse::Changed {});
             assert!(!old.join(name).exists());
             assert!(new.join(name).is_file());
         }

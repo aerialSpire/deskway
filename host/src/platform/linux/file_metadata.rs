@@ -1,11 +1,12 @@
 //! Linux filesystem details the workspace uses for the browser.
 
 use std::ffi::{CStr, CString, OsStr};
-use std::fs::Metadata;
+use std::fs::{File, Metadata, OpenOptions};
 use std::io;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::{Path, PathBuf};
 
 struct Directory(*mut libc::DIR);
 
@@ -87,4 +88,26 @@ pub fn rename_new(from: &Path, to: &Path) -> io::Result<()> {
         libc::renameat2(libc::AT_FDCWD, from.as_ptr(), libc::AT_FDCWD, to.as_ptr(), libc::RENAME_NOREPLACE)
     };
     if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Pin the object without opening a device, following a link, or waiting for a FIFO.
+pub fn pin(path: &Path) -> io::Result<File> {
+    OpenOptions::new().read(true).custom_flags(libc::O_PATH | libc::O_NOFOLLOW).open(path)
+}
+
+pub fn pinned_path(file: &File) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
+}
+
+pub fn lock_exclusive(file: &File) -> io::Result<()> {
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+pub fn same_file(a: &Metadata, b: &Metadata) -> bool {
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+pub fn owned(meta: &Metadata) -> bool {
+    meta.uid() == unsafe { libc::geteuid() }
 }

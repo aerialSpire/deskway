@@ -23,6 +23,7 @@ export const CAPS = Object.freeze({
   TERMINAL: 'terminal',
   TERMINAL_KEEP: 'terminal-keep',
   BROWSE: 'browse',
+  FILE_TRANSFER: 'file-transfer',
   AI: 'ai',
   RELAY_RTT: 'relay-rtt',
 });
@@ -157,6 +158,20 @@ export const CHANNELS = Object.freeze({
       error: msg(H2B, { why: 's:not_found|denied|exists|not_empty|invalid_name|invalid_path|busy|io' }),
     }),
   },
+  [CAPS.FILE_TRANSFER]: {
+    discriminator: 't',
+    messages: Object.freeze({
+      upload: msg(B2H, { id: 'i', path: '[s]', name: 's', size: 'i' }),
+      download: msg(B2H, { id: 'i', path: '[s]', entry: 's', limit: 'i?' }),
+      ready: msg(H2B, { id: 'i', size: 'i' }),
+      start: msg(B2H, { id: 'i', offset: 'i' }),
+      ack: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i' }),
+      finish: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i' }),
+      done: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i' }),
+      cancel: msg(B2H, { id: 'i' }),
+      error: msg(`${B2H},${H2B}`, { id: 'i', why: 's:not_found|denied|exists|invalid_name|invalid_path|busy|io|not_regular|changed|size|limit|protocol|cancelled' }),
+    }),
+  },
   terminal: {
     discriminator: 't',
     messages: Object.freeze({
@@ -197,7 +212,15 @@ export const BROWSE_MAX_BYTES = 64 * 1024;
 export const TerminalMsg = Object.freeze({
   OPEN: 'open', OPENED: 'opened', RESIZE: 'resize', ACK: 'ack', CLOSE: 'close', TERMINATE: 'terminate', CLOSED: 'closed', EXIT: 'exit', ERROR: 'error',
 });
-export const TERMINAL_FRAME = 16 * 1024;
+export const DATA_CHUNK = 16 * 1024;
+export const TERMINAL_FRAME = DATA_CHUNK;
+export const FileTransferMsg = Object.freeze({
+  UPLOAD: 'upload', DOWNLOAD: 'download', READY: 'ready', START: 'start', ACK: 'ack', FINISH: 'finish',
+  DONE: 'done', CANCEL: 'cancel', ERROR: 'error',
+});
+export const FILE_TRANSFER_HEADER = 12;
+export const FILE_TRANSFER_FRAME = DATA_CHUNK;
+export const FILE_TRANSFER_WINDOW = 4 * (FILE_TRANSFER_FRAME - FILE_TRANSFER_HEADER);
 export const TERMINAL_OUTPUT_WINDOW = 128 * 1024;
 export const TERMINAL_INPUT_WINDOW = 64 * 1024;
 

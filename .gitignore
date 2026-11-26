@@ -1,6 +1,11 @@
 bin/
 deskway-data/
 target/
+!/target/
+/target/*
+!/target/trial/
+/target/trial/*
+!/target/trial/run.mjs
 *.log
 spikes/
 *.tmp

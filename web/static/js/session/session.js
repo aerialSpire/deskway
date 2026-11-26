@@ -58,7 +58,8 @@ export class Session {
     });
     this.toolbar.showAi(this.device);
     this.root = h('div', { class: 'session' }, this.toolbar.el, this.toolbar.tab, this.stage,
-      dataOnly ? this.content.files.el : null, dataOnly ? this.stack : null, this.toolbar.panels);
+      dataOnly ? this.content.files.el : null, dataOnly ? this.content.strip : null,
+      dataOnly ? this.stack : null, this.toolbar.panels);
     $app.replaceChildren(this.root);
 
     this.toolbar.bind();

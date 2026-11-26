@@ -96,7 +96,9 @@ session/
   desk/            channels.rs: those channels' messages, read once and routed; pace.rs:
                    real time over a congested path, encoding waits while the queue is full;
                    media.rs: the picture's track (payload, mid, keyframes)
-  data.rs          the desk seat's data-only role, routing control, terminal and browse
+  data.rs          the desk seat's data-only role, routing control, terminal, browse and transfers
+  file_transfer.rs file transfer worker and channel, with the same worker limit as browsing
+  credit.rs        byte credit shared by terminal and file transfers
   terminal.rs      one PTY attachment's resize and credit
   terminal/        registry.rs: the host's one browser PTY, attachment and idle timeout;
                    replay.rs: the bounded recent output and its safe start
@@ -109,6 +111,7 @@ tools/             the tools of proto/tools.json: mod.rs registers base, work an
 workspace/         commands and files as the workspace user: mod.rs (Op, Workspace and errors),
                    local.rs (in this process), procs.rs (programs and retained output), files.rs
                    and files/browse.rs (paged directory selection and Linux browser operations),
+                   files/transfer.rs (staged writes, streaming reads and partial cleanup),
                    desktop.rs (DesktopOp), remote.rs (Windows user worker pipe)
 audit.rs           what AI clients did here: JSON lines, appended only, bounded
 video/             capture loop (Pipeline: commands, capture, encode step), encoder choice,
@@ -141,17 +144,20 @@ MCP gate. Every host offers the base tools. A workspace adds work tools, includi
 tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
 according to the live hello's `desk` capability. Linux offers `terminal` and `terminal-keep`
-through its PTY launcher and `browse` through its local workspace. Verified data-only and picture
-browser offers contend for the same desk seat. A picture offer to a Linux host receives
+through its PTY launcher and `browse` and `file-transfer` through its local workspace.
+Verified data-only and picture browser offers contend for the same desk seat. A picture offer to a Linux host receives
 `no_desktop`. A data-only browser offer to a host without terminal support receives `no_terminal`.
 The AI seat uses the same device proofs and signed AI switch on all hosts.
 
-The data-only role runs one filesystem operation per session at a time, with at most two
-filesystem workers across the host. Before calling the workspace a worker checks the desk
+The data-only role runs one browse operation and one transfer per session at a time, with at most
+two filesystem workers across the host. Before calling the workspace a worker checks the desk
 seat using the terminal registry's admission state. The workspace resolves the directory on
 the first page, selects each sorted page with bounded memory and applies filesystem changes.
 The browser uses the returned path and cursor for successive pages. The AI listing scans
-until it has up to 2,000 readable entries, with its own `more` field.
+until it has up to 2,000 readable entries, with its own `more` field. The workspace checks seat
+ownership before each transfer filesystem step. A transfer holds one worker slot so a second
+slot can service browsing. Its channel and receiver credit limit the amount of transfer data
+competing with terminal and browse traffic.
 
 The host's terminal registry owns the PTY even with no desk session. Only the admitted desk
 session can attach. It owns its own input queue and credit, while the registry owns the recent
@@ -762,7 +768,8 @@ js/session/          connection.js (the session's lifecycle: peer connection, ne
                      (emulator and layout), terminal-keys.js (keyboard input for the PTY),
                      terminal-channel.js (byte stream and credit), data-view.js (switch between
                      Terminal and Files), files-view.js (browsing and folder operations) and
-                     file-listing.js (name and metadata display),
+                     file-listing.js (name and metadata display), file-transfers.js (contents
+                     channel and queue), download-file.js (browser save destinations),
                      video, pointer, touch, mouse-pad, keyboard, onscreen-keyboard,
                      keyboard-layout.js (the on-screen US layout), text-box (every input
                      method's text), clipboard

@@ -474,7 +474,7 @@ mod tests {
         let now = Instant::now();
         let (mut state, process) = opened(now);
         let first = &mut Stream::new(24, 80, None);
-        first.credit.outstanding = OUTPUT_WINDOW;
+        assert!(first.credit.window.take(OUTPUT_WINDOW, OUTPUT_WINDOW));
         assert!(first.input.receive(b"old input".to_vec()));
         assert!(state.detach("one", "taken", now, UNIX_EPOCH, true));
         assert!(state.attached("one").is_none());
@@ -506,13 +506,13 @@ mod tests {
         process.lock().unwrap().output.push_back(live);
         assert!(stream.input.receive(b"new input".to_vec()));
         while pump(&mut stream, shell).0 {}
-        assert_eq!(stream.credit.outstanding, OUTPUT_WINDOW);
+        assert_eq!(stream.credit.window.outstanding(), OUTPUT_WINDOW);
         assert!(process.lock().unwrap().redraw.is_empty());
         assert!(process.lock().unwrap().input.is_empty());
         assert_eq!(process.lock().unwrap().output.front(), Some(&live));
 
         while stream.replay.is_some() {
-            let outstanding = stream.credit.outstanding;
+            let outstanding = stream.credit.window.outstanding();
             assert!(stream.credit.acknowledge(outstanding));
             while pump(&mut stream, shell).0 {}
         }

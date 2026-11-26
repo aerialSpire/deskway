@@ -305,10 +305,14 @@ impl Host {
         self.workspace.as_ref()?.browse_files()
     }
 
+    fn file_transfers(&self) -> Option<crate::workspace::FileTransfers> {
+        self.workspace.as_ref()?.file_transfers()
+    }
+
     fn features(&self) -> Features {
         Features {
             desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.terminal.as_ref().map(Terminals::launcher),
-            work: self.workspace.is_some(), browse: self.browse_files().is_some(), view_only: self.view_only,
+            work: self.workspace.is_some(), browse: self.browse_files().is_some(), file_transfers: self.file_transfers().is_some(), view_only: self.view_only,
         }
     }
 
@@ -556,7 +560,8 @@ impl Host {
                 let lease = self.terminal.as_ref().expect("a terminal was admitted")
                     .admit(session.clone(), name.clone(), verified.controller.clone());
                 let files = self.browse_files();
-                session::spawn(params, |own| session::data::Data::new(lease, files, own))
+                let transfers = self.file_transfers();
+                session::spawn(params, |own| session::data::Data::new(lease, files, transfers, own))
             }
             None => {
                 let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };

@@ -57,6 +57,7 @@ pub struct Features {
     pub terminal: Option<OpenPty>,
     pub work: bool,
     pub browse: bool,
+    pub file_transfers: bool,
     pub view_only: bool,
 }
 
@@ -87,6 +88,9 @@ impl Features {
             caps.push(wire::caps::TERMINAL_KEEP.into());
             if self.browse {
                 caps.push(wire::caps::BROWSE.into());
+                if self.file_transfers {
+                    caps.push(wire::caps::FILE_TRANSFER.into());
+                }
             }
         }
         caps

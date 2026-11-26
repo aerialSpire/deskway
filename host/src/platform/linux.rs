@@ -91,6 +91,7 @@ pub fn run() -> Result<()> {
     let mut lock = lock()?;
     lock::record_pid(&mut lock)?;
     let cfg = Config::load()?;
+    crate::workspace::sweep_home();
     let (settings, awake) = Settings::start(config::dir()?, &cfg, None, control);
     awake?;
     let waiting = Cell::new(false);

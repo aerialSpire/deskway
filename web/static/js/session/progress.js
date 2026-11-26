@@ -28,8 +28,8 @@ export class Progress {
   }
 
   // The whole card: { tone ('ok' | 'bad' | null), icon, label, pct (number, or null for none),
-  // more (how many wait after this one), actions: [{ text, run }], close: { label, run } }.
-  draw({ tone = null, icon = null, label, pct = null, more = 0, actions = [], close }) {
+  // detail (optional text), more (how many wait), actions: [{ text, run }], close: { label, run } }.
+  draw({ tone = null, icon = null, label, detail, pct = null, more = 0, actions = [], close }) {
     if (!this.el) {
       this.el = h('div', { class: `xfer ${this.cls}`.trim(), role: 'status' });
       keepEvents(this.el, ['pointerdown', 'pointermove', 'touchstart', 'contextmenu', 'wheel']);
@@ -41,11 +41,17 @@ export class Progress {
     this.el.replaceChildren(...[
       icon ? h('span', { 'aria-hidden': 'true' }, icon) : null,
       h('span', { class: 'x-name' }, label),
+      detail ? h('span', { class: 'x-detail' }, detail) : null,
       pct === null ? null : h('span', { class: 'x-pct' }, `${pct}%`),
       more > 0 ? h('span', { class: 'x-more' }, ` · ${t('xfer.more', { n: more })}`) : null,
       ...actions.map((a) => h('button', { class: 'x-btn', onclick: a.run }, a.text)),
-      h('button', { class: 'x-btn', 'aria-label': close.label, onclick: close.run }, '✕'),
+      close ? h('button', { class: 'x-btn', 'aria-label': close.label, onclick: close.run }, '✕') : null,
     ].filter(Boolean));
+  }
+
+  setDetail(text) {
+    const detail = this.el?.querySelector('.x-detail');
+    if (detail) detail.textContent = text;
   }
 
   // Only the number, while the rest stays as drawn.

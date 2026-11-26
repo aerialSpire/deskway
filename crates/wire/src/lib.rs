@@ -15,6 +15,7 @@ pub mod challenge;
 pub mod control;
 pub mod crypto;
 pub mod file;
+pub mod file_transfer;
 pub mod mcp;
 pub mod moves;
 pub mod signal;
@@ -29,9 +30,13 @@ mod tests;
 
 /// The protocol version this build speaks. Version 1 is everything before `hello` existed.
 pub const PROTOCOL_VERSION: u32 = 4;
+
 /// The oldest host protocol supported by this release.
 #[cfg(any(test, feature = "contract"))]
 pub const MIN_VERSION: u32 = PROTOCOL_VERSION - 1;
+
+/// Shared maximum frame size for terminal and file data.
+pub const DATA_CHUNK: usize = 16 * 1024;
 
 /// Capability names a host can announce in its `hello`. Which ones a given host announces
 /// depends on its platform and settings (a view-only host leaves out `input`).
@@ -49,11 +54,12 @@ pub mod caps {
     pub const TERMINAL: &str = "terminal";
     pub const TERMINAL_KEEP: &str = "terminal-keep";
     pub const BROWSE: &str = "browse";
+    pub const FILE_TRANSFER: &str = "file-transfer";
     /// It takes AI clients (docs/architecture.md, "AI control").
     pub const AI: &str = "ai";
     pub const RELAY_RTT: &str = "relay-rtt";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, BROWSE, AI, RELAY_RTT];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, BROWSE, FILE_TRANSFER, AI, RELAY_RTT];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of

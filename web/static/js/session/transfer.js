@@ -9,10 +9,11 @@
 // cancelClip(id), onMessage(data), pump(), cancel(), dismiss(), busy(), bindDrop(), destroy().
 import { randomId } from '../env.js';
 import { t, filesText } from '../i18n.js';
-import { CAPS, FileMsg } from '../proto.js';
+import { CAPS, DATA_CHUNK, FileMsg } from '../proto.js';
+import { readFileChunk } from './file-chunks.js';
 import { Progress, SHOW_AFTER, percent, whyText } from './progress.js';
 
-const XFER = { CHUNK: 16 * 1024, FILE_MAX: 25 << 20, TOTAL_MAX: 50 << 20, FILES_MAX: 10, AHEAD: 1 << 20 };
+const XFER = { FILE_MAX: 25 << 20, TOTAL_MAX: 50 << 20, FILES_MAX: 10, AHEAD: 1 << 20 };
 
 export class Transfers {
   constructor(s) {
@@ -138,12 +139,12 @@ export class Transfers {
     const ch = this.channel;
     const live = () => this.current === job && ch === this.channel && ch.readyState === 'open';
     for (const f of job.files) {
-      for (let off = 0; off < f.size; off += XFER.CHUNK) {
+      for (let off = 0; off < f.size; off += DATA_CHUNK) {
         while (live() && ch.bufferedAmount > XFER.AHEAD) {
           await new Promise((r) => { ch.addEventListener('bufferedamountlow', r, { once: true }); setTimeout(r, 300); });
         }
         if (!live()) return;
-        const buf = await f.slice(off, off + XFER.CHUNK).arrayBuffer();
+        const buf = await readFileChunk(f, off);
         if (!live()) return;
         ch.send(buf);
         job.done += buf.byteLength;

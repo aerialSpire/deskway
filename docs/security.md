@@ -463,11 +463,14 @@ Terminal input and output never go to the journal or to disk through Deskway.
 Files uses the privileges of the account running Deskway Host across the filesystem. An
 admitted browser can see directory entries, including hidden names, wherever this account
 can read them, and can create folders, rename entries and remove files, links or empty
-directories wherever this account can make those changes. This access includes configuration
-and credentials owned by the host account. Files performs filesystem operations without
-starting a shell or running a file. The host output records the device, operation, path
-and outcome on one line per operation. It includes no file contents. Systemd collects
-these lines in the journal.
+directories wherever this account can make those changes. A trusted browser can download
+regular file contents and upload new files as the host user. Uploads use a private staged
+file and a no-replace rename. This access includes configuration and credentials owned
+by the host account. Files performs filesystem operations without starting a shell or
+running a file. The host output records the device, operation, path and outcome on one
+line per browse operation. It records the device, direction, path, size and outcome with
+any failure reason on one line per transfer. File contents are never recorded. Systemd
+collects these lines in the journal.
 
 Before sending its offer, the browser asks the host for a nonce (`challenge`). The host answers
 with 16 random bytes (`nonce`), valid for one offer on that session and for 60 seconds. Every

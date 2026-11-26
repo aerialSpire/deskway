@@ -35,6 +35,8 @@ fn about(path: &Path, m: &std::fs::Metadata) -> Value {
 
 #[cfg(target_os = "linux")]
 pub(super) mod browse;
+#[cfg(target_os = "linux")]
+pub(super) mod transfer;
 
 fn list_entries<T>(dir: impl Iterator<Item = io::Result<T>>, mut describe: impl FnMut(T) -> Option<Value>) -> (Vec<Value>, bool) {
     let mut entries = Vec::new();
