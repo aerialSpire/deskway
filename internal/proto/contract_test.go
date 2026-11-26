@@ -160,15 +160,16 @@ func TestSignalingTypesMatchDefinition(t *testing.T) {
 func TestSharedTypesMatchDefinition(t *testing.T) {
 	d := load(t)
 	for name, v := range map[string]any{
-		"Device":     proto.Device{},
-		"Holder":     proto.Holder{},
-		"Controller": proto.Controller{},
-		"Approval":   proto.Approval{},
-		"ICEServer":  proto.ICEServer{},
-		"View":       proto.View{},
-		"LogEntry":   proto.LogEntry{},
-		"AiSwitch":   proto.AiSwitch{},
-		"AiView":     proto.AiView{},
+		"Device":       proto.Device{},
+		"Holder":       proto.Holder{},
+		"KeptTerminal": proto.KeptTerminal{},
+		"Controller":   proto.Controller{},
+		"Approval":     proto.Approval{},
+		"ICEServer":    proto.ICEServer{},
+		"View":         proto.View{},
+		"LogEntry":     proto.LogEntry{},
+		"AiSwitch":     proto.AiSwitch{},
+		"AiView":       proto.AiView{},
 	} {
 		def, ok := d.Types[name]
 		if !ok {

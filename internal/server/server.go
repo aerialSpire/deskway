@@ -79,6 +79,8 @@ type conn struct {
 	aiState  string
 	// The time of the newest AI switch it refused, as no device it trusts signed it; 0: none.
 	aiRefused int64
+	// A detached browser terminal, from the latest host status.
+	keptTerminal *proto.KeptTerminal
 	// Browsers and AI clients: where they run (locate), the id computers answer it and auditreq
 	// by, and the computers that said they are where it runs (here.go, audit.go).
 	where []string

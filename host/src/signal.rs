@@ -31,6 +31,7 @@ use wire::signal::Signal as Wire;
 use wire::types::{self as types, Reason};
 use peer::state::End;
 use crate::session::{self, SessionEvent, SessionUpdate};
+use crate::session::terminal::registry::Registry as Terminals;
 use crate::settings::{PanelRequest, Settings};
 
 mod alive;
@@ -269,7 +270,7 @@ struct Host {
     problem: Option<String>,
     quit: bool,
     desktop: Option<Desktop>,
-    terminal: Option<OpenPty>,
+    terminal: Option<Terminals>,
     out_tx: Sender<String>,
     updates_tx: Sender<SessionUpdate>,
     /// The sessions on the two seats (their handles feed the session threads).
@@ -301,7 +302,7 @@ struct Host {
 
 impl Host {
     fn features(&self) -> Features {
-        Features { desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.terminal, work: self.workspace.is_some(), view_only: self.view_only }
+        Features { desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.terminal.as_ref().map(Terminals::launcher), work: self.workspace.is_some(), view_only: self.view_only }
     }
 
     fn hello(&self) -> Wire {
@@ -387,7 +388,8 @@ impl Host {
         if self.replaced.is_empty() {
             let (holder, ai) = (self.sessions.of(Seat::Desk).holder(), self.sessions.of(Seat::Ai).holder());
             let ai_refused = self.trust.as_ref().and_then(Trust::ai_refused);
-            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused });
+            let kept_terminal = self.terminal.as_ref().and_then(Terminals::status);
+            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused, kept_terminal });
         }
         self.report();
     }
@@ -396,6 +398,11 @@ impl Host {
     /// or ended at this computer does not come back by itself: its resume tokens go (only its own).
     fn end_seat(&mut self, seat: Seat, end: End) {
         let Some(cur) = self.sessions.of(seat).current() else { return };
+        if seat == Seat::Desk {
+            if let Some(terminal) = &self.terminal {
+                terminal.detach(&cur.id, end.reason.as_str());
+            }
+        }
         if matches!(end.reason, Reason::Taken | Reason::Ended) {
             let controller = cur.controller.clone();
             if let Some(t) = self.trust.as_mut() {
@@ -505,7 +512,7 @@ impl Host {
             Some(mode) => {
                 let caps = match mode {
                     BrowserSession::Desktop(_) => features.desk_caps(),
-                    BrowserSession::Terminal(_) => vec![wire::caps::TERMINAL.into()],
+                    BrowserSession::Terminal => vec![wire::caps::TERMINAL.into(), wire::caps::TERMINAL_KEEP.into()],
                 };
                 vec![Message::Hello { version: wire::PROTOCOL_VERSION, caps }, trust.issue_resume(&verified)]
             }
@@ -538,9 +545,10 @@ impl Host {
                 self.note = None;
                 tx
             }
-            Some(BrowserSession::Terminal(open)) => {
-                let name = name.clone();
-                session::spawn(params, |_| session::terminal::Terminal::new(name, open))
+            Some(BrowserSession::Terminal) => {
+                let lease = self.terminal.as_ref().expect("a terminal was admitted")
+                    .admit(session.clone(), name.clone(), verified.controller.clone());
+                session::spawn(params, |_| session::terminal::Terminal::new(lease))
             }
             None => {
                 let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };
@@ -561,7 +569,7 @@ impl Host {
                 session::spawn(params, move |own| session::ai::Ai::new(id, platform, crate::mcp::spawn(features, gate, ctx, own.clone()), session::ai::IDLE, tunnels, own))
             }
         };
-        if !matches!(browser, Some(BrowserSession::Terminal(_))) {
+        if !matches!(browser, Some(BrowserSession::Terminal)) {
             eprintln!("session started by {name} ({seat:?} seat)");
         }
         let user = m["user"].as_str().unwrap_or_default().to_string();
@@ -723,10 +731,14 @@ impl Host {
                 }
             }
             SessionUpdate::Ended(id) => self.on_ended(&id),
+            SessionUpdate::TerminalChanged => self.send_status(),
         }
     }
 
     fn on_ended(&mut self, session: &str) {
+        if let Some(terminal) = &self.terminal {
+            terminal.detach(session, Reason::Failed.as_str());
+        }
         // The replaced session has said goodbye: the status may name its successor now.
         if self.replaced.iter().any(|r| r == session) {
             self.replaced.retain(|r| r != session);
@@ -856,6 +868,9 @@ impl Host {
             Control::Report => self.report(),
             Control::Quit => {
                 self.quit = true;
+                if let Some(terminal) = &mut self.terminal {
+                    terminal.stop();
+                }
                 for seat in Seat::BOTH {
                     self.end_seat(seat, End::plain(Reason::Ended));
                 }
@@ -991,7 +1006,7 @@ impl Host {
             problem: None,
             quit: false,
             desktop,
-            terminal,
+            terminal: terminal.map(|open| Terminals::new(open, updates_tx.clone())),
             out_tx,
             updates_tx,
             sessions: Seats::default(),

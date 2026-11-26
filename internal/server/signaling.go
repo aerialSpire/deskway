@@ -309,6 +309,10 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 		return h
 	}
 	holder, ai := valid(m.Holder), valid(m.AIHolder)
+	kept := m.KeptTerminal
+	if kept != nil && (kept.Since <= 0 || kept.Name == "" || len(kept.Name) > 256 || len(kept.Cred) > 256) {
+		kept = nil
+	}
 	state := m.AIState
 	if state != proto.AIOff && state != proto.AIOn && state != proto.AIStopped {
 		state = ""
@@ -322,6 +326,7 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 		s.displays[c.deviceID] = m.Displays
 	}
 	c.holder, c.aiHolder, c.aiState, c.aiRefused = holder, ai, state, m.AIRefused
+	c.keptTerminal = kept
 	s.mu.Unlock()
 	s.sessions.Status(c, holder, ai)
 	s.broadcastDevices()

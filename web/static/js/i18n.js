@@ -69,13 +69,15 @@ export const timeText = (date) => date.toLocaleTimeString(LOCALES[lang], { hour:
 // A day, from unix seconds.
 export const dateText = (unix) => new Date(unix * 1000).toLocaleDateString(LOCALES[lang], { year: 'numeric', month: 'short', day: 'numeric' });
 
-export function agoText(unix) {
+export function agoText(unix, { seen = true } = {}) {
   if (!unix) return '';
   const mins = Math.max(0, Math.floor((Date.now() / 1000 - unix) / 60));
-  if (mins < 1) return t('time.justNow');
-  if (mins < 60) return t('time.minutes', { n: mins });
-  if (mins < 1440) return t('time.hours', { n: Math.floor(mins / 60) });
-  return t('time.days', { n: Math.floor(mins / 1440) });
+  if (mins < 1) return t(seen ? 'time.justNow' : 'time.now');
+  const [n, unit] = mins < 60 ? [mins, 'minute']
+    : mins < 1440 ? [Math.floor(mins / 60), 'hour']
+      : [Math.floor(mins / 1440), 'day'];
+  if (seen) return t(`time.${unit}s`, { n });
+  return new Intl.RelativeTimeFormat(LOCALES[lang]).format(-n, unit);
 }
 
 // A size in KB or MB, never 0 KB.

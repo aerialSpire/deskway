@@ -60,6 +60,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `capture` | no "no display" state |
   | `desk` | no lock-screen note |
   | `terminal` | no browser terminal |
+  | `terminal-keep` | the browser terminal ends with its session |
   | `ai` | no AI seat: AI clients cannot use the computer |
   | `relay-rtt` | the host's signaling socket does not receive `relay-list` |
 - A newer peer sends a new message or field only when the other side's version or capabilities
@@ -317,20 +318,43 @@ The browser offers a terminal only when the live signaling hello reports `termin
 the answer as usual, and waits for the control hello to confirm the capability. These additions
 are gated by that capability within protocol 4.
 
-After `open{rows, cols}`, the host starts the login shell and sends `opened` before any
-binary output. Binary messages carry raw bytes in both directions. `resize{rows, cols}`
-changes the PTY size. `close`, losing the terminal channel, or ending the desk session
-ends the shell and its jobs. An ICE restart within the existing recovery window keeps the
-shell. The host sends `exit{code}` after the final output, using a negative number for a
-signal. The browser shows the result after processing the preceding output. The shell
-can be opened once per session. A terminal failure carries `error{why}`.
+After `open{rows, cols}`, the host attaches the desk session to its one login shell,
+starting it if needed, and sends `opened` before any binary output. Binary messages carry raw
+bytes in both directions. `resize{rows, cols}` changes the PTY size. Ending the desk session,
+losing the terminal channel or sending `close` detaches the browser. An ICE restart on the
+same connection preserves its attachment and credit.
+
+A host with `terminal-keep` accepts `terminate` only from an attached session and replies
+with `closed` after the shell and jobs are gone. On failure it sends `error{why: "close"}`
+and keeps the attachment. The host sends `exit{code}` after the final output, using a negative
+number for a signal. Once the browser has processed the preceding output, `closed` or `exit`
+completes a requested close. Otherwise the browser shows the exit result. An attachment
+failure carries `error{why}`. On older hosts the shell ends with the session.
+
+The host keeps the most recent 256 KiB (262,144 bytes) of PTY output in memory and keeps
+draining the PTY while detached. When trimming, it tracks UTF-8 continuation bytes and
+the terminal parser's escape states and discards through the next ground boundary. This
+also discards an escape string longer than the whole buffer. On return, an `opened` message
+with `replay` gives the byte count before live output, including any DEC private mode
+settings that precede the retained bytes. The scanner keeps a bounded list of the latest
+DECSET and DECRST settings at the cut. The browser returns its ordinary output credit for
+replay and shows a localized notice when `opened.dropped` is true.
+Once the emulator acknowledges replay, the host applies the latest size and attempts to
+notify the foreground program even when the dimensions are identical. It logs a failure
+and continues with live I/O.
+
+Host `status` carries optional `kept_terminal` only while the shell is detached. It carries
+`since` (Unix seconds), `name`, and the verified device credential when available. The server
+resolves the account's current device name and forwards the time and name to the account's
+browsers in `devices`. The host measures the 24-hour detached lifetime with a monotonic
+clock. Older servers and browsers can ignore the display field.
 
 Messages are at most 16 KiB so one message cannot monopolize the SCTP association. The
-host pauses PTY reads when the channel buffers 64 KiB and resumes below 16 KiB. This leaves
+host pauses attached PTY reads when the channel buffers 64 KiB and resumes below 16 KiB. This leaves
 room for control messages while avoiding constant stop and start. It also caps output
 at 128 KiB awaiting `ack{bytes}`, which the browser sends after xterm.js processes the
-bytes. That second limit keeps rendering bounded even when delivery is fast. Input can
-continue while output is paused. The browser starts with 64 KiB of input credit, enough
+bytes. That second limit keeps rendering bounded even when delivery is fast. Live input can
+continue while live output is paused. The browser starts with 64 KiB of input credit, enough
 for four full frames while bounding the host's pending input. It queues the remainder
 of a paste and sends it in order as the host returns credit with `ack{bytes}` after writing
 those bytes to the PTY.

@@ -12,14 +12,15 @@ export function onDialogClosed(fn) { afterClose = fn; }
 export const closeDialogs = () => $dialogs.replaceChildren();
 export const dialogOpen = () => $dialogs.childElementCount > 0;
 
-// `text` is a string or an element; each action is { label, primary, run }.
+// `text` is a string or an element; each action is { label, primary, danger, disabled, run }.
 export function dialog(title, text, actions) {
   $dialogs.replaceChildren(h('div', { class: 'overlay' },
     h('div', { class: 'dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
       h('h2', {}, title),
       typeof text === 'string' ? h('p', {}, text) : text,
       h('div', { class: 'dialog-actions' }, actions.filter(Boolean).map((a) => h('button', {
-        class: `btn ${a.primary ? 'primary' : ''}`,
+        class: ['btn', a.primary && 'primary', a.danger && 'danger'].filter(Boolean).join(' '),
+        disabled: a.disabled,
         onclick: () => { closeDialogs(); if (a.run) a.run(); afterClose(); },
       }, a.label))))));
   return $dialogs.firstElementChild;

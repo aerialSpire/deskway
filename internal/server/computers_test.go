@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -233,5 +234,46 @@ func TestTheDeviceListSaysWhoHoldsAComputerAsEachBrowserSeesIt(t *testing.T) {
 	setHolder(nil)
 	if l := f.s.deviceList(&conn{user: f.id("me")}); l[0].Controller != nil {
 		t.Errorf("%+v", l[0].Controller)
+	}
+}
+
+func TestDetachedTerminalStatusIsVisibleToTheComputersAccount(t *testing.T) {
+	f := signalingFixture(t)
+	owner := f.id("me")
+	f.s.store.mu.Lock()
+	f.s.store.Browsers["phone"] = &BrowserRecord{
+		Owner: owner, Approved: true, Key: &proto.BrowserKey{Cred: "C1", Name: "Renamed phone"},
+	}
+	f.s.store.mu.Unlock()
+	host := &conn{deviceID: "pc1", cancel: func() {}}
+	f.s.mu.Lock()
+	f.s.hosts[host.deviceID] = host
+	f.s.mu.Unlock()
+
+	for _, tc := range []struct {
+		label string
+		sent  *proto.KeptTerminal
+		want  *proto.KeptTerminal
+	}{
+		{"left", &proto.KeptTerminal{Since: 123, Name: "Phone", Cred: "C1"}, &proto.KeptTerminal{Since: 123, Name: "Renamed phone"}},
+		{"reattached or closed", nil, nil},
+		{"no device key", &proto.KeptTerminal{Since: 456, Name: "Browser"}, &proto.KeptTerminal{Since: 456, Name: "Browser"}},
+		{"invalid", &proto.KeptTerminal{Name: "Browser"}, nil},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			f.s.onStatus(host, proto.Msg{KeptTerminal: tc.sent})
+			for _, browser := range []string{"phone", "other"} {
+				d := f.s.deviceList(&conn{user: owner, browser: browser})[0]
+				if !reflect.DeepEqual(d.KeptTerminal, tc.want) {
+					t.Errorf("%s got %+v, want %+v", browser, d.KeptTerminal, tc.want)
+				}
+			}
+			if devices := f.s.deviceList(&conn{user: "another-account"}); len(devices) != 0 {
+				t.Fatalf("another account got %v", devices)
+			}
+			if d := f.s.deviceList(&conn{user: owner, ai: true})[0]; d.KeptTerminal != nil {
+				t.Fatalf("AI client got terminal status: %+v", d.KeptTerminal)
+			}
+		})
 	}
 }

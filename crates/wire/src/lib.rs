@@ -46,11 +46,12 @@ pub mod caps {
     pub const CAPTURE: &str = "capture";
     pub const DESK: &str = "desk";
     pub const TERMINAL: &str = "terminal";
+    pub const TERMINAL_KEEP: &str = "terminal-keep";
     /// It takes AI clients (docs/architecture.md, "AI control").
     pub const AI: &str = "ai";
     pub const RELAY_RTT: &str = "relay-rtt";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, AI, RELAY_RTT];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, AI, RELAY_RTT];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of

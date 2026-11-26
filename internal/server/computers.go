@@ -161,6 +161,9 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 		if h := s.hosts[d.ID]; h != nil {
 			d.Online, d.Version, d.Caps = true, h.version, h.caps
 			holders[i] = h.holder
+			if !c.ai {
+				d.KeptTerminal = h.keptTerminal
+			}
 			d.AI = aiView(d.AI, h.aiState, h.aiRefused, h.aiHolder)
 		}
 		d.Displays = s.displays[d.ID]
@@ -170,6 +173,13 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 	for i, h := range holders {
 		if h != nil {
 			list[i].Controller = s.controllerFor(c, h)
+		}
+		if kept := list[i].KeptTerminal; kept != nil {
+			name := s.store.BrowserName(c.user, kept.Cred)
+			if name == "" {
+				name = kept.Name
+			}
+			list[i].KeptTerminal = &proto.KeptTerminal{Since: kept.Since, Name: name}
 		}
 	}
 	return list

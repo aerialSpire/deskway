@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::types::{AiState, AiSwitch, AnswerAuth, Display, Holder, IceCandidate, IceServer, LogEntry, OfferAuth, PairAuth, PairedAuth, Reason, View};
+use super::types::{AiState, AiSwitch, AnswerAuth, Display, Holder, IceCandidate, IceServer, KeptTerminal, LogEntry, OfferAuth, PairAuth, PairedAuth, Reason, View};
 use super::wire_enum;
 
 wire_enum! {
@@ -24,6 +24,8 @@ wire_enum! {
             "ai_state" ai_state: Option<AiState>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "ai_refused" ai_refused: Option<i64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "kept_terminal" kept_terminal: Option<KeptTerminal>,
         },
         "thumbs" => Thumbs { "on" on: bool },
         "thumb" => Thumb { "screen" screen: String, "data" data: String },

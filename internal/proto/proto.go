@@ -91,6 +91,8 @@ type Device struct {
 	Controller *Controller `json:"controller,omitempty"` // who holds it now; absent: nobody
 	// Displays attached to the computer while it is online: id, x, y, w, h, primary.
 	Displays json.RawMessage `json:"displays,omitempty"`
+	// The terminal that is running without a browser attached, while online.
+	KeptTerminal *KeptTerminal `json:"kept_terminal,omitempty"`
 	// The current socket's hello while online, or the last saved version while offline.
 	Version int `json:"version,omitempty"`
 	// The host's capabilities while it is online.
@@ -133,6 +135,13 @@ type Holder struct {
 	User        string `json:"user"`           // the controller's account id
 	Established bool   `json:"established"`
 	Since       int64  `json:"since,omitempty"` // unix seconds: since when it holds the computer
+}
+
+// KeptTerminal describes the last attachment to a detached terminal.
+type KeptTerminal struct {
+	Since int64  `json:"since"`
+	Name  string `json:"name"`
+	Cred  string `json:"cred,omitempty"` // host status only
 }
 
 // Controller is who holds a computer, as one browser of its account sees it.
@@ -190,6 +199,8 @@ type Msg struct {
 	Probe      string          `json:"probe,omitempty"`  // matches a host's reply to a request
 	Query      json.RawMessage `json:"query,omitempty"`  // auditreq: which recorded AI calls
 	Page       json.RawMessage `json:"page,omitempty"`   // audit: a page of them, from the computer
+
+	KeptTerminal *KeptTerminal `json:"kept_terminal,omitempty"` // status: a terminal running without a browser attached
 
 	Relays    *map[string]string `json:"relays,omitempty"` // relay-list: STUN addresses by ID; send even when empty
 	RelayRTTs map[string]int     `json:"rtts,omitempty"`   // relay-rtts: milliseconds by relay ID

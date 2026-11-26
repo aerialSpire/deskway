@@ -26,6 +26,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Changed
 
+- Linux browser terminals keep running after disconnect, with recent output available on return.
 - Computers measure relay latency so the server can offer them the nearest responding relay for their sessions.
 - Keep this computer awake pauses its request on battery below 15% and resumes on external power or at 15% or higher.
 - Server upgrades keep the previous host protocol working, show which computers need updates, and include an `upgrade-check` command.

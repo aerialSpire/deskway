@@ -75,6 +75,8 @@ pub enum SessionUpdate {
     Established(String),
     /// The session is over, however it ended.
     Ended(String),
+    /// The host's terminal became detached, was reattached, or ended while detached.
+    TerminalChanged,
 }
 
 /// Signs an answer to an offer (offer SDP, answer SDP), so the other end knows it reached this host.
@@ -133,6 +135,8 @@ pub trait Role: Send + 'static {
     }
     /// After each event or timeout.
     fn after_event(&mut self, _cx: &mut Cx) {}
+    /// The session is over. A role can release an attachment with the end reason.
+    fn ended(&mut self, _reason: Reason) {}
 }
 
 /// What a role works with on each call: the peer connection, and the session's state.
@@ -446,6 +450,11 @@ fn run<R: Role>(p: Params, role: R, rx: Receiver<SessionEvent>, tx: Sender<Sessi
     if served.is_err() {
         s.peer.signal(&mut rtc, Signal::LocalEnd(End::plain(Reason::Failed)));
     }
+    let reason = match s.peer.machine.state() {
+        peer::state::State::Ended(reason) => *reason,
+        _ => Reason::Failed,
+    };
+    s.role.ended(reason);
     net.close(&mut rtc);
     served
 }

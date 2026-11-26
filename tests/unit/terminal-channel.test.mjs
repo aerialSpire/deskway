@@ -25,8 +25,55 @@ test('open and resize use the terminal channel', () => {
   terminal.size(24, 80);
   terminal.size(31, 93);
   assert.deepEqual(sent.shift(), { t: 'resize', rows: 31, cols: 93 });
-  terminal.leave();
-  assert.deepEqual(sent.splice(0), [{ t: 'close' }]);
+});
+
+test('replay consumes ordinary output credit and enables input after the emulator catches up', () => {
+  const { terminal, sent, output, status, receive } = setup();
+  const opened = { t: 'opened', replay: 5, dropped: true };
+  receive(opened);
+  assert.equal(terminal.attached, true);
+  receive(new ArrayBuffer(3));
+  receive(new ArrayBuffer(2));
+  output[0].done();
+  terminal.input(Uint8Array.of(1));
+  assert.equal(terminal.running, false);
+  assert.deepEqual(status, []);
+  assert.deepEqual(sent.slice(1), [{ t: 'ack', bytes: 3 }]);
+  output[1].done();
+  assert.deepEqual(status, [opened]);
+  assert.equal(terminal.running, true);
+  assert.deepEqual(sent.at(-1), { t: 'ack', bytes: 2 });
+});
+
+test('explicit close completes after confirmation or shell exit and pending output', () => {
+  for (const result of [{ t: 'closed' }, { t: 'exit', code: 17 }]) {
+    const { terminal, sent, receive, output, status } = setup();
+    assert.equal(terminal.terminate(), false);
+    receive({ t: 'opened' });
+    receive(new ArrayBuffer(1));
+    assert.equal(terminal.terminate(), true);
+    assert.equal(terminal.terminate(), false);
+    assert.equal(terminal.running, false);
+    assert.deepEqual(sent.slice(1), [{ t: 'terminate' }]);
+    receive(result);
+    assert.deepEqual(status, [{ t: 'opened' }]);
+    output[0].done();
+    assert.deepEqual(status.at(-1), { t: 'closed' });
+  }
+});
+
+test('a failed close shows an error and resumes input on the same attachment', () => {
+  const { terminal, sent, receive, status } = setup();
+  receive({ t: 'opened' });
+  assert.equal(terminal.terminate(), true);
+  const error = { t: 'error', why: 'close' };
+  receive(error);
+  assert.deepEqual(status.at(-1), error);
+  assert.equal(terminal.running, true);
+  const input = Uint8Array.of(1);
+  terminal.input(input);
+  assert.deepEqual(sent.at(-1), input);
+  assert.equal(terminal.terminate(), true);
 });
 
 test('input waits for PTY credit and preserves order across a paste and a key', () => {

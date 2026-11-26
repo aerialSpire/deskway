@@ -121,7 +121,19 @@ When the computer has a holder, the page asks one of these questions (`views/tak
 
 **Terminal** offers start without force, as do picture offers when the cached holder is this
 device. The host's current holder decides whether the page asks about taking over, including
-if another tab of this browser is connected. Disconnecting leaves the computer's last report intact.
+if another tab of this browser is connected. Taking over detaches the prior browser and the
+new browser attaches to the same shell.
+
+The host keeps one browser terminal independently of the desk session. Disconnect, the end
+of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's
+page shows when the last device left and offers **Return** while the terminal is detached.
+During recovery the terminal view says that the terminal is running on the computer and
+that missed output will appear when the browser returns. An established connection that
+recovers in place continues its existing stream.
+
+The shell ends on exit, **Close the terminal and disconnect**, 24 hours without an attachment,
+or host shutdown. The deliberate close is available from the attached terminal's Disconnect
+dialog. The host discards the buffer and cleans up the PTY and jobs on every terminal end.
 
 When **Each computer in its own window** is on (a per-device setting, off by default), pressing a
 computer asks nothing on this page. Instead, the computer's own window (`windows.js`,

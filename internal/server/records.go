@@ -491,6 +491,24 @@ func (s *Store) BrowserCred(browser string) string {
 	return rec.Key.Cred
 }
 
+// BrowserName is the current account label for a verified browser credential.
+func (s *Store) BrowserName(user, cred string) string {
+	if cred == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.Browsers {
+		if b.Owner == user && b.Approved && b.Key != nil && b.Key.Cred == cred {
+			if b.Key.Name != "" {
+				return b.Key.Name
+			}
+			return b.Label
+		}
+	}
+	return ""
+}
+
 // ApprovedBrowsers lists the account's approved browsers.
 func (s *Store) ApprovedBrowsers(user string) []BrowserInfo {
 	s.mu.Lock()
