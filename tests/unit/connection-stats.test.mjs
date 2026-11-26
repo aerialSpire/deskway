@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ConnectionHistory, ConnectionStats } from '../../web/static/js/session/connection-stats.js';
+import { describePath, ConnectionHistory, ConnectionStats } from '../../web/static/js/session/connection-stats.js';
 
 function report(second, { path = 'direct', rtt = .032, video = 'video', counters = {} } = {}) {
   return new Map([
@@ -17,9 +17,31 @@ function report(second, { path = 'direct', rtt = .032, video = 'video', counters
   ]);
 }
 
+const pair = report(0).get('direct');
+const host = { candidateType: 'host' };
+const relay = { candidateType: 'relay' };
+const computer = { ...relay, address: '203.0.113.9' };
+
+for (const [name, local, remote, expected, selected = pair] of [
+  ['same network', host, host, { route: 'direct', sameNetwork: true }],
+  ['internet', host, { candidateType: 'srflx' }, { route: 'direct', sameNetwork: false }],
+  ['relayed without details', relay, relay, { route: 'relay' }],
+  ['computer relay with no local candidate type', {}, computer, { route: 'relay', computerRelay: computer.address }],
+  ['browser relay address only', { ...relay, url: 'turn:relay.example.net:3478?transport=udp', protocol: 'udp' }, host,
+    { route: 'relay', browserRelay: 'relay.example.net:3478' }],
+  ['browser relay protocol only', { ...relay, address: '203.0.113.10', relayProtocol: 'tcp' }, host,
+    { route: 'relay', relayProtocol: 'tcp' }],
+  ['both relays, browser over TLS', { ...relay, url: 'turns:[2001:db8::9]:443?transport=tcp', relayProtocol: 'tls' }, computer,
+    { route: 'relay', computerRelay: computer.address, browserRelay: '[2001:db8::9]:443', relayProtocol: 'tls' }],
+  ['remote candidate type missing', host, { address: '203.0.113.9' }, { route: 'connected' }],
+  ['no selected pair', host, computer, { route: 'connected' }, null],
+]) {
+  test(`ICE path: ${name}`, () => assert.deepEqual(describePath(selected, local, remote), expected));
+}
+
 test('the comparison uses two sampled windows, and video starts after the first picture', () => {
   const history = new ConnectionHistory();
-  assert.deepEqual(history.update(report(0), 0), { route: 'direct', current: { rtt: 32 }, previous: {}, mode: null });
+  assert.deepEqual(history.update(report(0), 0), { path: { route: 'direct', sameNetwork: false }, current: { rtt: 32 }, previous: {}, mode: null });
   const early = history.update(report(1), 1000, 'sharp');
   assert.deepEqual(early.current, { rtt: 32 });
   let sample;
@@ -41,7 +63,7 @@ test('a new path, stream or picture setting cannot inherit incompatible readings
   assert.deepEqual(sample.current, { rtt: 32 });
   assert.deepEqual(sample.previous, { rtt: 32 });
   sample = history.update(report(22, { path: 'relay', rtt: .084 }), 22000, 'smooth');
-  assert.deepEqual(sample, { route: 'relay', current: { rtt: 84 }, previous: {}, mode: 'smooth' });
+  assert.deepEqual(sample, { path: { route: 'relay' }, current: { rtt: 84 }, previous: {}, mode: 'smooth' });
   assert.equal(history.update(report(23, { path: 'relay' }), 23000, 'smooth').current.fps, 2);
   assert.equal(history.update(report(24, { path: 'relay', video: 'new-stream' }), 24000, 'smooth').current.fps, undefined);
   assert.equal(history.update(report(35, { path: 'relay', video: 'new-stream' }), 35000, 'smooth').current.fps, undefined);
@@ -68,7 +90,7 @@ test('a pending sample cannot publish over a restarted connection', async () => 
     await Promise.resolve();
     finish[0](report(1));
     await Promise.resolve();
-    assert.deepEqual(published.map((s) => s.route), ['relay']);
+    assert.deepEqual(published.map((s) => s.path.route), ['relay']);
   } finally {
     stats.stop();
   }

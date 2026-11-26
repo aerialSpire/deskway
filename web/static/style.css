@@ -408,6 +408,7 @@ img, svg { -webkit-user-drag: none; }
 .connection-readings th:first-child { padding-left: 0; text-align: left; }
 .connection-readings thead { color: var(--quiet); font-size: var(--fs-caption); }
 .connection-readings td { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.connection-path td { white-space: normal; overflow-wrap: anywhere; }
 .connection-readings tbody tr { border-top: 1px solid var(--line); }
 .connection-readings .reading-note { display: block; color: var(--quiet); font-size: var(--fs-caption); }
 .session :is(.keypad, .mousepad)[inert] { opacity: .55; }
