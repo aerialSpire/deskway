@@ -61,9 +61,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Headless host and shared crates
+      - name: Headless host, CLI and shared crates
         shell: bash
         run: |
           rustup default stable
-          cargo build --locked -p deskway-host
-          cargo test --workspace --exclude deskway --locked --lib --bins
+          cargo build --locked -p deskway-host -p deskway
+          cargo test --workspace --locked --lib --bins

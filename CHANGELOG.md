@@ -10,6 +10,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 - The Mac host panel offers optional Full Disk Access to skip folder-by-folder prompts during file transfers and AI file operations.
 - Install Deskway Host as a Linux service on x86-64 or ARM64 for AI commands, files and tunnels, and stop AI control locally with `deskway-host stop-ai`.
+- AI applications on Linux x64 and ARM64 can connect to Deskway computers with `deskway`.
 - Connection details show whether a direct session is local or over the internet and which relays a relayed session uses.
 - Admins can check whether their browser can pass traffic through each relay over UDP, TCP, and TLS where available.
 - Self-hosted servers can add regional relay nodes from **Relays** in the admin menu with a single command.

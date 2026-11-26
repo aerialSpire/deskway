@@ -131,8 +131,8 @@ go build -o bin/deskway-server ./cmd/deskway-server
 # Host and the deskway CLI (on Windows or macOS)
 cargo build --locked --release -p deskway-host -p deskway
 
-# Linux host (with the system OpenSSL development libraries installed)
-cargo build --locked --release -p deskway-host
+# Linux host and AI client program (with the system OpenSSL development libraries installed)
+cargo build --locked --release -p deskway-host -p deskway
 
 # macOS app bundle and DMG (on an Apple silicon Mac)
 ./scripts/build-mac-host.sh --universal-dmg
@@ -165,6 +165,7 @@ Releases are published by the **Release** workflow. It is started by hand from
 | `deskway-host-linux-amd64.tar.gz`, `deskway-host-linux-arm64.tar.gz` | Deskway Host for Linux on x86-64 and ARM64, with the license and the systemd unit template |
 | `deskway-windows-x64.exe` | AI client program for Windows |
 | `deskway-macos-arm64`, `deskway-macos-x64` | AI client programs for macOS |
+| `deskway-linux-x64`, `deskway-linux-arm64` | AI client programs for Linux |
 | `SHA256SUMS` | SHA-256 checksums of the files above |
 
 The same server is published as a container image, `ghcr.io/aerialspire/deskway-server`, for

@@ -17,12 +17,14 @@ use crate::store::Account;
 const EVERY: Duration = Duration::from_secs(3600);
 
 /// The name the server gives this system's program (internal/server/clientprograms.go).
-fn file_name() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+fn file_name(os: &str, arch: &str) -> Option<&'static str> {
+    Some(match (os, arch) {
         ("windows", "x86_64") => "deskway-windows-x64.exe",
         ("windows", "aarch64") => "deskway-windows-arm64.exe",
         ("macos", "aarch64") => "deskway-macos-arm64",
         ("macos", "x86_64") => "deskway-macos-x64",
+        ("linux", "x86_64") => "deskway-linux-x64",
+        ("linux", "aarch64") => "deskway-linux-arm64",
         _ => return None,
     })
 }
@@ -56,7 +58,7 @@ pub fn version() -> &'static str {
 /// Puts the server's program for this system in the program file's place when they differ:
 /// true when it did.
 fn bring_up_to_date() -> Result<bool> {
-    let Some(name) = file_name() else { return Ok(false) };
+    let Some(name) = file_name(std::env::consts::OS, std::env::consts::ARCH) else { return Ok(false) };
     let mut a = Account::load()?;
     if !a.signed_in() {
         return Ok(false);
@@ -113,11 +115,7 @@ fn replace(exe: &Path, bytes: &[u8]) -> Result<()> {
     let new = dir.join(format!("{name}.new"));
     let old = dir.join(format!("{stem}.old-{}", wire::crypto::hex(&wire::crypto::random::<4>())));
     std::fs::write(&new, bytes).with_context(|| format!("write {}", new.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))?;
-    }
+    crate::os::set_unix_mode(&new, 0o755)?;
     std::fs::rename(exe, &old).context("move the running program aside")?;
     if let Err(e) = std::fs::rename(&new, exe) {
         let _ = std::fs::rename(&old, exe);
@@ -129,6 +127,17 @@ fn replace(exe: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linux_program_names_match_the_downloads() {
+        for (arch, expected) in [
+            ("x86_64", Some("deskway-linux-x64")),
+            ("aarch64", Some("deskway-linux-arm64")),
+            ("x86", None),
+        ] {
+            assert_eq!(file_name("linux", arch), expected, "{arch}");
+        }
+    }
 
     /// The new program takes the file's place; the one there is kept aside; ones kept aside
     /// before are removed.

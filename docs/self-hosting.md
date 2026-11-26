@@ -130,8 +130,8 @@ account list.
 
 ### 5. AI client programs (automatic for releases)
 
-A released server downloads missing `deskway` programs for Windows x64 and both macOS
-architectures from its own GitHub release in the background at startup. It verifies each
+A released server downloads missing `deskway` programs for Windows x64, macOS and Linux
+from its own GitHub release in the background at startup. It verifies each
 program's SHA-256 before saving it as `/var/lib/deskway/clients/.release/<file name>`. At startup,
 the server replaces cached files whose hashes differ from the release. This needs outbound HTTPS
 to GitHub and its release asset host, and write access to the clients folder (or its parent so
@@ -148,12 +148,16 @@ The `-clients` flag changes this location. Files with these exact names take pri
 | `deskway-windows-arm64.exe` | Windows on ARM (build it yourself, see below) |
 | `deskway-macos-arm64` | macOS on Apple silicon |
 | `deskway-macos-x64` | macOS on Intel |
+| `deskway-linux-x64` | Linux on x64 |
+| `deskway-linux-arm64` | Linux on ARM64 |
 
 Use the matching release assets for an offline release install. To build the programs yourself,
 run `scripts\build-ai-clients.ps1 <folder>` on Windows. It
 builds the x64 program, and also the ARM64 one if the `aarch64-pc-windows-msvc` Rust target is
-installed. On a Mac, `scripts/build-ai-clients.sh <folder>` builds both macOS programs. Copy the
-results into `/var/lib/deskway/clients` with the names above.
+installed. `scripts/build-ai-clients.sh <folder>` builds both macOS programs on a Mac and
+builds for the machine's architecture on Linux. On Debian or Ubuntu, install `libssl-dev` and
+`pkg-config` to build on Linux. Copy the results into `/var/lib/deskway/clients` with the names
+above.
 
 The server reads the folder on each request, so it does not need a restart. When you replace the
 files with a newer version, AI clients that are already set up update themselves within an hour

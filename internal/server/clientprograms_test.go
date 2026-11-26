@@ -240,11 +240,19 @@ func TestShutdownCancelsReleaseProgramDownload(t *testing.T) {
 // name, nothing else from the folder.
 func TestTheServerHandsOutTheAIClientPrograms(t *testing.T) {
 	dir := t.TempDir()
-	files := map[string]string{"deskway-macos-arm64": "mac program", "deskway-linux-x64": "not one of them", "deskway-windows-x64.exe": "windows program", "notes.txt": "not a program"}
-	for name, body := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+	programs := []struct{ file, os, arch string }{
+		{"deskway-windows-x64.exe", "windows", "x64"},
+		{"deskway-macos-arm64", "macos", "arm64"},
+		{"deskway-linux-x64", "linux", "x64"},
+		{"deskway-linux-arm64", "linux", "arm64"},
+	}
+	for _, c := range programs {
+		if err := os.WriteFile(filepath.Join(dir, c.file), []byte(c.file), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a program"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	f := newFixtureWithServer(t, func(s *Server) {
 		s.ServeClients(dir, false)
@@ -252,19 +260,22 @@ func TestTheServerHandsOutTheAIClientPrograms(t *testing.T) {
 	me := f.signedIn("me")
 	want(t, "the list needs a signed-in browser", f.status(f.browser(), "GET", "/api/ai/clients", nil), http.StatusUnauthorized)
 	var list []ClientFile
-	_ = json.NewDecoder(f.do(me, "GET", "/api/ai/clients", nil).Body).Decode(&list)
-	if len(list) != 2 || list[0].File != "deskway-windows-x64.exe" || list[0].SHA256 != clientProgramDigest("windows program") || list[1].File != "deskway-macos-arm64" || list[1].OS != "macos" || list[1].SHA256 != clientProgramDigest("mac program") {
+	res := f.do(me, "GET", "/api/ai/clients", nil)
+	defer res.Body.Close()
+	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != len(programs) {
 		t.Fatalf("listed %+v", list)
 	}
-	for _, c := range []struct {
-		file   string
-		status int
-	}{
-		{"deskway-macos-arm64", http.StatusOK},
-		{"deskway-macos-x64", http.StatusNotFound},
-		{"deskway-linux-x64", http.StatusNotFound},
-		{"notes.txt", http.StatusNotFound},
-	} {
-		want(t, "download "+c.file, f.status(f.browser(), "GET", "/download/"+c.file, nil), c.status)
+	for i, c := range programs {
+		expected := ClientFile{OS: c.os, Arch: c.arch, File: c.file, Size: int64(len(c.file)), SHA256: clientProgramDigest(c.file)}
+		if list[i] != expected {
+			t.Errorf("listed %+v, want %+v", list[i], expected)
+		}
+		want(t, "download "+c.file, f.status(f.browser(), "GET", "/download/"+c.file, nil), http.StatusOK)
+	}
+	for _, file := range []string{"deskway-macos-x64", "notes.txt"} {
+		want(t, "download "+file, f.status(f.browser(), "GET", "/download/"+file, nil), http.StatusNotFound)
 	}
 }

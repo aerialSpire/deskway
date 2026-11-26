@@ -6,7 +6,7 @@
 
 <p align="center"><a href="README.md">English</a> · <a href="README.zh-Hans.md">简体中文</a> · <b>繁體中文</b></p>
 
-Deskway 是一套自行架設的遠端桌面。你可以在手機、平板或另一台電腦的瀏覽器裡開啟自己的 Windows 電腦或 Mac，也可以讓 Claude Code 等 AI 助理在你授權的電腦上工作。伺服器、帳號和中繼全都執行在你自己掌控的機器上。
+Deskway 是一套自行架設的遠端桌面。你可以在手機、平板或另一台電腦的瀏覽器裡開啟自己的 Windows 電腦或 Mac，也可以讓 Claude Code 等 AI 助理在你授權的電腦（包括 Linux 伺服器）上工作。伺服器、帳號和中繼全都執行在你自己掌控的機器上。
 
 <p align="center"><img src="docs/images/interface-zh-hant-desktop.png" width="760" alt="Deskway 網頁版的電腦清單，其中一台正由 AI 控制"></p>
 
@@ -46,9 +46,11 @@ Deskway 原生支援模型上下文協定（MCP）。在 AI 用戶端加入 `des
 
 ## Deskway 適合你嗎？
 
-如果你想隨時隨地存取自己的 Windows 或 Mac 電腦，想讓 AI 助理在受控的前提下操作真實的桌面，而且能自行維護一台有網域名稱的 Linux 伺服器，Deskway 很適合你。
+如果你想隨時隨地存取自己的 Windows 或 Mac 桌面，或讓 AI 助理在受控的前提下使用 Windows、macOS 或 Linux 電腦，而且能自行維護一台有網域名稱的小型 Linux 伺服器，Deskway 很適合你。
 
-如果你要控制的是 Linux 或 Android 裝置，需要臨時遠端協助別人的電腦，或者完全不想維護伺服器，Deskway 就不是合適的選擇。
+在 Linux 上，AI 助理可以執行指令、處理檔案和開啟網路通道。Deskway 不支援查看或控制 Linux 桌面。
+
+如果你需要查看或控制 Linux 桌面或 Android 裝置，需要臨時遠端協助別人的電腦，或者完全不想維護伺服器，Deskway 就不是合適的選擇。
 
 ## 與其他工具比較
 
@@ -57,7 +59,7 @@ Deskway 原生支援模型上下文協定（MCP）。在 AI 用戶端加入 `des
 | AI 透過 MCP 遠端控制 | 原生支援 | 有社群專案；官方內建支援仍在 PR 審查中，尚未合併 | 不支援 |
 | 訊號與中繼 | 自己的伺服器 | 預設使用官方公用伺服器，也可自架 | 使用 Google 的服務 |
 | 網頁版 | 由自己的伺服器提供 | Server Pro 付費方案 | 由 Google 提供 |
-| 被控端 | Windows、macOS | Windows、macOS、Linux、Android | Windows、macOS、Linux |
+| 被控端 | Windows、macOS、Linux（AI 工作空間） | Windows、macOS、Linux、Android | Windows、macOS、Linux |
 
 以上截至 2026 年 11 月。[完整比較](docs/comparison.md)（英文）也涵蓋帳號、AI 權限控管和操作記錄，每一項都附有出處。
 
@@ -66,8 +68,8 @@ Deskway 原生支援模型上下文協定（MCP）。在 AI 用戶端加入 `des
 ## 快速開始
 
 1. 在一台有網域名稱和公用 IP 的 Linux 機器上架設伺服器，步驟見[自架部署](docs/self-hosting.md)。
-2. 在每台需要遠端控制的電腦上安裝 Deskway Host，安裝檔在 [Releases 頁面](https://github.com/aerialSpire/deskway/releases)下載。安裝說明見 [Windows](docs/install-host-windows.md) 和 [macOS](docs/install-host-macos.md)。
-3. 用瀏覽器開啟伺服器位址，登入後選擇一台電腦。
+2. 在每台需要遠端控制的電腦上安裝 Deskway Host，安裝檔在 [Releases 頁面](https://github.com/aerialSpire/deskway/releases)下載。安裝說明見 [Windows](docs/install-host-windows.md)、[macOS](docs/install-host-macos.md) 和 [Linux](docs/install-host-linux.md)。
+3. 用瀏覽器開啟伺服器位址，登入後在 **My devices**（我的裝置）中核准這台電腦。
 4. 如需讓 AI 用戶端使用你的電腦，見 [AI 用戶端](docs/ai-clients.md)。
 
 詳細文件目前只有英文版。介面支援英文、簡體中文和繁體中文，隨裝置語言切換。文件中的介面名稱以英文介面為準，例如 **Members**（成員管理）、**My devices**（我的裝置）、**Add an AI client**（新增 AI 用戶端）。
@@ -78,12 +80,12 @@ Deskway 原生支援模型上下文協定（MCP）。在 AI 用戶端加入 `des
 |---|---|
 | `cmd/deskway-server`、`internal/` | Go 伺服器：帳號、裝置核准、WebSocket 信令和 TURN 中繼，同時提供網頁用戶端 |
 | `web/static` | 網頁用戶端（原生 JavaScript），編譯時嵌入伺服器 |
-| `host/` | Deskway Host（Rust），支援 Windows 和 macOS |
+| `host/` | Deskway Host（Rust），支援 Windows、macOS 和 Linux |
 | `cli/` | `deskway`，透過 MCP 連接 AI 用戶端的命令列程式（Rust） |
 | `crates/` | 主機端和 `deskway` 共用的 Rust 函式庫：通訊資料型別和 WebRTC 連線 |
 | `proto/` | 協定定義、工具清單和測試向量，各端的測試均以此為準 |
 | `tests/` | 瀏覽器端的單元測試、契約測試和端對端測試 |
-| `deploy/systemd` | 伺服器的 systemd 單元範本 |
+| `deploy/systemd` | 伺服器和 Linux 主機端的 systemd 單元範本 |
 | `scripts/` | macOS App 和 AI 用戶端程式的編譯腳本，以及本機試用腳本 |
 
 ## 從原始碼編譯
@@ -95,6 +97,9 @@ Deskway 原生支援模型上下文協定（MCP）。在 AI 用戶端加入 `des
 go build -o bin/deskway-server ./cmd/deskway-server
 
 # 主機端和 deskway 命令列（在 Windows 或 macOS 上）
+cargo build --locked --release -p deskway-host -p deskway
+
+# Linux 主機端和 AI 用戶端程式（需安裝系統的 OpenSSL 開發函式庫）
 cargo build --locked --release -p deskway-host -p deskway
 
 # macOS App 和 DMG（在 Apple 晶片的 Mac 上）
@@ -120,8 +125,10 @@ node --test tests/unit/*.test.mjs tests/contract/*.test.mjs
 | `deskway-server-linux-amd64.tar.gz`、`deskway-server-linux-arm64.tar.gz` | Linux 版伺服器（x86-64 和 ARM64），附授權條款和 systemd 單元範本 |
 | `DeskwayHost-Setup-windows-x64.exe` | Windows（x64）版 Deskway Host 安裝程式 |
 | `DeskwayHost-macos-universal.dmg` | macOS 版 Deskway Host（Apple 晶片和 Intel 通用） |
+| `deskway-host-linux-amd64.tar.gz`、`deskway-host-linux-arm64.tar.gz` | Linux 版 Deskway Host（x86-64 和 ARM64），附授權條款和 systemd 單元範本 |
 | `deskway-windows-x64.exe` | Windows 版 AI 用戶端程式 |
 | `deskway-macos-arm64`、`deskway-macos-x64` | macOS 版 AI 用戶端程式 |
+| `deskway-linux-x64`、`deskway-linux-arm64` | Linux 版 AI 用戶端程式 |
 | `SHA256SUMS` | 以上檔案的 SHA-256 校驗值 |
 
 伺服器同時以容器映像檔 `ghcr.io/aerialspire/deskway-server` 發布，支援 `linux/amd64` 和 `linux/arm64`，標籤為版本號（例如 `0.1.0`）；正式版（非預先發布版）同時標記為 `latest`。
@@ -130,7 +137,7 @@ AI 用戶端程式的檔名與伺服器要求的檔名完全一致，自架的�
 
 ## 文件（英文）
 
-- [概覽](docs/overview.md) · [自架部署](docs/self-hosting.md) · [Windows 主機端安裝](docs/install-host-windows.md) · [macOS 主機端安裝](docs/install-host-macos.md) · [AI 用戶端](docs/ai-clients.md) · [帳號](docs/accounts.md)
+- [概覽](docs/overview.md) · [自架部署](docs/self-hosting.md) · [Windows 主機端安裝](docs/install-host-windows.md) · [macOS 主機端安裝](docs/install-host-macos.md) · [Linux 主機端安裝](docs/install-host-linux.md) · [AI 用戶端](docs/ai-clients.md) · [帳號](docs/accounts.md)
 - 開發者參考：[架構](docs/architecture.md) · [協定](docs/protocol.md) · [安全](docs/security.md) · [工作階段生命週期](docs/session-lifecycle.md) · [介面設計](docs/design.md) · [翻譯](docs/i18n.md)
 
 ## 參與貢獻與安全
