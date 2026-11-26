@@ -132,7 +132,7 @@ pub enum Command {
 }
 
 /// Binary chunks on the file channel: the browser's own chunk size.
-pub const CHUNK: usize = 16 * 1024;
+pub use wire::DATA_CHUNK as CHUNK;
 
 /// A transfer id as the browser makes them.
 fn valid_id(id: &str) -> bool {

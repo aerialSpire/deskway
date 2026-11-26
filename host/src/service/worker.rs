@@ -72,6 +72,9 @@ pub fn run(kind: Kind) -> Result<()> {
         let log = if kind == Kind::Admin { "worker-admin.log" } else { "worker.log" };
         super::log_to(&dir.join("AppData").join("Local").join("Deskway").join(log));
     }
+    if kind == Kind::User {
+        crate::platform::workspace::sweep_home();
+    }
     let ws: Arc<dyn Workspace> = Arc::new(match kind {
         Kind::User => Local::default(),
         Kind::Admin => Local::numbered_from(procs::ADMIN_FIRST),
@@ -82,7 +85,7 @@ pub fn run(kind: Kind) -> Result<()> {
             ipc::handshake_client(&pipe, &key)?;
             eprintln!("{}: connected", kind.what());
             delay = Duration::from_secs(1);
-            crate::workspace::remote::serve(Arc::new(pipe), ws.clone())
+            crate::workspace::remote::serve(Arc::new(pipe), ws.clone(), kind == Kind::User)
         });
         if let Err(e) = r {
             eprintln!("{}: {e:#}", kind.what());

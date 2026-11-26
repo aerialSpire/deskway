@@ -10,6 +10,33 @@ entries. Deleting a symbolic link removes the link itself. Files uses the host u
 and includes dotfiles. The host writes each operation's device, path and outcome to its
 output, which systemd sends to the journal.
 
+Use **Upload** in the Files bar or drop files into the folder. To download a regular file,
+choose **Download** in its entry's menu. Transfers run one at a time. The bottom strip
+opens a list of waiting, interrupted, active, completed and failed transfers in both views.
+Transfers resume automatically after the session reconnects while the same page is open.
+The list marks files that passed SHA-256 verification. Use **Try again** on a failed or cancelled
+transfer while its source is available.
+
+Uploads have no Deskway size limit. If the name belongs to a regular file, choose **Skip** or
+**Replace** after comparing the two files' sizes and dates. A choice can apply to the remaining
+name conflicts in that batch. When replacing a file, the original stays intact until the upload
+is complete and verified. If the original changes, Files asks again. Use **Choose** on the
+transfer row to reopen the question. Folders and symbolic links are refused.
+
+Where the browser offers a save picker with writable file access, it streams to the selected
+file without a Deskway size limit. Cancel is available until the browser starts closing the
+file. A file newly created by the picker may remain empty if the transfer is cancelled.
+Other browsers keep up to 64 MiB per download in memory. After verification, select **Save**
+on the transfer row to hand the file to the browser. Dismissing the row or leaving the session
+releases the download from memory.
+
+The host stages uploads beside the destination, using reserved names
+`.deskway-upload-<32 lowercase hex digits>.partial`. Files lists live partials and refuses to
+rename or delete them. The host removes them on cancellation or when the owning session can no
+longer resume. Partials left by a host that stopped unexpectedly are swept after one hour, at
+startup in the host user's home and when any folder is listed.
+The journal records the device, direction, path, file size, outcome and any replacement once per transfer.
+
 Choose **Terminal** to start or return to the shell.
 A browser this computer trusts can use the host user's login shell, starting in that user's
 home directory. Type with a physical keyboard or choose **Keyboard** for Deskway's on-screen

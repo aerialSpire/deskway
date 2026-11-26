@@ -1,15 +1,13 @@
 //! Linux command setup and process enumeration.
 
-use std::fs::File;
-use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::io;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
 
 use crate::i18n::t;
 use crate::platform::Pty;
 use crate::platform::unix::programs;
-use crate::workspace::procs::{Program, Started};
+use crate::workspace::procs::Started;
 
 use super::host_signals;
 
@@ -24,128 +22,7 @@ pub fn start_terminal(command: Option<&str>, cwd: Option<&str>, cols: u16, rows:
 }
 
 pub(super) fn open_pty(rows: u16, cols: u16) -> io::Result<Box<dyn Pty>> {
-    let home = std::env::home_dir().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no home directory"))?;
-    let mut command = shell(None, None, false)?;
-    command.current_dir(home);
-    Ok(Box::new(BrowserPty::start(command, rows, cols)?))
-}
-
-struct BrowserPty {
-    terminal: programs::Terminal,
-    status: Option<i32>,
-    termination_incomplete: bool,
-}
-
-impl BrowserPty {
-    fn start(command: Command, rows: u16, cols: u16) -> io::Result<Self> {
-        let (terminal, ()) = programs::Terminal::start(command, cols, rows, |master: &File| {
-            if unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        })?;
-        Ok(Self { terminal, status: None, termination_incomplete: false })
-    }
-
-    fn exited(&self) -> io::Result<bool> {
-        // Leave the leader waitable so the kernel cannot reuse its ID before the jobs are gone.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        if unsafe { libc::waitid(libc::P_PID, self.terminal.pid(), &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(unsafe { info.si_pid() } != 0)
-    }
-
-    fn finish(&mut self) -> io::Result<()> {
-        let cleanup = self.terminal.kill();
-        if cleanup.is_err() && self.terminal.child.kill().is_err() && self.terminal.child.try_wait()?.is_none() {
-            return cleanup;
-        }
-        self.reap()?;
-        cleanup
-    }
-
-    fn reap(&mut self) -> io::Result<()> {
-        let status = self.terminal.child.wait()?;
-        self.status = Some(status.code().unwrap_or_else(|| -status.signal().expect("process exit signal")));
-        Ok(())
-    }
-}
-
-impl Read for BrowserPty {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        match self.terminal.master.read(buf) {
-            Err(e) if e.raw_os_error() == Some(libc::EIO) => Ok(0), // The last slave closed.
-            result => result,
-        }
-    }
-}
-
-impl Write for BrowserPty {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.terminal.master.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.terminal.master.flush()
-    }
-}
-
-impl Pty for BrowserPty {
-    fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
-        self.terminal.resize(rows, cols)
-    }
-
-    fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()> {
-        let fd = self.terminal.master.as_raw_fd();
-        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
-        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if (rows, cols) != (size.ws_row, size.ws_col) {
-            return self.resize(rows, cols);
-        }
-        // TIOCSWINSZ sends SIGWINCH only when the size changes.
-        let group = unsafe { libc::tcgetpgrp(fd) };
-        if group < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if group > 0 && unsafe { libc::kill(-group, libc::SIGWINCH) } < 0 {
-            let e = io::Error::last_os_error();
-            if e.raw_os_error() != Some(libc::ESRCH) {
-                return Err(e);
-            }
-        }
-        Ok(())
-    }
-
-    fn exit(&mut self) -> io::Result<Option<i32>> {
-        // A failed terminate can have killed the leader but left jobs behind. Keep
-        // its ID reserved and the attachment open so the person can retry cleanup.
-        if self.status.is_none() && !self.termination_incomplete && self.exited()? {
-            self.finish()?;
-        }
-        Ok(self.status)
-    }
-
-    fn terminate(&mut self) -> io::Result<bool> {
-        if self.status.is_some() || (!self.termination_incomplete && self.exited()?) {
-            return Ok(false);
-        }
-        let result = self.terminal.kill().and_then(|()| self.reap());
-        self.termination_incomplete = result.is_err();
-        result.map(|()| true)
-    }
-}
-
-impl Drop for BrowserPty {
-    fn drop(&mut self) {
-        if self.status.is_none() {
-            if let Err(e) = self.finish() {
-                eprintln!("{}: {e}", t("terminal.close_failed"));
-            }
-        }
-    }
+    programs::browser_pty(shell(None, None, false)?, rows, cols, || true)
 }
 
 fn shell(command: Option<&str>, cwd: Option<&str>, elevated: bool) -> io::Result<Command> {
@@ -187,70 +64,4 @@ pub fn session_members(id: libc::pid_t) -> io::Result<Vec<libc::pid_t>> {
         }
     }
     Ok(pids)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    fn wait(mut check: impl FnMut() -> bool) {
-        let until = Instant::now() + Duration::from_secs(4);
-        while !check() {
-            assert!(Instant::now() < until, "PTY did not reach the expected state");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    fn read(pty: &mut BrowserPty, output: &mut Vec<u8>) -> bool {
-        let mut buf = [0; 64];
-        match pty.read(&mut buf) {
-            Ok(0) => true,
-            Ok(n) => { output.extend_from_slice(&buf[..n]); false }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
-            Err(e) => panic!("PTY read: {e}"),
-        }
-    }
-
-    #[test]
-    fn browser_pty_keeps_raw_output_input_size_and_exit_status() {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", "stty -echo; printf '\\033[31mready\\033[0m\\n'; stty size; read -r line; stty size; printf '%s\\n' \"$line\"; exit 17"]);
-        let mut pty = BrowserPty::start(command, 24, 80).unwrap();
-        let mut output = Vec::new();
-        wait(|| {
-            read(&mut pty, &mut output);
-            output.ends_with(b"24 80\r\n")
-        });
-        pty.resize(31, 93).unwrap();
-        pty.write_all(b"last line\n").unwrap();
-        wait(|| pty.exit().unwrap() == Some(17));
-        wait(|| read(&mut pty, &mut output));
-        assert_eq!(output, b"\x1b[31mready\x1b[0m\r\n24 80\r\n31 93\r\nlast line\r\n");
-    }
-
-    #[test]
-    fn browser_pty_notifies_the_foreground_program_at_the_same_size() {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", "trap 'echo redraw' WINCH; echo ready; while :; do sleep 0.1; done"]);
-        let mut pty = BrowserPty::start(command, 24, 80).unwrap();
-        let mut output = Vec::new();
-        wait(|| { read(&mut pty, &mut output); output.ends_with(b"ready\r\n") });
-        pty.redraw(24, 80).unwrap();
-        wait(|| { read(&mut pty, &mut output); output.ends_with(b"redraw\r\n") });
-    }
-
-    #[test]
-    fn browser_pty_drop_kills_jobs_even_after_the_shell_exits() {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-ic", "trap '' HUP; sleep 300 </dev/null >/dev/null 2>&1 & echo $!; exit 17"]);
-        let mut pty = BrowserPty::start(command, 24, 80).unwrap();
-        let id = pty.terminal.pid() as libc::pid_t;
-        wait(|| pty.exited().unwrap());
-        let jobs: Vec<_> = session_members(id).unwrap().into_iter().filter(|&pid| pid != id).collect();
-        assert_eq!(jobs.len(), 1);
-        assert_ne!(unsafe { libc::getpgid(jobs[0]) }, id);
-        drop(pty);
-        assert!(session_members(id).unwrap().is_empty());
-    }
 }

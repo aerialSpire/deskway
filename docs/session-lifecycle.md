@@ -97,6 +97,9 @@ exist are closed.
   including one of the same device), the new session is refused with `busy` and a description of
   the holder, unless the offer was signed with `force`. A forced offer takes over, and the old
   session ends with `taken`.
+- A browser device that owns a session with transfers may be admitted again with the same
+  page's authenticated resume token. Its own still-registered session ends with `failed`
+  and the offer can omit signed `force`.
 
 ## Who controls, as the browser sees it
 
@@ -130,6 +133,31 @@ reattaches the shell. Switching views leaves an attached terminal running. Takin
 detaches the prior browser. The new browser reattaches to the same shell when it shows
 Terminal. A session with no terminal has an ordinary Disconnect dialog.
 
+The Files and Terminal views share one transfer list. Changing views keeps the list and its
+transfers running. During ICE recovery the active transfer is marked interrupted and the queue
+waits. On return the page opens a fresh transfer channel and continues at the receiver's offset
+or receives an outcome the host already recorded. If the Windows worker did not confirm an
+upload's publish result before the reply deadline, that transfer ends in failure.
+If the established connection ends with `failed` or `gone` with unfinished transfers, the page also
+makes one non-forced admission attempt with its resume token and retains the session view.
+The new connection reattaches a terminal opened in that page at its last dimensions, including
+while Files is visible. Takeover or leaving the view ends unfinished transfers and clears the
+list. The host unlinks a partial upload when its record is dropped, including when its resume
+window expires.
+
+On Windows, a locked console or secure desktop ends the data session with the lock reason and
+offers the desktop. The computer page disables Terminal, Files and Return. The browser retains
+unfinished transfers on that page and uses its existing resume token on the next data
+connection after unlocking. The kept shell and its jobs continue to run. Sign-out and fast user
+switching end the previous user's shell and discard their transfer record. While the console
+is temporarily detached, Deskway reports the retained sign-in as locked. When nobody is signed
+in, the page says so and offers the desktop. Lock and sign-in revocations skip auto-lock.
+
+A Mac applies the same lock and resume rule when the screen locks or fast user switching takes
+the host app's session off the console. Switching back and unlocking lets the browser return.
+Logging out of macOS ends the host and its workspace. Before login the Mac appears offline.
+View-only mode omits Terminal and Files.
+
 The host keeps one browser terminal independently of the desk session. Disconnect, the end
 of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's
 page shows when the last device left and offers **Return** while the terminal is detached.
@@ -139,7 +167,7 @@ recovers in place continues its existing stream. Reconnecting after an end reope
 view that was showing when the connection ended.
 
 The shell ends on exit, **Close the terminal and disconnect**, 24 hours without an attachment,
-or host shutdown. The deliberate close is available from the attached terminal's Disconnect
+host shutdown, or the Windows sign-in ending or changing users. The deliberate close is available from the attached terminal's Disconnect
 dialog. The host discards the buffer and cleans up the PTY and jobs on every terminal end.
 
 When **Each computer in its own window** is on (a per-device setting, off by default), pressing a
@@ -182,7 +210,7 @@ computer: the mark is a hint, never a rule. This is a separate module (`peer::he
 
 The reasons on the wire form a single list in `proto/messages.json`, used by both `bye` and the
 control channel's `end`: `left`, `taken`, `ended`, `busy`, `failed`, `gone`, `offline`, `auth`,
-`unpaired`, `forbidden`, `permissions`, `no_desktop`, `no_terminal`, `pair`, `denied`, `full`, `ai_off`, `idle`.
+`unpaired`, `forbidden`, `permissions`, `no_desktop`, `no_terminal`, `locked`, `no_user_session`, `user_changed`, `view_only`, `pair`, `denied`, `full`, `ai_off`, `idle`.
 The browser handles them in `views/takeover.js`, with offer and takeover messages in
 `views/offer-message.js`. The page also has its own reasons, which never travel on the wire:
 no device key, the server being unreachable, and the computer's identity not being confirmed

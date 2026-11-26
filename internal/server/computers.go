@@ -163,6 +163,7 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 			holders[i] = h.holder
 			if !c.ai {
 				d.KeptTerminal = h.keptTerminal
+				d.WorkspaceAccess = h.workspaceAccess
 			}
 			d.AI = aiView(d.AI, h.aiState, h.aiRefused, h.aiHolder)
 		}

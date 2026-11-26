@@ -9,7 +9,10 @@ use wire::terminal::FRAME;
 use wire::types::KeptTerminal;
 
 use crate::i18n::{t, tf};
-use crate::platform::{OpenPty, Pty};
+use crate::platform::Pty;
+#[cfg(test)]
+use crate::platform::WorkspaceState;
+use crate::workspace::BrowserState;
 use crate::session::SessionUpdate;
 use super::{replay::History, retry, Replay, POLL};
 
@@ -21,21 +24,36 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn new(open: OpenPty, updates: Sender<SessionUpdate>) -> Self {
-        let shared = Arc::new(Shared { open, updates, state: Mutex::default(), wake: Condvar::new() });
+    #[cfg(test)]
+    pub fn new(open: impl Fn(u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync + 'static, updates: Sender<SessionUpdate>) -> Self {
+        Self::guarded(Arc::new(move |_, rows, cols| open(rows, cols)), Arc::new(|| WorkspaceState::READY), updates)
+    }
+
+    pub fn guarded(open: Arc<Open>, access: Arc<BrowserState>, updates: Sender<SessionUpdate>) -> Self {
+        let shared = Arc::new(Shared { open, access, updates, state: Mutex::default(), wake: Condvar::new() });
         let runner = shared.clone();
         let worker = thread::Builder::new().name("terminal".into()).spawn(move || runner.drain())
             .expect("spawn terminal thread");
         Self { shared, worker: Some(worker) }
     }
 
+    #[cfg(test)]
     pub fn admit(&self, id: String, name: String, cred: String) -> Lease {
-        self.shared.state.lock().unwrap().seat = Some(id.clone());
-        Lease { shared: self.shared.clone(), id, name, cred }
+        self.admit_user(id, name, cred, WorkspaceState::READY.user.unwrap())
     }
 
-    pub fn launcher(&self) -> OpenPty {
-        self.shared.open
+    pub fn admit_user(&self, id: String, name: String, cred: String, user: u64) -> Lease {
+        self.shared.state.lock().unwrap().seat = Some(id.clone());
+        Lease { shared: self.shared.clone(), id, name, cred, user }
+    }
+
+    pub fn holds(&self, id: &str) -> bool {
+        self.shared.state.lock().unwrap().seat.as_deref() == Some(id)
+    }
+
+    pub fn user_changed(&self) {
+        self.shared.state.lock().unwrap().close(Closed::UserChanged);
+        self.shared.changed();
     }
 
     pub fn end(&self, id: &str, why: &str) {
@@ -63,8 +81,11 @@ impl Drop for Registry {
     }
 }
 
+type Open = dyn Fn(u64, u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync;
+
 struct Shared {
-    open: OpenPty,
+    open: Arc<Open>,
+    access: Arc<BrowserState>,
     updates: Sender<SessionUpdate>,
     state: Mutex<State>,
     wake: Condvar,
@@ -114,22 +135,39 @@ pub struct Lease {
     id: String,
     name: String,
     cred: String,
+    user: u64,
 }
 
 impl Lease {
+    pub(in crate::session) fn id(&self) -> &str {
+        &self.id
+    }
+
     pub(in crate::session) fn name(&self) -> &str {
         &self.name
     }
 
     pub(in crate::session) fn holds_seat(&self) -> bool {
+        self.while_seated(|| ()).is_some()
+    }
+
+    pub(in crate::session) fn while_seated<T>(&self, run: impl FnOnce() -> T) -> Option<T> {
         let state = self.shared.state.lock().unwrap();
-        !state.stopping && state.seat.as_deref() == Some(self.id.as_str())
+        (!state.stopping && state.seat.as_deref() == Some(self.id.as_str()) && self.accessible()).then(run)
+    }
+
+    pub(super) fn accessible(&self) -> bool {
+        let state = (self.shared.access)();
+        state.user == Some(self.user) && state.refusal(false).is_none()
     }
 
     pub(super) fn attach(&self, rows: u16, cols: u16) -> io::Result<Option<(Option<Replay>, bool)>> {
         let mut state = self.shared.state.lock().unwrap();
+        if !self.accessible() {
+            return Ok(None);
+        }
         let was_left = state.left().is_some();
-        let info = state.attach(&self.id, &self.name, &self.cred, Instant::now(), || (self.shared.open)(rows, cols))
+        let info = state.attach(&self.id, &self.name, &self.cred, Instant::now(), || (self.shared.open)(self.user, rows, cols))
             .map(|attached| attached.map(|(shell, returned)| (returned.then(|| Replay::new(&shell.replay)), shell.replay.dropped)));
         if was_left && state.left().is_none() {
             self.shared.changed();
@@ -139,7 +177,7 @@ impl Lease {
 
     pub(super) fn with_shell<T>(&self, f: impl FnOnce(&mut Shell) -> T) -> Option<T> {
         let mut state = self.shared.state.lock().unwrap();
-        state.attached(&self.id).map(f)
+        self.accessible().then(|| state.attached(&self.id).map(f)).flatten()
     }
 
     pub fn detach(&self, why: &str) {
@@ -155,7 +193,8 @@ impl Lease {
     }
 
     pub(super) fn terminate(&self) -> Option<io::Result<bool>> {
-        self.shared.state.lock().unwrap().terminate(&self.id)
+        let mut state = self.shared.state.lock().unwrap();
+        self.accessible().then(|| state.terminate(&self.id)).flatten()
     }
 }
 
@@ -188,6 +227,7 @@ pub enum Closed {
     Idle,
     Stop,
     Io,
+    UserChanged,
 }
 
 impl State {
@@ -256,7 +296,7 @@ impl State {
     fn tick(&mut self, now: Instant, buf: &mut [u8]) -> bool {
         self.reap_left(now);
         let Some(kept) = &mut self.terminal else { return false };
-        match kept.shell.read(buf) {
+        match kept.shell.read_output(buf, true) {
             Ok(n) => n > 0,
             Err(_) => { self.close(Closed::Io); false }
         }
@@ -293,6 +333,7 @@ impl State {
             Closed::Idle => t("terminal.idle"),
             Closed::Stop => t("terminal.stop"),
             Closed::Io => t("terminal.io"),
+            Closed::UserChanged => t("terminal.user_changed"),
         };
         eprintln!("{}", tf("terminal.closed", &[("reason", reason)]));
     }
@@ -310,10 +351,15 @@ impl Shell {
     }
 
     pub(super) fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read_output(buf, false)
+    }
+
+    fn read_output(&mut self, buf: &mut [u8], detached: bool) -> io::Result<usize> {
         if self.eof {
             return Ok(0);
         }
-        match self.pty.read(buf) {
+        let read = if detached { self.pty.drain(buf) } else { self.pty.read(buf) };
+        match read {
             Ok(n) => {
                 self.eof = n == 0;
                 self.replay.append(&buf[..n]);
@@ -328,7 +374,7 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::Stream;
+    use super::super::{Stream, Terminal};
     use std::collections::VecDeque;
     use std::io::{Read, Write};
     use wire::terminal::OUTPUT_WINDOW;
@@ -402,6 +448,84 @@ mod tests {
     }
 
     #[test]
+    fn publishing_holds_the_same_guard_as_revocation() {
+        let (updates, _) = std::sync::mpsc::channel();
+        let registry = Registry::new(|_, _| unreachable!(), updates);
+        let lease = registry.admit("first".into(), "browser".into(), "device".into());
+        assert_eq!(lease.while_seated(|| registry.shared.state.try_lock().is_err()), Some(true));
+        registry.end("first", "taken");
+        registry.admit("next".into(), "browser".into(), "device".into());
+        assert_eq!(lease.while_seated(|| panic!("lost the seat")), None::<()>);
+    }
+
+    #[test]
+    fn locking_revokes_the_attachment_and_user_change_closes_the_kept_shell() {
+        let (updates, _) = std::sync::mpsc::channel();
+        for next in [WorkspaceState::NO_USER, WorkspaceState { user: Some(2), locked: false }] {
+            let state = Arc::new(Mutex::new(WorkspaceState::READY));
+            let process = Arc::new(Mutex::new(Process::default()));
+            let open = process.clone();
+            let native = state.clone();
+            let registry = Registry::guarded(
+                Arc::new(move |_, _, _| Ok(Box::new(FakePty(open.clone())))),
+                Arc::new(move || *native.lock().unwrap()), updates.clone(),
+            );
+            let lease = registry.admit("one".into(), "Phone".into(), "cred".into());
+            assert!(lease.attach(24, 80).unwrap().is_some());
+            state.lock().unwrap().locked = true;
+            assert!(lease.with_shell(|_| ()).is_none());
+            registry.end("one", "locked");
+            assert_eq!(registry.status().unwrap().name, "Phone");
+            assert_eq!(process.lock().unwrap().drops, 0);
+            *state.lock().unwrap() = next;
+            registry.user_changed();
+            assert!(registry.status().is_none());
+            assert_eq!(process.lock().unwrap().drops, 1);
+        }
+    }
+
+    #[test]
+    fn revocation_before_queueing_live_output_or_replay_keeps_the_bytes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (updates, _) = std::sync::mpsc::channel();
+        let process = Arc::new(Mutex::new(Process { output: b"kept output".iter().copied().collect(), ..Process::default() }));
+        let revoke = Arc::new(AtomicBool::new(false));
+        let locked = Arc::new(AtomicBool::new(false));
+        let access = {
+            let (revoke, locked) = (revoke.clone(), locked.clone());
+            Arc::new(move || {
+                let state = WorkspaceState { locked: locked.load(Ordering::Relaxed), ..WorkspaceState::READY };
+                if revoke.swap(false, Ordering::Relaxed) {
+                    locked.store(true, Ordering::Relaxed);
+                }
+                state
+            })
+        };
+        let registry = Registry::guarded(Arc::new(move |_, _, _| Ok(Box::new(FakePty(process.clone())))), access, updates);
+        for (id, withhold) in [("live", true), ("replay", true), ("return", false)] {
+            locked.store(false, Ordering::Relaxed);
+            let mut terminal = Terminal::new(registry.admit(id.into(), "browser".into(), "device".into()));
+            terminal.open(24, 80);
+            if withhold {
+                // The attachment check succeeds, then access is revoked before the frame is queued.
+                revoke.store(true, Ordering::Relaxed);
+                terminal.pump_stream(0, |_, _| panic!("queued output after revocation")).unwrap();
+                assert!(locked.load(Ordering::Relaxed));
+            } else {
+                let mut sent = Vec::new();
+                terminal.pump_stream(0, |binary, data| {
+                    assert!(binary);
+                    sent.extend_from_slice(data);
+                    Ok(true)
+                }).unwrap();
+                assert_eq!(sent, b"kept output");
+            }
+            registry.end(id, "locked");
+        }
+    }
+
+    #[test]
     fn lifetime_ends_only_on_exit_explicit_close_idle_or_stop() {
         for (why, detached) in [
             (Closed::Exit(17), false), (Closed::Exit(17), true), (Closed::Person, false),
@@ -437,7 +561,7 @@ mod tests {
                     state.tick(now + IDLE, &mut [0; FRAME]);
                 }
                 Closed::Stop => state.stop(),
-                Closed::Io => unreachable!(),
+                Closed::Io | Closed::UserChanged => unreachable!(),
             }
             assert!(state.terminal.is_none(), "{why:?}, detached={detached}");
             assert_eq!(process.lock().unwrap().drops, 1, "{why:?}, detached={detached}");
@@ -474,7 +598,7 @@ mod tests {
         let now = Instant::now();
         let (mut state, process) = opened(now);
         let first = &mut Stream::new(24, 80, None);
-        first.credit.outstanding = OUTPUT_WINDOW;
+        assert!(first.credit.window.take(OUTPUT_WINDOW, OUTPUT_WINDOW));
         assert!(first.input.receive(b"old input".to_vec()));
         assert!(state.detach("one", "taken", now, UNIX_EPOCH, true));
         assert!(state.attached("one").is_none());
@@ -506,13 +630,13 @@ mod tests {
         process.lock().unwrap().output.push_back(live);
         assert!(stream.input.receive(b"new input".to_vec()));
         while pump(&mut stream, shell).0 {}
-        assert_eq!(stream.credit.outstanding, OUTPUT_WINDOW);
+        assert_eq!(stream.credit.window.outstanding(), OUTPUT_WINDOW);
         assert!(process.lock().unwrap().redraw.is_empty());
         assert!(process.lock().unwrap().input.is_empty());
         assert_eq!(process.lock().unwrap().output.front(), Some(&live));
 
         while stream.replay.is_some() {
-            let outstanding = stream.credit.outstanding;
+            let outstanding = stream.credit.window.outstanding();
             assert!(stream.credit.acknowledge(outstanding));
             while pump(&mut stream, shell).0 {}
         }

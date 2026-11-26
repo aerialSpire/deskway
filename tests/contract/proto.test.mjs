@@ -9,7 +9,7 @@ import * as proto from '../../web/static/js/proto.js';
 
 const def = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../../proto/messages.json', import.meta.url)), 'utf8'));
 // The channels the browser speaks; signaling.host and ipc are the host's and the server's.
-const BROWSER_CHANNELS = ['signaling.browser', 'control', 'move', 'file', 'terminal', 'browse'];
+const BROWSER_CHANNELS = ['signaling.browser', 'control', 'move', 'file', 'terminal', 'browse', 'file-transfer'];
 const SHORT = { string: 's', integer: 'i', number: 'n', boolean: 'b', object: 'o', any: 'a' };
 
 // The definition's field, written as a proto.js spec.
@@ -71,10 +71,14 @@ test('channels, messages, directions and fields', () => {
 });
 
 test('type constants', () => {
-  const constants = { 'signaling.browser': proto.Signal, control: proto.Control, move: proto.Move, file: proto.FileMsg, terminal: proto.TerminalMsg, browse: proto.BrowseMsg };
+  const constants = { 'signaling.browser': proto.Signal, control: proto.Control, move: proto.Move, file: proto.FileMsg, terminal: proto.TerminalMsg, browse: proto.BrowseMsg, 'file-transfer': proto.FileTransferMsg };
   for (const [name, c] of Object.entries(constants)) {
     assert.deepEqual(Object.values(c).sort(), def.channels[name].messages.map((m) => m.type).sort(), `${name} constants`);
   }
+  const transfer = def.channels['file-transfer'];
+  assert.equal(proto.FILE_TRANSFER_FRAME, transfer.max_bytes);
+  assert.equal(proto.FILE_TRANSFER_HEADER, transfer.header_bytes);
+  assert.equal(proto.FILE_TRANSFER_WINDOW, transfer.window_bytes);
   assert.equal(proto.BROWSE_MAX_BYTES, def.channels.browse.max_bytes);
   assert.equal(proto.TERMINAL_FRAME, def.channels.terminal.max_bytes);
   assert.equal(proto.TERMINAL_OUTPUT_WINDOW, def.channels.terminal.output_window_bytes);

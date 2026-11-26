@@ -1,11 +1,10 @@
-//! Directory operations for the Linux browser, with byte-exact entry names.
+//! Directory operations for the browser, with opaque entry names.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use wire::browse::{Browse, BrowseError as Error, FileEntry, FileKind, MAX_BYTES};
@@ -27,38 +26,34 @@ fn file_error(e: io::Error) -> Error {
     }
 }
 
-fn valid_component(bytes: &[u8]) -> bool {
-    !matches!(bytes, b"" | b"." | b"..") && !bytes.contains(&b'/') && !bytes.contains(&0)
-}
 
-fn new_name(name: &str) -> Result<&OsStr, Error> {
-    if !valid_component(name.as_bytes()) || name.contains('\\') || name.len() > 255 {
+pub(super) fn new_name(name: &str) -> Result<&OsStr, Error> {
+    if !native::valid_name(name) || super::transfer::partial_name(&native::canonical_name(OsStr::new(name))) {
         return Err(Error::InvalidName);
     }
     Ok(OsStr::new(name))
 }
 
 fn encode(name: &OsStr) -> String {
-    URL_SAFE_NO_PAD.encode(name.as_bytes())
+    URL_SAFE_NO_PAD.encode(native::name_bytes(name))
 }
 
-fn component(encoded: &str) -> Result<OsString, Error> {
-    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(|_| Error::InvalidPath)?;
-    if !valid_component(&bytes) {
-        return Err(Error::InvalidPath);
-    }
-    Ok(OsString::from_vec(bytes))
+pub(super) fn component(encoded: &str) -> Result<OsString, Error> {
+    let name = decode(encoded)?;
+    native::valid_component(&name).then_some(name).ok_or(Error::InvalidPath)
 }
 
-fn directory(path: Option<&[String]>) -> Result<PathBuf, Error> {
+fn decode(encoded: &str) -> Result<OsString, Error> {
+    native::name_from_bytes(URL_SAFE_NO_PAD.decode(encoded).map_err(|_| Error::InvalidPath)?)
+        .ok_or(Error::InvalidPath)
+}
+
+pub(super) fn directory(path: Option<&[String]>) -> Result<PathBuf, Error> {
     match path {
         None => std::env::home_dir().filter(|p| p.is_absolute()).ok_or(Error::NotFound),
         Some(parts) => {
-            let mut path = PathBuf::from("/");
-            for part in parts {
-                path.push(component(part)?);
-            }
-            Ok(path)
+            let parts = parts.iter().map(|part| decode(part)).collect::<Result<Vec<_>, _>>()?;
+            native::directory(&parts).ok_or(Error::InvalidPath)
         }
     }
 }
@@ -67,23 +62,26 @@ type Key = (bool, OsString);
 
 fn cursor_for(key: &Key) -> String {
     let (not_folder, name) = key;
-    let bytes: Vec<_> = std::iter::once(u8::from(*not_folder)).chain(name.as_bytes().iter().copied()).collect();
+    let bytes: Vec<_> = std::iter::once(u8::from(*not_folder)).chain(native::name_bytes(name).into_owned()).collect();
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
 fn after(cursor: &str) -> Result<Key, Error> {
     let bytes = URL_SAFE_NO_PAD.decode(cursor).map_err(|_| Error::InvalidPath)?;
     match bytes.split_first() {
-        Some((rank @ (0 | 1), name)) if valid_component(name) => Ok((*rank == 1, OsString::from_vec(name.to_vec()))),
+        Some((rank @ (0 | 1), bytes)) => {
+            let name = native::name_from_bytes(bytes.to_vec()).filter(|name| native::valid_component(name)).ok_or(Error::InvalidPath)?;
+            Ok((*rank == 1, name))
+        }
         _ => Err(Error::InvalidPath),
     }
 }
 
-fn describe(path: &Path, name: &OsStr, owners: &mut HashMap<u32, String>) -> io::Result<FileEntry> {
+fn describe(path: &Path, name: &OsStr, owners: &mut native::Owners) -> io::Result<FileEntry> {
     let path = path.join(name);
     let meta = fs::symlink_metadata(&path)?;
-    let kind = if meta.is_dir() { FileKind::Folder }
-        else if meta.is_symlink() { FileKind::Link }
+    let kind = if native::is_link(&meta) { FileKind::Link }
+        else if meta.is_dir() { FileKind::Folder }
         else if meta.is_file() { FileKind::File }
         else { FileKind::Special };
     let (target, opens) = if kind == FileKind::Link {
@@ -95,32 +93,39 @@ fn describe(path: &Path, name: &OsStr, owners: &mut HashMap<u32, String>) -> io:
     };
     Ok(FileEntry {
         name: encode(name), kind, size: meta.len(), modified: Some(native::modified(&meta)),
-        mode: native::mode(&meta), owner: owners.entry(native::owner_id(&meta)).or_insert_with_key(|&uid| native::owner(uid)).clone(),
+        mode: native::mode(&meta), owner: native::owner_for(&meta, owners), attributes: native::attributes(&meta),
         target, opens,
     })
 }
 
-fn list(path: &Path, cursor: Option<&str>, limit: usize) -> Result<Browse, Error> {
+fn list(path: &Path, cursor: Option<&str>, limit: usize, seated: &dyn Fn() -> bool) -> Result<Browse, Error> {
     let after = cursor.map(after).transpose()?;
     // Keep only the next sorted slice, regardless of the directory's iteration order.
     let mut page = BTreeSet::new();
     let mut more = false;
+    let now = std::time::SystemTime::now();
     native::read_names(path, |name, folder| {
+        if !seated() { return Err(io::ErrorKind::PermissionDenied.into()); }
+        if super::transfer::partial_name(name) {
+            super::transfer::sweep_entry(path, name, now, seated);
+        }
         let key = (!folder, name.to_os_string());
         if after.as_ref().is_some_and(|after| &key <= after) {
-            return;
+            return Ok(());
         }
         page.insert(key);
         if page.len() > limit {
             more = true;
             page.pop_last();
         }
+        Ok(())
     }).map_err(file_error)?;
-    let mut owners = HashMap::new();
+    let mut owners = native::Owners::default();
     let mut entries = Vec::new();
     let mut last = None;
     let mut bytes = 0;
     for key in page {
+        if !seated() { return Err(Error::Denied); }
         match describe(path, &key.1, &mut owners) {
             Ok(entry) => {
                 bytes += serde_json::to_vec(&entry).map_err(|_| Error::Io)?.len() + 1;
@@ -135,14 +140,28 @@ fn list(path: &Path, cursor: Option<&str>, limit: usize) -> Result<Browse, Error
         }
         last = Some(key);
     }
-    let path = path.components().filter_map(|c| match c {
-        Component::Normal(name) => Some(encode(name)),
-        _ => None,
-    }).collect();
-    Ok(Browse::Listing { path, entries, cursor: last.filter(|_| more).as_ref().map(cursor_for) })
+    if !seated() { return Err(Error::Denied); }
+    let path = native::path_parts(path).iter().map(|name| encode(name)).collect();
+    Ok(Browse::Listing { path, entries, roots: None, cursor: last.filter(|_| more).as_ref().map(cursor_for) })
 }
 
-fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
+fn lock_partial(path: &Path) -> Result<Option<fs::File>, Error> {
+    let name = native::entry_name(path).map_err(file_error)?;
+    if !super::transfer::partial_name(&native::canonical_name(&name)) {
+        return Ok(None);
+    }
+    let pinned = native::pin(path).map_err(file_error)?;
+    if !native::is_regular(&pinned.metadata().map_err(file_error)?) {
+        return Ok(None);
+    }
+    let file = native::open_pinned(&pinned).map_err(file_error)?;
+    native::lock_exclusive(&file).map_err(|err| {
+        if err.kind() == io::ErrorKind::WouldBlock { Error::InUse } else { file_error(err) }
+    })?;
+    Ok(Some(file))
+}
+
+fn request(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Result<Browse, Error>) {
     let path = match &op {
         Browse::List { path, .. } => directory(path.as_deref()),
         Browse::Mkdir { path, .. } | Browse::Rename { path, .. } | Browse::Delete { path, .. } => directory(Some(path)),
@@ -152,6 +171,26 @@ fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
         Ok(path) => path,
         Err(why) => return (PathBuf::from("<invalid path>"), Err(why)),
     };
+    if !seated() {
+        return (path, Err(Error::Denied));
+    }
+    if path.as_os_str().is_empty() {
+        let result = if matches!(op, Browse::List { cursor: None, .. }) {
+            native::roots().map_err(file_error).and_then(|drives| {
+                if !seated() { return Err(Error::Denied); }
+                Ok(Browse::Listing {
+                    path: vec![], roots: Some(true), cursor: None,
+                    entries: drives.iter().map(|name| FileEntry {
+                        name: encode(name), kind: FileKind::Folder, size: 0, modified: None,
+                        mode: None, owner: None, attributes: None, target: None, opens: None,
+                    }).collect(),
+                })
+            })
+        } else {
+            Err(Error::InvalidPath)
+        };
+        return (path, result);
+    }
     match op {
         Browse::List { cursor, .. } => {
             let path = if cursor.is_none() {
@@ -162,13 +201,13 @@ fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
             } else {
                 path
             };
-            let response = list(&path, cursor.as_deref(), PAGE_ENTRIES);
+            let response = list(&path, cursor.as_deref(), PAGE_ENTRIES, seated);
             (path, response)
         }
         Browse::Mkdir { name, .. } => match new_name(&name) {
             Ok(name) => {
                 let path = path.join(name);
-                let result = fs::create_dir(&path).map(|()| Browse::Changed {}).map_err(file_error);
+                let result = if seated() { fs::create_dir(&path).map(|()| Browse::Changed {}).map_err(file_error) } else { Err(Error::Denied) };
                 (path, result)
             }
             Err(why) => (path, Err(why)),
@@ -176,7 +215,11 @@ fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
         Browse::Rename { entry, name, .. } => match component(&entry) {
             Ok(entry) => {
                 let from = path.join(entry);
-                let result = new_name(&name).and_then(|name| native::rename_new(&from, &path.join(name)).map_err(file_error));
+                let result = new_name(&name).and_then(|name| {
+                    let _partial = lock_partial(&from)?;
+                    if !seated() { return Err(Error::Denied); }
+                    native::rename_new(&from, &path.join(name)).map_err(file_error)
+                });
                 (from, result.map(|()| Browse::Changed {}))
             }
             Err(why) => (path, Err(why)),
@@ -184,8 +227,11 @@ fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
         Browse::Delete { entry, .. } => match component(&entry) {
             Ok(entry) => {
                 let path = path.join(entry);
-                let result = super::remove(&path, false).map(|()| Browse::Changed {}).map_err(file_error);
-                (path, result)
+                let result = lock_partial(&path).and_then(|_partial| {
+                    if !seated() { return Err(Error::Denied); }
+                    native::remove_entry(&path).map_err(file_error)
+                });
+                (path, result.map(|()| Browse::Changed {}))
             }
             Err(why) => (path, Err(why)),
         },
@@ -193,18 +239,41 @@ fn request(op: Browse) -> (PathBuf, Result<Browse, Error>) {
     }
 }
 
-pub fn call(op: Browse) -> (PathBuf, Browse) {
-    let (path, result) = request(op);
+pub fn call(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Browse) {
+    let (path, result) = request(op, seated);
     (path, result.unwrap_or_else(|why| Browse::Error { why }))
 }
 
 #[cfg(test)]
+#[test]
+fn a_listing_stops_at_the_first_entry_check_that_denies_access() {
+    let dir = std::env::temp_dir().join(format!("deskway-browse-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+    fs::create_dir(&dir).unwrap();
+    for name in ["first", "second", "third", "fourth"] {
+        fs::write(dir.join(name), []).unwrap();
+    }
+    let path: Vec<_> = native::path_parts(&dir).iter().map(|name| encode(name)).collect();
+    for checks_allowed in [1, 2, 3, 5, 6, 9] {
+        let checked = std::cell::Cell::new(0);
+        let (_, reply) = call(Browse::List { path: Some(path.clone()), cursor: None }, &|| {
+            let n = checked.get();
+            checked.set(n + 1);
+            n < checks_allowed
+        });
+        assert_eq!(reply, Browse::Error { why: Error::Denied });
+        assert_eq!(checked.get(), checks_allowed + 1, "checked another entry after revocation");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(all(test, unix))]
 mod tests {
+    use std::os::unix::ffi::OsStrExt;
     use super::*;
     use std::os::unix::fs::symlink;
 
     #[test]
-    fn names_are_single_linux_components() {
+    fn names_are_single_unix_components() {
         for (name, valid) in [
             ("", false), (".", false), ("..", false), ("/a", false), ("a/b", false), ("a\\b", false),
             ("a\0b", false), (".hidden", true), (" x ", true), ("å\n\u{202e}", true),
@@ -227,7 +296,7 @@ mod tests {
             fs::write(dir.join(name), []).unwrap();
         }
         let page = |cursor| {
-            let Browse::Listing { entries, cursor, .. } = list(&dir, cursor, 3).unwrap() else { panic!("expected listing") };
+            let Browse::Listing { entries, cursor, .. } = list(&dir, cursor, 3, &|| true).unwrap() else { panic!("expected listing") };
             (entries.into_iter().map(|e| component(&e.name).unwrap()).collect::<Vec<_>>(), cursor)
         };
         let (names, cursor) = page(None);
@@ -238,7 +307,7 @@ mod tests {
         let (names, cursor) = page(cursor.as_deref());
         assert_eq!(names, ["b", "c", "z"]);
         assert_eq!(cursor, None);
-        assert!(matches!(list(&dir, Some("invalid!"), 3), Err(Error::InvalidPath)));
+        assert!(matches!(list(&dir, Some("invalid!"), 3, &|| true), Err(Error::InvalidPath)));
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -247,24 +316,47 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("deskway-browse-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
         fs::create_dir(&dir).unwrap();
         let path: Vec<_> = dir.iter().skip(1).map(encode).collect();
-        let raw = OsStr::from_bytes(b"x\xff");
-        assert_eq!(call(Browse::Mkdir { path: path.clone(), name: "folder".into() }).1, Browse::Changed {});
+        let raw = OsStr::from_bytes(b"x \n");
+        assert_eq!(call(Browse::Mkdir { path: path.clone(), name: "folder".into() }, &|| true).1, Browse::Changed {});
         fs::write(dir.join("folder/content"), []).unwrap();
         symlink("folder", dir.join(raw)).unwrap();
-        let Browse::Listing { entries, .. } = list(&dir, None, 16).unwrap() else { panic!("expected listing") };
+        let Browse::Listing { entries, .. } = list(&dir, None, 16, &|| true).unwrap() else { panic!("expected listing") };
         assert_eq!(entries[1].name, encode(raw));
         assert_eq!(entries[1].target, Some(encode(OsStr::new("folder"))));
         assert_eq!(entries[1].opens, Some(true));
-        let rename = |name: &str| call(Browse::Rename { path: path.clone(), entry: encode(raw), name: name.into() }).1;
+        let rename = |name: &str| call(Browse::Rename { path: path.clone(), entry: encode(raw), name: name.into() }, &|| true).1;
         assert_eq!(rename("folder"), Browse::Error { why: Error::Exists });
         assert_eq!(rename("link"), Browse::Changed {});
-        let delete = |name: &str| call(Browse::Delete { path: path.clone(), entry: encode(OsStr::new(name)) }).1;
+        let delete = |name: &str| call(Browse::Delete { path: path.clone(), entry: encode(OsStr::new(name)) }, &|| true).1;
         assert_eq!(delete("link"), Browse::Changed {});
         assert!(dir.join("folder/content").is_file());
         assert_eq!(delete("folder"), Browse::Error { why: Error::NotEmpty });
         fs::remove_file(dir.join("folder/content")).unwrap();
         assert_eq!(delete("folder"), Browse::Changed {});
         fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn browse_lists_live_partials_and_refuses_to_rename_or_delete_them() {
+        let dir = std::env::temp_dir().join(format!("deskway-browse-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+        fs::create_dir(&dir).unwrap();
+        let path: Vec<_> = dir.iter().skip(1).map(encode).collect();
+        let name = format!(".deskway-upload-{}.partial", "a".repeat(32));
+        let entry = encode(OsStr::new(&name));
+        for op in [
+            Browse::Rename { path: path.clone(), entry: entry.clone(), name: "renamed".into() },
+            Browse::Delete { path: path.clone(), entry: entry.clone() },
+        ] {
+            let file = fs::File::create(dir.join(&name)).unwrap();
+            native::lock_exclusive(&file).unwrap();
+            let Browse::Listing { entries, .. } = list(&dir, None, 16, &|| true).unwrap() else { panic!("expected listing") };
+            assert!(entries.iter().any(|item| item.name == entry));
+            assert_eq!(call(op.clone(), &|| true).1, Browse::Error { why: Error::InUse });
+            drop(file);
+            assert_eq!(call(op, &|| true).1, Browse::Changed {});
+            assert!(!dir.join(&name).exists());
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -282,7 +374,7 @@ mod tests {
         symlink("old", &link).unwrap();
         let Browse::Listing { path, .. } = call(Browse::List {
             path: Some(link.iter().skip(1).map(encode).collect()), cursor: None,
-        }).1 else { panic!("expected listing") };
+        }, &|| true).1 else { panic!("expected listing") };
         assert_eq!(directory(Some(&path)).unwrap(), old.canonicalize().unwrap());
         symlink("new", dir.join("replacement")).unwrap();
         fs::rename(dir.join("replacement"), &link).unwrap();
@@ -290,7 +382,7 @@ mod tests {
             ("delete", Browse::Delete { path: path.clone(), entry: encode(OsStr::new("delete")) }),
             ("rename", Browse::Rename { path, entry: encode(OsStr::new("rename")), name: "renamed".into() }),
         ] {
-            assert_eq!(call(op).1, Browse::Changed {});
+            assert_eq!(call(op, &|| true).1, Browse::Changed {});
             assert!(!old.join(name).exists());
             assert!(new.join(name).is_file());
         }

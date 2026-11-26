@@ -1,12 +1,14 @@
 //! Unix programs use a login shell, with pipes or a controlling terminal of their own.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::i18n::t;
+use crate::platform::Pty;
 use crate::workspace::procs::{Program, Started};
 
 pub fn shell(default: &str, command: Option<&str>, cwd: Option<&str>) -> Command {
@@ -101,8 +103,7 @@ impl Terminal {
         Ok((Self { child, master }, output))
     }
 
-    #[cfg(target_os = "linux")]
-    pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
+    fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
         set_size(self.master.as_raw_fd(), size(cols, rows))
     }
 }
@@ -125,12 +126,141 @@ impl Program for Terminal {
     }
 }
 
+pub fn browser_pty(mut command: Command, rows: u16, cols: u16, allowed: impl FnOnce() -> bool) -> io::Result<Box<dyn Pty>> {
+    let home = std::env::home_dir().ok_or(io::ErrorKind::NotFound)?;
+    command.current_dir(home);
+    Ok(Box::new(BrowserPty::start(command, rows, cols, allowed)?))
+}
+
+struct BrowserPty {
+    terminal: Terminal,
+    status: Option<i32>,
+    termination_incomplete: bool,
+}
+
+impl BrowserPty {
+    fn start(command: Command, rows: u16, cols: u16, allowed: impl FnOnce() -> bool) -> io::Result<Self> {
+        let (terminal, ()) = Terminal::start(command, cols, rows, |master: &File| {
+            if unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if !allowed() { return Err(io::ErrorKind::PermissionDenied.into()); }
+            Ok(())
+        })?;
+        Ok(Self { terminal, status: None, termination_incomplete: false })
+    }
+
+    fn exited(&self) -> io::Result<bool> {
+        exited(self.terminal.pid() as libc::pid_t)
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        let cleanup = self.terminal.kill();
+        if cleanup.is_err() && self.terminal.child.kill().is_err() && self.terminal.child.try_wait()?.is_none() {
+            return cleanup;
+        }
+        self.reap()?;
+        cleanup
+    }
+
+    fn reap(&mut self) -> io::Result<()> {
+        // macOS holds an exiting process until the output it left in the terminal is read.
+        let status = loop {
+            if let Some(status) = self.terminal.child.try_wait()? {
+                break status;
+            }
+            if !matches!(self.terminal.master.read(&mut [0; 4096]), Ok(n) if n > 0) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        self.status = Some(status.code().unwrap_or_else(|| -status.signal().expect("process exit signal")));
+        Ok(())
+    }
+}
+
+impl Read for BrowserPty {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self.terminal.master.read(buf) {
+            Err(e) if e.raw_os_error() == Some(libc::EIO) => Ok(0), // The last slave closed.
+            result => result,
+        }
+    }
+}
+
+impl Write for BrowserPty {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.terminal.master.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.terminal.master.flush()
+    }
+}
+
+impl Pty for BrowserPty {
+    fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
+        self.terminal.resize(rows, cols)
+    }
+
+    fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()> {
+        let fd = self.terminal.master.as_raw_fd();
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (rows, cols) != (size.ws_row, size.ws_col) {
+            return self.resize(rows, cols);
+        }
+        // TIOCSWINSZ sends SIGWINCH only when the size changes.
+        let group = unsafe { libc::tcgetpgrp(fd) };
+        if group < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if group > 0 && unsafe { libc::kill(-group, libc::SIGWINCH) } < 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn exit(&mut self) -> io::Result<Option<i32>> {
+        // A failed terminate can have killed the leader but left jobs behind. Keep
+        // its ID reserved and the attachment open so the person can retry cleanup.
+        if self.status.is_none() && !self.termination_incomplete && self.exited()? {
+            self.finish()?;
+        }
+        Ok(self.status)
+    }
+
+    fn terminate(&mut self) -> io::Result<bool> {
+        if self.status.is_some() || (!self.termination_incomplete && self.exited()?) {
+            return Ok(false);
+        }
+        let result = self.terminal.kill().and_then(|()| self.reap());
+        self.termination_incomplete = result.is_err();
+        result.map(|()| true)
+    }
+}
+
+impl Drop for BrowserPty {
+    fn drop(&mut self) {
+        if self.status.is_none() {
+            if let Err(e) = self.finish() {
+                eprintln!("{}: {e}", t("terminal.close_failed"));
+            }
+        }
+    }
+}
+
 /// Signal the terminal's session, including the job-control groups the shell did not join.
 /// The caller holds the Program lock, so the session leader cannot be reaped by a concurrent
 /// tool call while its ID is in use here.
 fn kill_session(id: libc::pid_t) -> io::Result<()> {
     // End the shell and its own group first so it cannot start more work during the scan.
-    let mut error = signal(-id).err();
+    // macOS refuses to signal a group whose only member has already exited.
+    let mut error = signal(-id).err().filter(|e| e.raw_os_error() != Some(libc::EPERM) || !exited(id).unwrap_or(false));
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let jobs = crate::platform::session_members(id)?;
@@ -154,6 +284,16 @@ fn kill_session(id: libc::pid_t) -> io::Result<()> {
     error.map_or(Ok(()), Err)
 }
 
+/// Whether this child has exited. It stays waitable so the kernel cannot reuse its ID
+/// before its jobs are gone.
+fn exited(pid: libc::pid_t) -> io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    if unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } != 0)
+}
+
 fn signal(pid: libc::pid_t) -> io::Result<()> {
     if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
         return Ok(());
@@ -171,6 +311,66 @@ pub fn kill_tree(pid: u32) {
 mod tests {
     use super::*;
     use crate::workspace::procs::Table;
+
+    fn wait(mut check: impl FnMut() -> bool) {
+        let until = Instant::now() + Duration::from_secs(4);
+        while !check() {
+            assert!(Instant::now() < until, "PTY did not reach the expected state");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn read(pty: &mut BrowserPty, output: &mut Vec<u8>) -> bool {
+        let mut buf = [0; 64];
+        match pty.read(&mut buf) {
+            Ok(0) => true,
+            Ok(n) => { output.extend_from_slice(&buf[..n]); false }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
+            Err(e) => panic!("PTY read: {e}"),
+        }
+    }
+
+    #[test]
+    fn browser_pty_keeps_raw_output_input_size_and_exit_status() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "stty -echo; printf '\\033[31mready\\033[0m\\n'; stty size; read -r line; stty size; printf '%s\\n' \"$line\"; exit 17"]);
+        let mut pty = BrowserPty::start(command, 24, 80, || true).unwrap();
+        let mut output = Vec::new();
+        wait(|| {
+            read(&mut pty, &mut output);
+            output.ends_with(b"24 80\r\n")
+        });
+        pty.resize(31, 93).unwrap();
+        pty.write_all(b"last line\n").unwrap();
+        wait(|| read(&mut pty, &mut output));
+        wait(|| pty.exit().unwrap() == Some(17));
+        assert_eq!(output, b"\x1b[31mready\x1b[0m\r\n24 80\r\n31 93\r\nlast line\r\n");
+    }
+
+    #[test]
+    fn browser_pty_notifies_the_foreground_program_at_the_same_size() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "trap 'echo redraw' WINCH; echo ready; while :; do sleep 0.1; done"]);
+        let mut pty = BrowserPty::start(command, 24, 80, || true).unwrap();
+        let mut output = Vec::new();
+        wait(|| { read(&mut pty, &mut output); output.ends_with(b"ready\r\n") });
+        pty.redraw(24, 80).unwrap();
+        wait(|| { read(&mut pty, &mut output); output.ends_with(b"redraw\r\n") });
+    }
+
+    #[test]
+    fn browser_pty_drop_kills_jobs_even_after_the_shell_exits() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-ic", "trap '' HUP; sleep 300 </dev/null >/dev/null 2>&1 & echo $!; exit 17"]);
+        let mut pty = BrowserPty::start(command, 24, 80, || true).unwrap();
+        let id = pty.terminal.pid() as libc::pid_t;
+        wait(|| { read(&mut pty, &mut Vec::new()); pty.exited().unwrap() });
+        let jobs: Vec<_> = crate::platform::session_members(id).unwrap().into_iter().filter(|&pid| pid != id).collect();
+        assert_eq!(jobs.len(), 1);
+        assert_ne!(unsafe { libc::getpgid(jobs[0]) }, id);
+        drop(pty);
+        assert!(crate::platform::session_members(id).unwrap().is_empty());
+    }
 
     #[test]
     fn both_pty_ends_are_close_on_exec() {

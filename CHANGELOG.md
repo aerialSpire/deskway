@@ -12,9 +12,12 @@ Notable changes to Deskway are recorded here. The format follows
 
 - Serve a Deskway AI profile over MCP Streamable HTTP with `deskway gateway`, behind an authenticating HTTPS server.
   Gateway error messages are in English.
-- Open a Linux computer's terminal from the browser, with the same on-screen keyboard and takeover controls as a desktop session.
-- Browse a Linux computer’s files, create folders, rename entries and delete files or empty folders from the browser.
+- Open a Linux, macOS or Windows computer’s terminal from the browser, with the same on-screen keyboard and takeover controls as a desktop session.
+- Browse a Linux, macOS or Windows computer’s files, create folders, rename entries and delete files or empty folders from the browser.
+- Upload, replace and download files from the Files view on Linux, macOS and Windows, resume interrupted transfers, and track verified results from Files or Terminal.
+- Ask again when an upload’s replacement target changes, offer Save for verified in-memory downloads, and restore an open terminal when the page reconnects from Files.
 - Run a supervised MCP gateway with a private Unix socket on Linux and macOS and a proxy that stops with the gateway.
+- Open Terminal and Files on macOS before granting Screen Recording or Accessibility.
 - The Mac host panel offers optional Full Disk Access to skip folder-by-folder prompts during file transfers and AI file operations.
 - Install Deskway Host as a Linux service on x86-64 or ARM64 for AI commands, files and tunnels, and stop AI control locally with `deskway-host stop-ai`.
 - AI applications on Linux x64 and ARM64 can connect to Deskway computers with `deskway`.
@@ -29,7 +32,8 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Changed
 
-- Linux browser terminals keep running after disconnect, with recent output available on return.
+- Browser terminals on Linux, macOS and Windows keep running after disconnect, with recent output available on return.
+- Locking a macOS or Windows computer ends browser access to Terminal and Files. Kept terminals continue running, and interrupted transfers can resume after unlock.
 - Computers measure relay latency so the server can offer them the nearest responding relay for their sessions.
 - Keep this computer awake pauses its request on battery below 15% and resumes on external power or at 15% or higher.
 - Server upgrades keep the previous host protocol working, show which computers need updates, and include an `upgrade-check` command.
@@ -42,10 +46,10 @@ Notable changes to Deskway are recorded here. The format follows
 
 - Files keeps operating on the folder it showed when a symbolic link is retargeted, and preserves spaces in file names.
 - The MCP gateway rejects oversized bodies and excess concurrent requests, and the profile proxy discards queued calls after their gateway deadline.
-- Paste large or multiline text into a Linux terminal without losing the shell, with bracketed paste where the application supports it.
+- Paste large or multiline text into a browser terminal, with bracketed paste where the application and PTY support it.
 - When a Linux computer refuses a terminal connection from an untrusted browser, Deskway explains how to get approval from a trusted device.
-- Reopen a Linux terminal from the computer page immediately after disconnecting.
-- The Linux computer page offers **Terminal** in its own action row, and terminal typing preserves spaces and capital letters.
+- Reopen the browser terminal from the computer page immediately after disconnecting.
+- The computer page groups **Terminal** and **Files** in one action row, and terminal typing preserves spaces and capital letters.
 - Linux and macOS terminals can close while other commands are still running, and reading past command output returns an empty result.
 - Linux hosts hide typed enrollment passwords, show approval codes on restart while waiting, and prevent two launches from sharing a state directory. The web client shows when a computer has no desktop, and AI clients explain when a tool is unavailable.
 - Browser sessions keep the computer's first connection paths while verifying its answer.

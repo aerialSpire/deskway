@@ -18,7 +18,7 @@ use wire::types::{ClipboardError, FormatKind, Item, Labels, Locks, Mods};
 use crate::display::DisplayInfo;
 
 mod features;
-pub use features::{BrowserSession, DeskParams, DesktopFeatures, Features, OpenPty, Pty};
+pub use features::{BrowserSession, DeskParams, DesktopFeatures, Features, OpenPty, Pty, WorkspaceState};
 
 #[cfg(all(test, desktop_host))]
 pub const TEST_DESKTOP: DesktopFeatures = DESKTOP;

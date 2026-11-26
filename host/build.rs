@@ -59,6 +59,10 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let os = std::env::var("CARGO_CFG_TARGET_OS");
     println!("cargo:rustc-check-cfg=cfg(desktop_host)");
+    println!("cargo:rustc-check-cfg=cfg(browser_workspace)");
+    if matches!(os.as_deref(), Ok("linux" | "macos" | "windows")) {
+        println!("cargo:rustc-cfg=browser_workspace");
+    }
     if matches!(os.as_deref(), Ok("windows" | "macos")) {
         println!("cargo:rustc-cfg=desktop_host");
     }

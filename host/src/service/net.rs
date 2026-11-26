@@ -64,7 +64,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     let (events, platform_events) = channel();
     let platform = Remote::new(events);
     let dir = crate::config::dir()?;
-    let (settings, awake) = Settings::start(dir.clone(), &cfg, Some(platform.clone()), control_tx);
+    let (settings, awake) = Settings::start(dir.clone(), &cfg, Some(platform.clone()), control_tx.clone());
     if let Err(e) = awake {
         eprintln!("{e:#}");
     }
@@ -85,18 +85,35 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     // person's workspace is the user worker's.
     // As the service, the admin worker too, while it runs (`worker::Kind::Admin`); by hand, this
     // process is all there is, and its own rights decide (`platform::start_program`).
-    let (workspace, admin): (Arc<dyn crate::workspace::Workspace>, Option<Arc<dyn crate::workspace::Workspace>>) = if dev {
-        (Arc::new(crate::workspace::Local::default()), None)
+    let (workspace, admin, browser): (
+        Arc<dyn crate::workspace::Workspace>, Option<Arc<dyn crate::workspace::Workspace>>, crate::workspace::Browser,
+    ) = if dev {
+        let lock = std::env::var_os("DESKWAY_TEST_WORKSPACE_LOCK").map(std::path::PathBuf::from);
+        if lock.is_none() {
+            crate::platform::workspace::sweep_home();
+        }
+        let command = std::env::var("DESKWAY_TEST_WORKSPACE_SHELL").ok();
+        (Arc::new(crate::workspace::Local::default()), None, crate::platform::workspace::browser(lock, command))
     } else {
-        let [user, admin] = [super::worker::Kind::User, super::worker::Kind::Admin].map(|kind| {
-            let remote = Arc::new(crate::workspace::remote::Remote::new(kind == super::worker::Kind::Admin));
-            serve_worker(remote.clone(), kind).map(|()| remote)
-        });
-        (user?, Some(admin?))
+        use super::worker::Kind;
+        use crate::workspace::remote::Remote;
+        let user = Arc::new(Remote::user(control_tx.clone()));
+        let admin = Arc::new(Remote::new(true));
+        serve_worker(user.clone(), Kind::User)?;
+        serve_worker(admin.clone(), Kind::Admin)?;
+        let browser = user.browser();
+        (user, Some(admin), browser)
+    };
+    let _watch = if dev {
+        Some(crate::platform::workspace::WorkspaceWatch::start(browser.state.clone(), move |state| {
+            let _ = control_tx.send(Control::WorkspaceChanged(state));
+        })?)
+    } else {
+        None
     };
     let workspace = Some(workspace);
     let desktop = Some(signal::DesktopParams { features: crate::platform::DESKTOP, platform, events: platform_events, can_host: Box::new(|| true) });
-    let params = signal::Params { cfg, view_only, desktop, terminal: None, notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
+    let params = signal::Params { cfg, view_only, desktop, browser: Some(browser), notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
     signal::run(params, control_rx);
     Ok(())
 }

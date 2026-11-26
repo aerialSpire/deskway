@@ -31,7 +31,9 @@ use wire::signal::Signal as Wire;
 use wire::types::{AnswerAuth, IceCandidate, Reason};
 
 pub mod ai;
+mod credit;
 pub mod data;
+pub(crate) mod file_transfer;
 pub mod terminal;
 #[cfg(desktop_host)]
 pub mod desk;
@@ -54,6 +56,8 @@ pub enum SessionEvent {
     Mcp(String),
     /// A completed filesystem operation on the data-only browser session.
     Browse(Vec<u8>),
+    /// A file transfer worker has output for the session.
+    TransferReady,
     /// A tunnel's connection gave bytes, or closed (`peer::pipe`).
     Pipe(PipeEvent),
 }
@@ -419,6 +423,7 @@ impl<R: Role> Session<R> {
             SessionEvent::ClipShare(on) => self.role.clip_share(cx!(self, rtc), on),
             SessionEvent::Mcp(text) => self.role.mcp_reply(cx!(self, rtc), text),
             SessionEvent::Browse(text) => self.role.file_reply(text),
+            SessionEvent::TransferReady => {}
             SessionEvent::Pipe(e) => self.role.pipe(cx!(self, rtc), e),
             SessionEvent::RemoteCandidate(s) => {
                 // Browsers may send mDNS candidates, which are skipped: the other end still

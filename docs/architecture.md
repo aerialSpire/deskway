@@ -24,7 +24,7 @@ Every change follows these rules:
 
 | Platform | Processes |
 |---|---|
-| Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
+| Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): the ordinary workspace (browser Terminal and Files, AI programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
 | Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the desk seat's terminal, and the AI seat with its in-process workspace for commands, files and tunnels. |
 | AI client's machine | `deskway` (cli/): `login`, `mcp` for MCP over stdio, `gateway` for MCP over HTTP, and a proxy that holds the profile's sign-in and a link to each computer in use. Clients share the profile's proxy by default. A supervised gateway can own its proxy in-process. |
@@ -73,9 +73,11 @@ platform/
   features.rs      the host's feature set selects seats, capabilities and tools
   linux.rs         host commands, operating-system signals, and per-user state directory
   linux/lock.rs    the running host's process id in its lock file, and the signal sent to it
-  linux/file_metadata.rs Linux ownership, permissions, modification time and no-replace rename
+  linux/file_metadata.rs Linux no-replace rename and procfs file handles
   linux/programs.rs process setup and enumeration on Linux
   unix/programs.rs  login shell, process groups and pseudo-terminals on Linux and macOS
+  unix/file_metadata.rs Unix ownership, mode, modification time and partial files
+  macos/file_metadata.rs Darwin file handles, stored names and no-replace rename
   mod.rs           trait Platform + PlatformEvent (and Call, what crosses the agent pipe);
                    Local (in this process); Remote (agent pipe proxy, Windows)
   windows/         capture (DXGI), encoder (MF), input (SendInput), clipboard (owner window,
@@ -96,7 +98,9 @@ session/
   desk/            channels.rs: those channels' messages, read once and routed; pace.rs:
                    real time over a congested path, encoding waits while the queue is full;
                    media.rs: the picture's track (payload, mid, keyframes)
-  data.rs          the desk seat's data-only role, routing control, terminal and browse
+  data.rs          the desk seat's data-only role, routing control, terminal, browse and transfers
+  file_transfer.rs admitted page's transfer record and resumable channel, with the same worker limit as browsing
+  credit.rs        byte credit shared by terminal and file transfers
   terminal.rs      one PTY attachment's resize and credit
   terminal/        registry.rs: the host's one browser PTY, attachment and idle timeout;
                    replay.rs: the bounded recent output and its safe start
@@ -108,7 +112,8 @@ mcp/               an AI session's MCP requests, answered off the session thread
 tools/             the tools of proto/tools.json: mod.rs registers base, work and desktop tools
 workspace/         commands and files as the workspace user: mod.rs (Op, Workspace and errors),
                    local.rs (in this process), procs.rs (programs and retained output), files.rs
-                   and files/browse.rs (paged directory selection and Linux browser operations),
+                   and files/browse.rs (paged directory selection and browser operations),
+                   files/transfer.rs (staged writes, streaming reads and partial cleanup),
                    desktop.rs (DesktopOp), remote.rs (Windows user worker pipe)
 audit.rs           what AI clients did here: JSON lines, appended only, bounded
 video/             capture loop (Pipeline: commands, capture, encode step), encoder choice,
@@ -140,24 +145,53 @@ capabilities and AI tool names, which seats can be admitted, and the tool table 
 MCP gate. Every host offers the base tools. A workspace adds work tools, including loopback
 tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
-according to the live hello's `desk` capability. Linux offers `terminal` and `terminal-keep`
-through its PTY launcher and `browse` through its local workspace. Verified data-only and picture
-browser offers contend for the same desk seat. A picture offer to a Linux host receives
+according to the live hello's `desk` capability. Linux, macOS and Windows offer `terminal`,
+`terminal-keep`, `browse` and `file-transfer` through the ordinary user's workspace. View-only hosts omit
+those capabilities. The host status reports why a browser workspace is unavailable.
+Verified data-only and picture browser offers contend for the same desk seat. A picture offer to a Linux host receives
 `no_desktop`. A data-only browser offer to a host without terminal support receives `no_terminal`.
 The AI seat uses the same device proofs and signed AI switch on all hosts.
 
-The data-only role runs one filesystem operation per session at a time, with at most two
-filesystem workers across the host. Before calling the workspace a worker checks the desk
+The data-only role runs one browse operation and one transfer per session at a time, with at most
+two filesystem workers across the host. Before calling the workspace a worker checks the desk
 seat using the terminal registry's admission state. The workspace resolves the directory on
 the first page, selects each sorted page with bounded memory and applies filesystem changes.
 The browser uses the returned path and cursor for successive pages. The AI listing scans
-until it has up to 2,000 readable entries, with its own `more` field.
+until it has up to 2,000 readable entries, with its own `more` field. The browser workspace
+checks access before describing each page entry and before each transfer filesystem step.
+A transfer holds one worker slot so a second slot can service browsing. Its channel and receiver credit limit the amount of transfer data
+competing with terminal and browse traffic. On Windows, file handles and ConPTY live in the
+ordinary user worker. A worker request for PTY bytes or file contents carries up to one frame.
+Publishing an upload, the one request made while holding the registry guard, waits up to five
+seconds for its reply; an unanswered publish fails the transfer as unconfirmed and releases the guard. ConPTY has a bounded
+input queue and supplies up to the requested output capacity. The Windows foreground host
+uses the same filesystem and ConPTY code in-process. On macOS and Linux the workspace uses
+the shared Unix PTY and filesystem metadata code.
+The host keeps the current transfer record and final reply in memory, keyed to the device and
+the authenticated page's resume chain. A new channel takes over the same record after the prior
+worker returns it. The workspace owns the staged upload, its write position, and the pinned
+download source and original metadata. The browser's session view owns its list, local source
+and destination, and the offsets and incremental digests used to resume. The browser hashes
+SHA-256 blocks incrementally as it sends or writes each chunk. Web Crypto's digest API takes
+the entire input.
 
 The host's terminal registry owns the PTY even with no desk session. Only the admitted desk
 session can attach. It owns its own input queue and credit, while the registry owns the recent
 output. A worker drains the PTY when detached, including when signaling is unavailable.
 The registry reports a detached shell's last device and departure time through host status.
-It drops the shell, jobs and replay when the terminal closes or the host stops.
+It drops the shell, jobs and replay when the terminal closes or the host stops. The signaling
+host processes queued workspace transitions before judging offers. A lock revokes the current
+data seat and releases it without auto-lock. The workspace checks the live console state before
+attached output, input and filesystem calls.
+
+- Windows uses WTS session notifications and samples the input desktop for secure prompts.
+  A temporarily detached console has no active console session ID. The worker checks its own
+  WTS logon identity and reports it locked during detachment. Logoff or a switch to another
+  console session ends the old workspace, including its shell, replay and transfer record.
+- macOS samples `CGSessionCopyCurrentDictionary` every 100 ms and checks it at workspace access.
+  `CGSSessionScreenIsLocked` reports the lock and `kCGSSessionOnConsoleKey` reports whether the app's
+  session is on the console. Switching away locks access to that app's workspace. Logging out
+  stops the app and its workspace. These checks are independent of capture.
 
 The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
 Starting or enrolling the host takes the same exclusive `host.lock` for that state directory.
@@ -738,7 +772,7 @@ The Mac code guarantees the following:
 | Input (CGEvent) | Coordinates are mapped to the captured display in points; dragged events are generated while a button is held; click state is tracked for double clicks; wheel events use pixel units; key codes come from the shared table; each committed text event carries one Unicode scalar. The host owns the modifier flags it sets on every event. |
 | Capture (ScreenCaptureKit) | NV12 video range, BT.709. The settings window appears in the video, while the indicator and border are excluded. Dirty rects show when nothing has changed. |
 | Clipboard | `changeCount` is checked twice a second. The browser's formats are promised through `NSPasteboardItemDataProvider` and marked `org.nspasteboard.TransientType`. |
-| Permissions | Screen Recording and Accessibility are checked at start-up and shown in the panel. While either is missing, sessions are refused with a clear reason. Programs an AI client starts inherit these permissions (security.md, R5). |
+| Permissions | The panel shows Screen Recording and Accessibility. Desktop control requires both. Terminal and Files use the app's ordinary user rights and macOS privacy permissions. Programs an AI client starts inherit these permissions (security.md, R5). |
 | Lock screen | The host runs in the signed-in user's session, including while it is locked. The remote view shows the lock screen, and macOS verifies the password. Control-Command-Q locks the Mac. |
 | Files | `host.json`, `host-key`, `controllers.json`, `pairing.json` and `ai.json` are stored in `~/Library/Application Support/Deskway`, with mode 0700. |
 
@@ -783,7 +817,9 @@ js/session/          connection.js (the session's lifecycle: peer connection, ne
                      (emulator and layout), terminal-keys.js (keyboard input for the PTY),
                      terminal-channel.js (byte stream and credit), data-view.js (switch between
                      Terminal and Files), files-view.js (browsing and folder operations) and
-                     file-listing.js (name and metadata display),
+                     file-listing.js (name and metadata display), file-transfers.js (contents
+                     channel and queue), transfer-list.js (list and collision dialog),
+                     sha256.js (incremental content hashing), download-file.js (browser save destinations),
                      video, pointer, touch, mouse-pad, keyboard, onscreen-keyboard,
                      keyboard-layout.js (the on-screen US layout), text-box (every input
                      method's text), clipboard
@@ -818,7 +854,8 @@ vendor/              the upstream xterm.js modules and stylesheet, loaded on ter
   `clipboard-host` (which uses the real clipboard), `relay` (which uses a fresh account and a
   relay-only host), `first-use` (which runs its own fresh server and Windows hosts), and
   `previous-protocol` (which opens a session on a previous-version host using a fresh account
-  on the current server).
+  on the current server), and `windows-workspace` (which starts an isolated Windows
+  foreground host and exercises Terminal, Files and lock).
 - Use `--areas relay --relay-tls` with an HTTPS `--url` and start the host with
   `DESKWAY_TEST_RELAY=tls` to exercise TURN over the HTTPS port. Silently drop the host's UDP
   and TCP traffic to the server's `-turn-port` (3478 by default) so both attempts time out.

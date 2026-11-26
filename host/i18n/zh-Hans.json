@@ -1,8 +1,10 @@
 {
+  "files.transfer": "文件传输",
   "files.operation": "文件操作",
   "terminal.opened": "{name} 打开了终端",
   "terminal.left": "{name} 离开了终端（{reason}）",
   "terminal.returned": "{name} 返回了终端",
+  "terminal.user_changed": "Windows 用户已注销或切换",
   "terminal.closed": "终端已关闭（{reason}）",
   "terminal.exit": "Shell 退出状态为 {code}",
   "terminal.person": "用户关闭",

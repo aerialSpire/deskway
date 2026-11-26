@@ -152,6 +152,17 @@ fn browse_matches_the_definition() {
     assert_eq!(FileKind::VALUES, values(&def["types"]["FileEntry"]["fields"]["kind"]));
 }
 
+#[test]
+fn file_transfer_matches_the_definition() {
+    use super::file_transfer::{CHANNEL, Error, FRAME, HEADER, Message, WINDOW};
+    check_channel::<Message>(CHANNEL, Message::TYPES, Message::kind);
+    let def = def();
+    assert_eq!(def["channels"][CHANNEL]["max_bytes"], FRAME);
+    assert_eq!(def["channels"][CHANNEL]["header_bytes"], HEADER);
+    assert_eq!(def["channels"][CHANNEL]["window_bytes"], WINDOW);
+    assert_eq!(Error::VALUES, values(field(&def, CHANNEL, "error", "why")));
+}
+
 // ---- shared types and value sets ----
 
 fn check_struct<T: Serialize + DeserializeOwned + Debug>(name: &str, fields: &[&str]) {

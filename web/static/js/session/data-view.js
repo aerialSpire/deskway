@@ -3,14 +3,25 @@ import { h } from '../dom.js';
 import { t } from '../i18n.js';
 import { CAPS } from '../proto.js';
 import { FilesView } from './files-view.js';
+import { FileTransfers } from './file-transfers.js';
 import { TerminalView } from './terminal-view.js';
+
+// A locked host has ended the connection. This page can return with the same resume chain.
+const interrupted = new Map();
 
 export class DataView {
   constructor(s, view) {
     this.s = s;
     this.currentView = view;
     this.terminal = new TerminalView(s);
-    this.files = new FilesView(s);
+    this.strip = h('div', { class: 'file-transfer-strip' });
+    const transferView = [this.strip, () => s.connected, () => this.files.update(),
+      (path) => this.files.uploaded(path), () => this.openTransfers()];
+    const previous = interrupted.get(s.device.id);
+    interrupted.delete(s.device.id);
+    this.transfers = previous || new FileTransfers(...transferView);
+    if (previous) previous.mount(...transferView);
+    this.files = new FilesView(s, this.transfers);
     this.buttons = this.terminal.buttons;
     this.navigation = ['terminal', 'files'].map((view) => h('button', {
       class: 'tool', type: 'button', 'data-session-view': view, 'aria-pressed': 'false', onclick: () => this.show(view),
@@ -18,7 +29,7 @@ export class DataView {
   }
 
   get filesVisible() { return this.currentView === 'files'; }
-  get hasTerminal() { return !!this.terminal.stream?.attached; }
+  get hasTerminal() { return this.terminal.opened || !!this.terminal.stream?.attached; }
   get keeps() { return this.terminal.keeps; }
   get canClose() { return this.terminal.canClose; }
   get controlsReady() { return !this.filesVisible && this.terminal.controlsReady; }
@@ -54,9 +65,9 @@ export class DataView {
       if (this.s.connected && !this.terminal.stream?.attached && this.terminal.stream?.phase !== 'done') {
         this.s.setWaiting(t(this.terminal.waiting));
       }
-      this.terminal.active();
       this.s.stage.focus({ preventScroll: true });
     }
+    this.terminal.active();
     this.s.toolbar.show();
     this.s.layout();
   }
@@ -69,22 +80,42 @@ export class DataView {
     if (this.s.hasCap(CAPS.BROWSE) && !this.files.channel) {
       this.files.attach(this.s.connection.pc.createDataChannel('browse'));
     }
+    this.openTransfers();
     this.show(this.currentView);
   }
 
   active() {
-    if (this.filesVisible) {
-      if (this.s.caps) this.s.ready();
-      this.files.update();
-    } else this.terminal.active();
+    this.openTransfers();
+    this.transfers.next();
+    this.files.update();
+    if (this.filesVisible && this.s.caps) this.s.ready();
+    this.terminal.active();
   }
 
-  recover() { this.files.update(); }
+  recover() {
+    this.transfers.recover();
+  }
+
+  openTransfers() {
+    if (this.s.connected && this.s.hasCap(CAPS.FILE_TRANSFER) && !this.transfers.channel) {
+      this.transfers.attach(this.s.connection.pc.createDataChannel(CAPS.FILE_TRANSFER));
+    }
+  }
+
+  reconnect() {
+    this.recover();
+    this.files.detach();
+  }
   placeIme(...args) { this.terminal.placeIme(...args); }
   placeKeypad(...args) { this.terminal.placeKeypad(...args); }
   terminate() { this.terminal.terminate(); }
 
-  destroy() {
+  destroy(locked) {
+    if (locked && this.transfers.park()) {
+      interrupted.set(this.s.device.id, this.transfers);
+    } else {
+      this.transfers.destroy();
+    }
     this.files.destroy();
     this.terminal.destroy();
   }

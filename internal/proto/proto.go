@@ -92,7 +92,8 @@ type Device struct {
 	// Displays attached to the computer while it is online: id, x, y, w, h, primary.
 	Displays json.RawMessage `json:"displays,omitempty"`
 	// The terminal that is running without a browser attached, while online.
-	KeptTerminal *KeptTerminal `json:"kept_terminal,omitempty"`
+	WorkspaceAccess string        `json:"workspace_access,omitempty"`
+	KeptTerminal    *KeptTerminal `json:"kept_terminal,omitempty"`
 	// The current socket's hello while online, or the last saved version while offline.
 	Version int `json:"version,omitempty"`
 	// The host's capabilities while it is online.
@@ -200,7 +201,8 @@ type Msg struct {
 	Query      json.RawMessage `json:"query,omitempty"`  // auditreq: which recorded AI calls
 	Page       json.RawMessage `json:"page,omitempty"`   // audit: a page of them, from the computer
 
-	KeptTerminal *KeptTerminal `json:"kept_terminal,omitempty"` // status: a terminal running without a browser attached
+	WorkspaceAccess string        `json:"workspace_access,omitempty"`
+	KeptTerminal    *KeptTerminal `json:"kept_terminal,omitempty"` // status: a terminal running without a browser attached
 
 	Relays    *map[string]string `json:"relays,omitempty"` // relay-list: STUN addresses by ID; send even when empty
 	RelayRTTs map[string]int     `json:"rtts,omitempty"`   // relay-rtts: milliseconds by relay ID

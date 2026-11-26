@@ -1,5 +1,6 @@
 // The terminal byte stream. Each receiver returns credit as it consumes bytes.
 import { TerminalMsg as Msg, TERMINAL_FRAME, TERMINAL_INPUT_WINDOW, TERMINAL_OUTPUT_WINDOW, validate } from '../proto.js';
+import { Credit } from './credit.js';
 
 export class TerminalChannel {
   constructor(channel, write, status) {
@@ -7,10 +8,10 @@ export class TerminalChannel {
     this.write = write;
     this.status = status;
     this.phase = 'ready';
-    this.pending = 0;
+    this.outputCredit = new Credit(TERMINAL_OUTPUT_WINDOW);
     this.replayLeft = 0;
     this.queuedInput = [];
-    this.inputOutstanding = 0;
+    this.inputCredit = new Credit(TERMINAL_INPUT_WINDOW);
     channel.binaryType = 'arraybuffer';
     channel.onmessage = ({ data }) => this.receive(data);
     channel.onclose = () => this.finish({ t: Msg.ERROR, why: 'io' });
@@ -42,11 +43,11 @@ export class TerminalChannel {
   }
 
   flushInput() {
-    while (this.running && this.queuedInput.length && this.inputOutstanding < TERMINAL_INPUT_WINDOW && this.channel.readyState === 'open') {
+    while (this.running && this.queuedInput.length && this.inputCredit.available && this.channel.readyState === 'open') {
       const bytes = this.queuedInput[0];
-      const n = Math.min(bytes.length, TERMINAL_FRAME, TERMINAL_INPUT_WINDOW - this.inputOutstanding);
+      const n = Math.min(bytes.length, TERMINAL_FRAME, this.inputCredit.available);
       this.channel.send(bytes.subarray(0, n));
-      this.inputOutstanding += n;
+      this.inputCredit.take(n);
       if (n === bytes.length) this.queuedInput.shift();
       else this.queuedInput[0] = bytes.subarray(n);
     }
@@ -56,14 +57,13 @@ export class TerminalChannel {
     if (this.phase === 'done') return;
     if (data instanceof ArrayBuffer) {
       const n = data.byteLength;
-      if (!this.attached || !n || n > TERMINAL_FRAME || this.pending + n > TERMINAL_OUTPUT_WINDOW
-          || (this.replayLeft && this.pending + n > this.replayLeft)) {
+      if (!this.attached || n > TERMINAL_FRAME
+          || (this.replayLeft && this.outputCredit.outstanding + n > this.replayLeft) || !this.outputCredit.take(n)) {
         this.protocolError();
         return;
       }
-      this.pending += n;
       this.write(new Uint8Array(data), () => {
-        this.pending -= n;
+        this.outputCredit.acknowledge(n);
         if (!this.disposed) this.send({ t: Msg.ACK, bytes: n });
         if (this.replayLeft) {
           this.replayLeft -= n;
@@ -83,8 +83,7 @@ export class TerminalChannel {
       this.replayLeft = m.replay ?? 0;
       this.opened = m;
       this.reportOpened();
-    } else if (m.t === Msg.ACK && this.attached && m.bytes > 0 && m.bytes <= this.inputOutstanding) {
-      this.inputOutstanding -= m.bytes;
+    } else if (m.t === Msg.ACK && this.attached && this.inputCredit.acknowledge(m.bytes)) {
       this.flushInput();
     } else if (m.t === Msg.ERROR && m.why === 'close') {
       if (!this.closing) { this.protocolError(); return; }
@@ -119,7 +118,7 @@ export class TerminalChannel {
   }
 
   reportResult() {
-    if (this.pending || !this.result || this.disposed) return;
+    if (this.outputCredit.outstanding || !this.result || this.disposed) return;
     const result = this.result;
     this.result = null;
     this.status(result);

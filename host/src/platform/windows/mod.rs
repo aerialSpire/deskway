@@ -7,11 +7,13 @@ mod dib;
 mod displays;
 mod encoder;
 mod files;
+pub(crate) mod file_metadata;
 mod input;
 mod power;
 mod programs;
 pub mod ui;
 mod user;
+pub(crate) mod workspace;
 
 pub use capture::Duplication as NativeCapture;
 pub use clipboard::Clipboard as NativeClipboard;

@@ -36,7 +36,7 @@ export const DEADLINE_MS = 30000;
 // is leaving) signs with the device key again.
 const resumes = new Map();
 // Reasons after which the computer does not take this page back by its token.
-const DROPS_TOKEN = new Set(['taken', 'ended', 'unpaired', 'auth', 'keyChanged', 'forged']);
+const DROPS_TOKEN = new Set(['taken', 'ended', 'unpaired', 'auth', 'keyChanged', 'forged', 'user_changed', 'no_user_session']);
 // This page's own reasons, as the computer is told them.
 const OWN_REASONS = { keyChanged: 'auth', forged: 'auth' };
 

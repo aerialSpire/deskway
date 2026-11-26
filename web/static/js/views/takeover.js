@@ -15,7 +15,7 @@ import { Session } from '../session/session.js';
 import { dialog, dialogOpen, gotIt } from '../dialogs.js';
 import { showNotAdded } from './pairing.js';
 import { noDesktop, showNoDesktop } from './common.js';
-import { offerMessage, takeoverMessage } from './offer-message.js';
+import { offerMessage, takeoverMessage, workspaceNotice } from './offer-message.js';
 import { CAPS, MIN_VERSION } from '../proto.js';
 import { ownComputer, openWindow, onWindowView } from '../windows.js';
 
@@ -42,6 +42,10 @@ export function press(d, again = false, view = 'desktop') {
 
 function offered(d, view) {
   if (view !== 'desktop') {
+    if (workspaceNotice(d.workspace_access, t)) {
+      show(d, { reason: d.workspace_access }, view);
+      return false;
+    }
     if (d.caps?.includes(view === 'terminal' ? CAPS.TERMINAL : CAPS.BROWSE)) return true;
     if (view === 'files') gotIt(t('files.unavailable'));
     else show(d, { reason: 'no_terminal' }, view);
@@ -122,6 +126,12 @@ function showOfferMessage(d, view, { action, title, text, go }) {
       dialog(title, text, [
         { label: t('common.back') },
         { label: t(action === 'reconnect' ? 'session.reconnect' : 'common.retry'), primary: true, run: () => press(device() || d, true, view) },
+      ]);
+      break;
+    case 'desktop':
+      dialog(title, text, [
+        { label: t('common.back') },
+        { label: t('detail.hint'), primary: true, run: () => press(device() || d, true) },
       ]);
       break;
     case 'replace': openSession(d, false, view); break;

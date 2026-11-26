@@ -3,6 +3,7 @@
 //! over its pipe; Linux and macOS run them in-process.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -171,15 +172,41 @@ impl WorkError {
 pub type Answer = Result<Value, WorkError>;
 
 /// A local filesystem operation and its resolved path for the host's journal.
-pub type BrowseFiles = fn(wire::browse::Browse) -> (PathBuf, wire::browse::Browse);
+pub type BrowseFiles = Arc<dyn Fn(wire::browse::Browse, &dyn Fn() -> bool) -> (PathBuf, wire::browse::Browse) + Send + Sync>;
+
+pub use file_transfer::{Conflict, Download, FileTransfers, Upload};
+mod file_transfer;
+
+#[cfg(browser_workspace)]
+pub(crate) use files::transfer::sweep_home;
+
+#[cfg(browser_workspace)]
+pub(crate) fn local_browser(open: crate::platform::OpenPty, state: Arc<BrowserState>) -> Browser {
+    let user = BrowserUser { open, browse: Arc::new(files::browse::call), transfers: files::transfer::files() };
+    let access = state.clone();
+    Browser { state, bind: Arc::new(move |id| {
+        let now = access();
+        (now.user == Some(id) && now.refusal(false).is_none()).then(|| user.clone())
+    }) }
+}
+
+pub type BrowserState = dyn Fn() -> crate::platform::WorkspaceState + Send + Sync;
+
+pub struct Browser {
+    pub state: Arc<BrowserState>,
+    pub bind: Arc<dyn Fn(u64) -> Option<BrowserUser> + Send + Sync>,
+}
+
+#[derive(Clone)]
+pub struct BrowserUser {
+    pub open: crate::platform::OpenPty,
+    pub browse: BrowseFiles,
+    pub transfers: FileTransfers,
+}
 
 /// Carries out requests with the workspace user's rights.
 pub trait Workspace: Send + Sync {
     fn call(&self, op: Op) -> Answer;
-
-    fn browse_files(&self) -> Option<BrowseFiles> {
-        None
-    }
 
     #[cfg(desktop_host)]
     fn desktop(&self, op: DesktopOp) -> Answer;

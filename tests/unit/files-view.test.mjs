@@ -13,6 +13,7 @@ function filesView() {
   const view = Object.assign(Object.create(FilesView.prototype), {
     el: { hidden: false },
     list: {},
+    upload: {},
     observer: { disconnect() {} },
     rows: {
       append: (...rows) => entries.push(...rows),

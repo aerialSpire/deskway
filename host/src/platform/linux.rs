@@ -91,11 +91,12 @@ pub fn run() -> Result<()> {
     let mut lock = lock()?;
     lock::record_pid(&mut lock)?;
     let cfg = Config::load()?;
+    crate::workspace::sweep_home(&|| true);
     let (settings, awake) = Settings::start(config::dir()?, &cfg, None, control);
     awake?;
     let waiting = Cell::new(false);
     signal::run(signal::Params {
-        cfg, view_only: false, desktop: None, terminal: Some(programs::open_pty),
+        cfg, view_only: false, desktop: None, browser: Some(crate::workspace::local_browser(Arc::new(programs::open_pty), Arc::new(|| super::WorkspaceState::READY))),
         notify: Box::new(move |status| {
             if let (false, Some(code)) = (waiting.replace(status.waiting), status.approval_code) {
                 let _ = writeln!(io::stdout(), "{}", tf("cli.approve_computer", &[("server", status.server), ("code", code)]));

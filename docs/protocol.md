@@ -17,6 +17,7 @@ which defines every signed or MACed string. The Go
 | `move` | browser and host | data channel `move`: unordered, no retransmits | `t` |
 | `file` | browser and host | data channel `file`: reliable; text = messages, binary = bytes of the one transfer active in that direction | `t` |
 | `browse` | browser and host | reliable, ordered data channel `browse` with paged directory listings and folder operations | `t` |
+| `file-transfer` | browser and host | reliable, ordered data channel `file-transfer` for regular file uploads and downloads | `t` |
 | `terminal` | browser and host | data channel `terminal`: reliable, ordered. Text carries messages and binary carries raw PTY bytes | `t` |
 | `ai` | AI client and host | data channel `ai`: reliable, ordered; MCP JSON-RPC in fragments (AI sessions) | JSON-RPC |
 | `tunnel:<port>` | AI client and host | data channel: reliable, ordered; the bytes of one TCP connection to a loopback port (AI sessions) | none |
@@ -63,6 +64,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `terminal` | no browser terminal |
   | `terminal-keep` | the browser terminal ends with its session |
   | `browse` | no file view on the data-only browser session |
+  | `file-transfer` | Files has browsing and folder operations only |
   | `ai` | no AI seat: AI clients cannot use the computer |
   | `relay-rtt` | the host's signaling socket does not receive `relay-list` |
 - A newer peer sends a new message or field only when the other side's version or capabilities
@@ -142,14 +144,21 @@ browser                     server                        host
   replaces it. Anyone else, or any established session, gets `bye{reason:"busy", holder}` (the
   server turns the holder into the browser's `controller`), unless the offer is signed with
   `force`. A forced offer takes over: the old session ends with `taken`, with `by` set to the
-  taker's device name and `same` set when the taker is the same device. Reconnecting never takes
-  over on its own.
+  taker's device name and `same` set when the taker is the same device. The browser device
+  that owns a session with transfers may use the same page's authenticated resume token to
+  replace its own still-registered session without signing `force`. The old session ends
+  with `failed`.
 - A browser offer with a single enabled application media section selects the data-only
   browser session. The SDP hash in the existing proof binds this selection. Both browser
   session kinds share desk admission and the account's signed device-check policy.
   Linux refuses a picture with `no_desktop`. Hosts without the terminal capability refuse
   the data-only offer with `no_terminal`. The data-only session negotiates no video and its
-  signaling offer carries zero viewer constraints.
+  signaling offer carries zero viewer constraints. Linux, macOS and Windows support this
+  session kind for control. The optional `workspace_access` field in host status is forwarded in the
+  browser's device report. The values `locked`, `no_user_session` and `view_only` are also
+  refusal reasons. Windows and macOS locks can end a data-only session with `locked`.
+  Switching away from the Mac's login session also reports `locked`. On Windows, sign-out
+  ends it with `no_user_session` and a direct change to a different user with `user_changed`.
 
 ## Session lifecycle
 
@@ -322,7 +331,12 @@ answer and the control hello confirm the host and its capabilities, the browser 
 request awaiting a reply. A request or reply is at most 64 KiB.
 
 `list` with no `path` starts at the host user's home. A path is an array of unpadded base64url
-components containing the original bytes. The empty array is the root. The host resolves the
+components. The empty array is the root. On Unix the root is `/` and the tokens preserve the
+original bytes. macOS resolves existing names and rename collisions using the volume's
+case and normalization rules.
+On Windows the first token of a filesystem path is a drive or UNC share. Windows names use
+UTF-8 where possible, and a 0xff byte followed by UTF-16LE units for names with unpaired
+surrogates. The drive listing has `roots:true` and supports navigation. The host resolves the
 directory on the first page, and `listing` returns that path, entries and an optional cursor.
 Entries identified as directories by the directory scan come first, with each group ordered
 by name bytes. The cursor starts the next page strictly after the last key, even if that entry is
@@ -333,9 +347,56 @@ The browser sends the resolved path when requesting the next page or changing an
 `mkdir`, `rename` and `delete` reply with `changed` on success or `error{why}` on failure.
 New names are one UTF-8 path component. The browser uses the listed name token to act on a
 file with a non-UTF-8 name. Directory deletion requires an empty directory. Deleting a
-symbolic link removes the link itself. A filesystem failure stays on the browse channel.
+symbolic link or Windows junction removes the link itself. Entries carry Unix `mode`
+and `owner` where available, or an `attributes` list containing any of `read_only`,
+`hidden` and `system`. A filesystem failure stays on the browse channel. This includes macOS
+privacy denials, which appear as `error{why:"denied"}` at the requested folder.
 When the host's two filesystem workers are occupied, the host replies with `error{why:"busy"}`
 on the browse channel. A worker stays occupied until its call returns.
+
+## Browser file transfers
+
+The browser opens a separate reliable, ordered `file-transfer` channel after the control hello
+confirms the capability. There is one active transfer. Attempts use increasing nonzero 32-bit
+IDs in the browser page, with the same ID across reconnects for the same attempt. Each binary
+frame starts with that ID and a 64-bit offset from the start, both unsigned
+big-endian, and carries up to 16,372 bytes. The complete frame is at most 16 KiB. A receiver
+grants four payloads of credit initially and returns credit through the absolute offset in
+`ack` after consuming data. A sender waits for credit before reading any further. The host
+services the terminal and browse channels before queuing another transfer frame. Waiting for
+data, credit or a reply times out after 30 seconds and interrupts the channel attempt.
+
+- For `upload{id,path,name,size}`, the host validates the destination and stages the file before
+  sending `ready{id,size,offset}`, which grants initial credit at the staged offset. An existing
+  regular file instead prompts with `conflict{id,size,modified}` (Unix seconds). The browser
+  answers `replace{id}` or `cancel{id}`. The host acknowledges writes and the browser sends
+  `finish{id,offset,sha256}` after all bytes are acknowledged. The host hashes the staged file
+  and, under the desk-seat guard, checks the staging path still names that file and publishes it
+  before replying `done{id,offset}`. On Windows, the host waits up to five seconds for the
+  worker's publish reply after sending the request. If that wait expires, it records
+  `error{id,why:"unconfirmed"}` as the terminal result. The file may already have been
+  published. The host prompts if a destination appears before the no-replace rename. If an
+  approved destination changes in identity, modification time or size, the host sends a new `conflict` with `changed:true` and waits for a fresh answer. Interrupting
+  that question keeps the original approval, and a resumed attempt checks the destination
+  and asks again if it still differs.
+  Only regular files are eligible for replacement. Browse reports `in_use` when a rename or
+  delete targets a live partial upload.
+- For `download{id,path,entry,limit?}`, the host opens one regular file and checks its size
+  against the optional byte limit. It replies `ready{id,size,offset:0}`. The browser grants initial
+  credit with `start{id,offset}` at its written offset and acknowledges bytes as it consumes them.
+  The host checks the original size and modification time, hashes the open file to EOF, and
+  checks the count against the advertised size. It rereads the written prefix on resume.
+  After the last acknowledgment it sends `finish{id,offset,sha256}`. The browser compares the
+  digest with its incremental hash, closes a streaming destination or retains the verified bytes
+  in memory for Save, then sends `done{id,offset}` and receives the host's echo. After `finish`,
+  a resume at EOF reuses the digest. A browser that has finished locally can reply to `ready`
+  with `done` at EOF. Digests are lowercase SHA-256 hex in both directions.
+- An authenticated page reopens the channel on recovery and sends `resume{id}`. It may resend the
+  initial request if it has received no offer response. The host repeats any terminal result
+  still pending on that ID. The start offset of a new attempt is zero.
+- The browser can send `cancel{id}`, or `error{id,why}` for local I/O, protocol, or integrity
+  failures. The host sends `error` when a transfer fails or is cancelled, after cleaning up
+  any staged upload.
 
 ## Browser terminal
 
@@ -367,7 +428,11 @@ DECSET and DECRST settings at the cut. The browser returns its ordinary output c
 replay and shows a localized notice when `opened.dropped` is true.
 Once the emulator acknowledges replay, the host applies the latest size and attempts to
 notify the foreground program even when the dimensions are identical. It logs a failure
-and continues with live I/O.
+and continues with live I/O. On Windows the size is set with `ResizePseudoConsole`.
+ConPTY controls whether it emits a redraw at the same size. Deskway forwards the emulator's
+UTF-8 bytes and replay restores the modes observed in ConPTY's output. ConPTY can remove
+bracketed-paste markers for a program without virtual terminal input enabled, in which case
+the paste arrives as text.
 
 Host `status` carries optional `kept_terminal` only while the shell is detached. It carries
 `since` (Unix seconds), `name`, and the verified device credential when available. The server

@@ -100,7 +100,7 @@ socket.onMessage = (m) => {
     case Signal.BYE: {
       if (onPairReply(m)) break;
       const s = currentSession();
-      if (s && m.session === s.id) s.connection.onSignal(m);
+      if (s && m.session === s.connection.id) s.connection.onSignal(m);
       break;
     }
   }
