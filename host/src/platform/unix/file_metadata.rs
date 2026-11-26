@@ -21,7 +21,7 @@ impl Drop for Directory {
 
 /// Read only the directory's names and type hints. DT_UNKNOWN stays in name order
 /// with the other entries instead of requiring a metadata call during the scan.
-pub fn read_names(path: &Path, mut visit: impl FnMut(&OsStr, bool)) -> io::Result<()> {
+pub fn read_names(path: &Path, mut visit: impl FnMut(&OsStr, bool) -> io::Result<()>) -> io::Result<()> {
     let path = CString::new(path.as_os_str().as_bytes())?;
     let dir = unsafe { libc::opendir(path.as_ptr()) };
     if dir.is_null() {
@@ -46,7 +46,7 @@ pub fn read_names(path: &Path, mut visit: impl FnMut(&OsStr, bool)) -> io::Resul
         }
         let name = unsafe { CStr::from_ptr(std::ptr::addr_of!((*entry).d_name).cast()) }.to_bytes();
         if !matches!(name, b"." | b"..") {
-            visit(OsStr::from_bytes(name), unsafe { (*entry).d_type } == libc::DT_DIR);
+            visit(OsStr::from_bytes(name), unsafe { (*entry).d_type } == libc::DT_DIR)?;
         }
     }
 }

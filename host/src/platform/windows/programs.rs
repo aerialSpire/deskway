@@ -262,22 +262,21 @@ impl Drop for Job {
     }
 }
 
-pub(super) fn open_pty(rows: u16, cols: u16, isolated: bool, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
+pub(super) fn browser_command() -> String {
+    let pwsh = super::known_folder(super::KnownFolder::ProgramFiles).join("PowerShell").join("7").join("pwsh.exe");
+    if pwsh.is_file() {
+        format!("\"{}\" -NoLogo -NoProfile", pwsh.display())
+    } else {
+        format!("{} -NoLogo -NoProfile", shell())
+    }
+}
+
+pub(super) fn open_pty(line: &str, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
     if !allowed() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let home = std::env::home_dir().ok_or(io::ErrorKind::NotFound)?;
-    let pwsh = super::known_folder(super::KnownFolder::ProgramFiles).join("PowerShell").join("7").join("pwsh.exe");
-    let mut line = if pwsh.is_file() {
-        format!("\"{}\" -NoLogo -NoProfile", pwsh.display())
-    } else {
-        format!("{} -NoLogo -NoProfile", shell())
-    };
-    if isolated {
-        // PSReadLine asks Windows for the roaming folder, which ignores APPDATA.
-        line.push_str(r" -NoExit -Command Set-PSReadLineOption -HistorySavePath (Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt')");
-    }
-    browser_pty(&line, &home, rows, cols, allowed)
+    browser_pty(line, &home, rows, cols, allowed)
 }
 
 fn browser_pty(line: &str, home: &std::path::Path, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {

@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc::RecvTimeoutError, Arc, Mutex};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -21,7 +21,7 @@ use super::{Link, Remote, RequestOp};
 use crate::platform::{Pty, WorkspaceState};
 use crate::workspace::{Answer, Browser, BrowserUser, Code, Conflict, Download, FileTransfers, Upload, WorkError};
 
-const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+const PUBLISH_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "browser", rename_all = "snake_case")]
@@ -115,13 +115,13 @@ impl Link {
         let (browse, resolve, upload, download) = (self.clone(), self.clone(), self.clone(), self.clone());
         BrowserUser {
             open: Arc::new(move |rows, cols| {
-                let id = self.browser_request::<Result<u64, PtyError>>(Operation::OpenPty { rows, cols })
-                    .ok_or(io::ErrorKind::BrokenPipe)??;
+                let id = self.browser_request::<Result<u64, PtyError>>(Operation::OpenPty { rows, cols }, None)
+                    .map_err(|_| io::ErrorKind::BrokenPipe)??;
                 Ok(Box::new(ResourceLink { link: self.clone(), id }))
             }),
             browse: Arc::new(move |request, seated| {
                 if seated() {
-                    if let Some((name, reply)) = browse.browser_request::<(Vec<u16>, Browse)>(Operation::Browse { request }) {
+                    if let Ok((name, reply)) = browse.browser_request::<(Vec<u16>, Browse)>(Operation::Browse { request }, None) {
                         if seated() { return (path(&name), reply); }
                     }
                 }
@@ -144,14 +144,17 @@ impl Link {
         }
     }
 
-    fn browser_request<T: DeserializeOwned>(&self, operation: Operation) -> Option<T> {
-        let value = self.request(RequestOp::Browser(operation), Some(REPLY_TIMEOUT))?.ok()?;
-        serde_json::from_value(value).ok()
+    fn browser_request<T: DeserializeOwned>(&self, operation: Operation, timeout: Option<Duration>) -> Result<T, Error> {
+        let answer = self.request(RequestOp::Browser(operation), timeout).map_err(|err| match err {
+            RecvTimeoutError::Timeout => Error::Unconfirmed,
+            RecvTimeoutError::Disconnected => Error::Cancelled,
+        })?;
+        serde_json::from_value(answer.map_err(|_| Error::Cancelled)?).map_err(|_| Error::Cancelled)
     }
 
     fn files<T: DeserializeOwned>(&self, operation: Operation, seated: &dyn Fn() -> bool) -> Result<T, Error> {
         if !seated() { return Err(Error::Cancelled); }
-        self.browser_request(operation).unwrap_or(Err(Error::Cancelled))
+        self.browser_request(operation, None)?
     }
 }
 
@@ -171,8 +174,8 @@ impl ResourceLink {
     }
 
     fn pty<T: DeserializeOwned>(&self, step: Step) -> io::Result<T> {
-        let result: Result<T, PtyError> = self.link.browser_request(Operation::Step { resource: self.id, step })
-            .ok_or(io::ErrorKind::BrokenPipe)?;
+        let result: Result<T, PtyError> = self.link.browser_request(Operation::Step { resource: self.id, step }, None)
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
         result.map_err(io::Error::from)
     }
 }
@@ -205,7 +208,7 @@ impl Upload for ResourceLink {
     }
 
     fn publish(&mut self) -> Result<bool, Error> {
-        self.files(Step::Publish, &|| true)
+        self.link.browser_request(Operation::Step { resource: self.id, step: Step::Publish }, Some(PUBLISH_REPLY_TIMEOUT))?
     }
 }
 

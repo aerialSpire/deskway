@@ -25,6 +25,7 @@ wire_values! {
         "cancelled" => Cancelled,
         "integrity" => Integrity,
         "expired" => Expired,
+        "unconfirmed" => Unconfirmed,
     }
 }
 

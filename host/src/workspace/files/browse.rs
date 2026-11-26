@@ -105,18 +105,20 @@ fn list(path: &Path, cursor: Option<&str>, limit: usize, seated: &dyn Fn() -> bo
     let mut more = false;
     let now = std::time::SystemTime::now();
     native::read_names(path, |name, folder| {
+        if !seated() { return Err(io::ErrorKind::PermissionDenied.into()); }
         if super::transfer::partial_name(name) {
             super::transfer::sweep_entry(path, name, now, seated);
         }
         let key = (!folder, name.to_os_string());
         if after.as_ref().is_some_and(|after| &key <= after) {
-            return;
+            return Ok(());
         }
         page.insert(key);
         if page.len() > limit {
             more = true;
             page.pop_last();
         }
+        Ok(())
     }).map_err(file_error)?;
     let mut owners = native::Owners::default();
     let mut entries = Vec::new();
@@ -244,14 +246,14 @@ pub fn call(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Browse) {
 
 #[cfg(test)]
 #[test]
-fn a_listing_revoked_after_admission_returns_denied() {
+fn a_listing_stops_at_the_first_entry_check_that_denies_access() {
     let dir = std::env::temp_dir().join(format!("deskway-browse-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
     fs::create_dir(&dir).unwrap();
-    for name in ["first", "second"] {
+    for name in ["first", "second", "third", "fourth"] {
         fs::write(dir.join(name), []).unwrap();
     }
     let path: Vec<_> = native::path_parts(&dir).iter().map(|name| encode(name)).collect();
-    for checks_allowed in [1, 2, 3] {
+    for checks_allowed in [1, 2, 3, 5, 6, 9] {
         let checked = std::cell::Cell::new(0);
         let (_, reply) = call(Browse::List { path: Some(path.clone()), cursor: None }, &|| {
             let n = checked.get();
@@ -259,6 +261,7 @@ fn a_listing_revoked_after_admission_returns_denied() {
             n < checks_allowed
         });
         assert_eq!(reply, Browse::Error { why: Error::Denied });
+        assert_eq!(checked.get(), checks_allowed + 1, "checked another entry after revocation");
     }
     fs::remove_dir_all(dir).unwrap();
 }

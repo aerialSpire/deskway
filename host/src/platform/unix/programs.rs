@@ -169,7 +169,15 @@ impl BrowserPty {
     }
 
     fn reap(&mut self) -> io::Result<()> {
-        let status = self.terminal.child.wait()?;
+        // macOS holds an exiting process until the output it left in the terminal is read.
+        let status = loop {
+            if let Some(status) = self.terminal.child.try_wait()? {
+                break status;
+            }
+            if !matches!(self.terminal.master.read(&mut [0; 4096]), Ok(n) if n > 0) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
         self.status = Some(status.code().unwrap_or_else(|| -status.signal().expect("process exit signal")));
         Ok(())
     }
@@ -328,8 +336,8 @@ mod tests {
         });
         pty.resize(31, 93).unwrap();
         pty.write_all(b"last line\n").unwrap();
-        wait(|| pty.exit().unwrap() == Some(17));
         wait(|| read(&mut pty, &mut output));
+        wait(|| pty.exit().unwrap() == Some(17));
         assert_eq!(output, b"\x1b[31mready\x1b[0m\r\n24 80\r\n31 93\r\nlast line\r\n");
     }
 
@@ -350,7 +358,7 @@ mod tests {
         command.args(["-ic", "trap '' HUP; sleep 300 </dev/null >/dev/null 2>&1 & echo $!; exit 17"]);
         let mut pty = BrowserPty::start(command, 24, 80, || true).unwrap();
         let id = pty.terminal.pid() as libc::pid_t;
-        wait(|| pty.exited().unwrap());
+        wait(|| { read(&mut pty, &mut Vec::new()); pty.exited().unwrap() });
         let jobs: Vec<_> = crate::platform::session_members(id).unwrap().into_iter().filter(|&pid| pid != id).collect();
         assert_eq!(jobs.len(), 1);
         assert_ne!(unsafe { libc::getpgid(jobs[0]) }, id);

@@ -135,7 +135,9 @@ Terminal. A session with no terminal has an ordinary Disconnect dialog.
 
 The Files and Terminal views share one transfer list. Changing views keeps the list and its
 transfers running. During ICE recovery the active transfer is marked interrupted and the queue
-waits. On return the page opens a fresh transfer channel and continues at the receiver's offset.
+waits. On return the page opens a fresh transfer channel and continues at the receiver's offset
+or receives an outcome the host already recorded. If the Windows worker did not confirm an
+upload's publish result before the reply deadline, that transfer ends in failure.
 If the established connection ends with `failed` or `gone` with unfinished transfers, the page also
 makes one non-forced admission attempt with its resume token and retains the session view.
 The new connection reattaches a terminal opened in that page at its last dimensions, including

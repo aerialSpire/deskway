@@ -109,6 +109,7 @@ pub(crate) fn sweep_home(seated: &dyn Fn() -> bool) {
             if partial_name(name) {
                 sweep_entry(&home, name, now, seated);
             }
+            Ok(())
         });
     }
 }

@@ -8,7 +8,7 @@ const number = new Intl.NumberFormat();
 const sizeText = (bytes) => bytes < 1024 ? t('files.transfer.byteSize', { size: number.format(Math.round(bytes)) }) : fmtSize(bytes);
 const errors = {
   changed: 'changed', limit: 'limit', not_regular: 'notRegular', integrity: 'integrity',
-  expired: 'expired', size: 'size', local_io: 'localIo',
+  expired: 'expired', size: 'size', local_io: 'localIo', unconfirmed: 'unconfirmed',
 };
 
 export class TransferList {
@@ -72,7 +72,7 @@ export class TransferList {
         : job.problem === 'protocol' ? 'files.error.io' : 'files.error.' + job.problem;
       const reason = t(cancelled ? 'files.transfer.cancelled' : key, { limit: DOWNLOAD_LIMIT / 1048576 });
       return { label: t('files.transfer.failure', { name, reason }), tone: cancelled ? null : 'bad',
-        actions: [action('files.transfer.tryAgain', this.transfers.retry)], close: dismiss };
+        actions: job.problem === 'unconfirmed' ? [] : [action('files.transfer.tryAgain', this.transfers.retry)], close: dismiss };
     }
     const close = job.saving || job.phase === 'stopping' || job.problem ? null
       : { label: t('common.cancel'), run: () => this.transfers.stop(job) };

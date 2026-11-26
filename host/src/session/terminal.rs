@@ -255,18 +255,25 @@ impl Terminal {
     }
 
     fn pump(&mut self, ch: &mut Channel<'_>) -> anyhow::Result<Option<Instant>> {
-        let replied = if let Some(reply) = &self.reply {
+        if let Some(reply) = &self.reply {
             if !ch.write(false, &serde_json::to_vec(reply)?)? {
                 return Ok(Some(Instant::now() + POLL));
             }
             self.reply = None;
-            true
-        } else {
-            false
-        };
-        let Some(stream) = &mut self.stream else { return Ok(replied.then(Instant::now)) };
+            if self.stream.is_none() {
+                return Ok(Some(Instant::now()));
+            }
+        }
+        self.pump_stream(ch.buffered_amount(), |binary, data| Ok(ch.write(binary, data)?))
+    }
+
+    fn pump_stream(&mut self, buffered: usize, mut send: impl FnMut(bool, &[u8]) -> anyhow::Result<bool>) -> anyhow::Result<Option<Instant>> {
+        let Some(stream) = &mut self.stream else { return Ok(None) };
         let Some(result) = self.lease.with_shell(|shell| {
-            stream.pump(shell, ch.buffered_amount(), |binary, data| Ok(ch.write(binary, data)?))
+            stream.pump(shell, buffered, |binary, data| {
+                if binary && !self.lease.accessible() { return Ok(false); }
+                send(binary, data)
+            })
         }) else { return Ok(None) };
         let (progress, exit) = result?;
         if let Some(code) = exit {

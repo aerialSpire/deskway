@@ -119,6 +119,8 @@ export const area = {
     const env = {
       ...process.env, APPDATA: roaming, LOCALAPPDATA: localData, USERPROFILE: home, HOME: home,
       DESKWAY_HOME: home, DESKWAY_TEST_WORKSPACE_LOCK: lock,
+      // PSReadLine finds the Windows roaming folder even with APPDATA set.
+      DESKWAY_TEST_WORKSPACE_SHELL: "powershell.exe -NoLogo -NoProfile -NoExit -Command Set-PSReadLineOption -HistorySavePath (Join-Path $env:APPDATA 'workspace-history.txt')",
     };
     const exec = (exe, args, env) => command(exe, args, { env, windowsHide: true, timeout: 30000, encoding: 'utf8' });
     const { stdout } = await exec(serverExe, ['admin', user, '-data', state]);

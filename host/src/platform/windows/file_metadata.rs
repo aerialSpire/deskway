@@ -126,11 +126,11 @@ pub fn roots() -> io::Result<Vec<OsString>> {
         .map(|i| OsString::from(format!("{}:", char::from(b'A' + i)))).collect())
 }
 
-pub fn read_names(path: &Path, mut visit: impl FnMut(&OsStr, bool)) -> io::Result<()> {
+pub fn read_names(path: &Path, mut visit: impl FnMut(&OsStr, bool) -> io::Result<()>) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let meta = entry.metadata()?;
-        visit(&entry.file_name(), meta.is_dir() && !is_link(&meta));
+        let kind = entry.file_type()?;
+        visit(&entry.file_name(), kind.is_dir() && !kind.is_symlink())?;
     }
     Ok(())
 }
@@ -387,7 +387,10 @@ mod tests {
         let flags = FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM;
         unsafe { SetFileAttributesW(&wide, flags) }.unwrap();
         let mut listed = false;
-        read_names(&dir, |name, folder| listed |= name == "hidden" && !folder).unwrap();
+        read_names(&dir, |name, folder| {
+            listed |= name == "hidden" && !folder;
+            Ok(())
+        }).unwrap();
         assert!(listed);
         assert_eq!(attributes(&path.symlink_metadata().unwrap()).unwrap(), ["read_only", "hidden", "system"]);
         unsafe { SetFileAttributesW(&wide, FILE_ATTRIBUTE_NORMAL) }.unwrap();

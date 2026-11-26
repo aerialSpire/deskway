@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -77,17 +77,15 @@ impl Link {
         self.waiting.lock().unwrap().as_mut()?.remove(&id)
     }
 
-    fn request(&self, op: RequestOp, timeout: Option<Duration>) -> Option<Answer> {
+    fn request(&self, op: RequestOp, timeout: Option<Duration>) -> Result<Answer, RecvTimeoutError> {
         let (tx, rx) = channel();
-        let id = self.send(op, Some(tx))?;
-        let Some(timeout) = timeout else { return rx.recv().ok(); };
-        match rx.recv_timeout(timeout) {
-            Ok(answer) => Some(answer),
-            Err(_) => {
-                self.remove(id);
-                None
-            }
+        let id = self.send(op, Some(tx)).ok_or(RecvTimeoutError::Disconnected)?;
+        let Some(timeout) = timeout else { return rx.recv().map_err(|_| RecvTimeoutError::Disconnected); };
+        let reply = rx.recv_timeout(timeout);
+        if reply.is_err() {
+            self.remove(id);
         }
+        reply
     }
 }
 
@@ -157,7 +155,7 @@ impl Remote {
 
     fn request(&self, op: RequestOp) -> Answer {
         let link = self.worker.lock().unwrap().clone().ok_or_else(|| self.absent())?;
-        link.request(op, None).unwrap_or_else(|| Err(self.absent()))
+        link.request(op, None).unwrap_or_else(|_| Err(self.absent()))
     }
 }
 
@@ -178,7 +176,7 @@ impl Workspace for Remote {
 /// The worker's side: answers every request, each on a thread of its own, until the pipe closes.
 pub fn serve(pipe: Arc<Pipe>, ws: Arc<dyn Workspace>, user: bool) -> Result<()> {
     let notices = pipe.clone();
-    let browser = user.then(|| crate::platform::workspace::browser(None));
+    let browser = user.then(|| crate::platform::workspace::browser(None, None));
     let watch = browser.as_ref().and_then(|browser| crate::platform::workspace::WorkspaceWatch::start(browser.state.clone(), move |state| {
         let _ = notices.send_json(&Reply::Workspace(state));
     }).ok());
@@ -255,9 +253,9 @@ mod tests {
         let client = connect.join().unwrap();
         let link = Link::new(pipe);
         let timeout = Duration::from_millis(20);
-        assert!(link.request(RequestOp::Browser(browser::Operation::Step {
+        assert!(matches!(link.request(RequestOp::Browser(browser::Operation::Step {
             resource: 1, step: browser::Step::Publish,
-        }), Some(timeout)).is_none());
+        }), Some(timeout)), Err(RecvTimeoutError::Timeout)));
         assert!(matches!(client.recv_json::<Request>().unwrap().op, RequestOp::Browser(_)));
         assert!(link.waiting.lock().unwrap().as_ref().unwrap().is_empty());
     }

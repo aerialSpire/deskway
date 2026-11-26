@@ -165,7 +165,7 @@ export class FileTransfers {
         if (job.parked && m.why === 'expired') {
           this.jobs = this.jobs.filter((queued) => queued.phase !== 'waiting');
         }
-        this.end(job, job.problem || m.why);
+        this.end(job, m.why === 'unconfirmed' ? m.why : (job.problem || m.why));
       }
       return;
     }

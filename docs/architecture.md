@@ -161,9 +161,9 @@ until it has up to 2,000 readable entries, with its own `more` field. The browse
 checks access before describing each page entry and before each transfer filesystem step.
 A transfer holds one worker slot so a second slot can service browsing. Its channel and receiver credit limit the amount of transfer data
 competing with terminal and browse traffic. On Windows, file handles and ConPTY live in the
-ordinary user worker. A worker request for PTY bytes or file contents carries up to one frame
-and waits up to five seconds for its reply after the pipe send. An unanswered transfer request
-interrupts its channel attempt and releases any held registry guard. ConPTY has a bounded
+ordinary user worker. A worker request for PTY bytes or file contents carries up to one frame.
+Publishing an upload, the one request made while holding the registry guard, waits up to five
+seconds for its reply; an unanswered publish fails the transfer as unconfirmed and releases the guard. ConPTY has a bounded
 input queue and supplies up to the requested output capacity. The Windows foreground host
 uses the same filesystem and ConPTY code in-process. On macOS and Linux the workspace uses
 the shared Unix PTY and filesystem metadata code.

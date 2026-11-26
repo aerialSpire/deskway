@@ -172,7 +172,7 @@ export const CHANNELS = Object.freeze({
       finish: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i', sha256: 's' }),
       done: msg(`${B2H},${H2B}`, { id: 'i', offset: 'i' }),
       cancel: msg(B2H, { id: 'i' }),
-      error: msg(`${B2H},${H2B}`, { id: 'i', why: 's:not_found|denied|exists|invalid_name|invalid_path|busy|io|not_regular|changed|size|limit|protocol|cancelled|integrity|expired' }),
+      error: msg(`${B2H},${H2B}`, { id: 'i', why: 's:not_found|denied|exists|invalid_name|invalid_path|busy|io|not_regular|changed|size|limit|protocol|cancelled|integrity|expired|unconfirmed' }),
     }),
   },
   terminal: {

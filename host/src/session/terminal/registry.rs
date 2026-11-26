@@ -156,7 +156,7 @@ impl Lease {
         (!state.stopping && state.seat.as_deref() == Some(self.id.as_str()) && self.accessible()).then(run)
     }
 
-    fn accessible(&self) -> bool {
+    pub(super) fn accessible(&self) -> bool {
         let state = (self.shared.access)();
         state.user == Some(self.user) && state.refusal(false).is_none()
     }
@@ -374,7 +374,7 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::Stream;
+    use super::super::{Stream, Terminal};
     use std::collections::VecDeque;
     use std::io::{Read, Write};
     use wire::terminal::OUTPUT_WINDOW;
@@ -481,6 +481,47 @@ mod tests {
             registry.user_changed();
             assert!(registry.status().is_none());
             assert_eq!(process.lock().unwrap().drops, 1);
+        }
+    }
+
+    #[test]
+    fn revocation_before_queueing_live_output_or_replay_keeps_the_bytes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (updates, _) = std::sync::mpsc::channel();
+        let process = Arc::new(Mutex::new(Process { output: b"kept output".iter().copied().collect(), ..Process::default() }));
+        let revoke = Arc::new(AtomicBool::new(false));
+        let locked = Arc::new(AtomicBool::new(false));
+        let access = {
+            let (revoke, locked) = (revoke.clone(), locked.clone());
+            Arc::new(move || {
+                let state = WorkspaceState { locked: locked.load(Ordering::Relaxed), ..WorkspaceState::READY };
+                if revoke.swap(false, Ordering::Relaxed) {
+                    locked.store(true, Ordering::Relaxed);
+                }
+                state
+            })
+        };
+        let registry = Registry::guarded(Arc::new(move |_, _, _| Ok(Box::new(FakePty(process.clone())))), access, updates);
+        for (id, withhold) in [("live", true), ("replay", true), ("return", false)] {
+            locked.store(false, Ordering::Relaxed);
+            let mut terminal = Terminal::new(registry.admit(id.into(), "browser".into(), "device".into()));
+            terminal.open(24, 80);
+            if withhold {
+                // The attachment check succeeds, then access is revoked before the frame is queued.
+                revoke.store(true, Ordering::Relaxed);
+                terminal.pump_stream(0, |_, _| panic!("queued output after revocation")).unwrap();
+                assert!(locked.load(Ordering::Relaxed));
+            } else {
+                let mut sent = Vec::new();
+                terminal.pump_stream(0, |binary, data| {
+                    assert!(binary);
+                    sent.extend_from_slice(data);
+                    Ok(true)
+                }).unwrap();
+                assert_eq!(sent, b"kept output");
+            }
+            registry.end(id, "locked");
         }
     }
 

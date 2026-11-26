@@ -92,7 +92,8 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
         if lock.is_none() {
             crate::platform::workspace::sweep_home();
         }
-        (Arc::new(crate::workspace::Local::default()), None, crate::platform::workspace::browser(lock))
+        let command = std::env::var("DESKWAY_TEST_WORKSPACE_SHELL").ok();
+        (Arc::new(crate::workspace::Local::default()), None, crate::platform::workspace::browser(lock, command))
     } else {
         use super::worker::Kind;
         use crate::workspace::remote::Remote;

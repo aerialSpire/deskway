@@ -372,9 +372,11 @@ data, credit or a reply times out after 30 seconds and interrupts the channel at
   answers `replace{id}` or `cancel{id}`. The host acknowledges writes and the browser sends
   `finish{id,offset,sha256}` after all bytes are acknowledged. The host hashes the staged file
   and, under the desk-seat guard, checks the staging path still names that file and publishes it
-  before replying `done{id,offset}`. The host prompts if a destination appears before the
-  no-replace rename. If an approved destination changes in identity, modification time or size,
-  the host sends a new `conflict` with `changed:true` and waits for a fresh answer. Interrupting
+  before replying `done{id,offset}`. On Windows, the host waits up to five seconds for the
+  worker's publish reply after sending the request. If that wait expires, it records
+  `error{id,why:"unconfirmed"}` as the terminal result. The file may already have been
+  published. The host prompts if a destination appears before the no-replace rename. If an
+  approved destination changes in identity, modification time or size, the host sends a new `conflict` with `changed:true` and waits for a fresh answer. Interrupting
   that question keeps the original approval, and a resumed attempt checks the destination
   and asks again if it still differs.
   Only regular files are eligible for replacement. Browse reports `in_use` when a rename or

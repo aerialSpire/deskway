@@ -706,6 +706,20 @@ mod tests {
         }
     }
 
+    struct UnconfirmedUpload;
+
+    impl Upload for UnconfirmedUpload {
+        fn conflict(&mut self, _: &dyn Fn() -> bool) -> Result<Option<crate::workspace::Conflict>, Error> {
+            Ok(None)
+        }
+
+        fn accept_conflict(&mut self, _: &dyn Fn() -> bool) -> Result<(), Error> { unreachable!() }
+        fn prepare(&mut self, _: &dyn Fn() -> bool) -> Result<u64, Error> { Ok(0) }
+        fn write(&mut self, _: &[u8], _: &dyn Fn() -> bool) -> Result<(), Error> { unreachable!() }
+        fn verify(&mut self, _: &str, _: &dyn Fn() -> bool) -> Result<(), Error> { Ok(()) }
+        fn publish(&mut self) -> Result<bool, Error> { Err(Error::Unconfirmed) }
+    }
+
     fn pipe(lease: Lease, wait: Duration) -> (Pipe, SyncSender<Packet>, Receiver<Packet>) {
         let (input, incoming) = mpsc::sync_channel(SLOTS);
         let (outgoing, output) = mpsc::sync_channel(SLOTS);
@@ -842,6 +856,34 @@ mod tests {
         assert_eq!(download(1, size, &mut Source(size, true), &mut digest, &pipe), Err(Error::Cancelled));
         assert!(digest.is_none());
         assert_eq!(output.try_iter().filter(|packet| matches!(packet, Packet::Data(_))).count(), WINDOW / CHUNK);
+    }
+
+    #[test]
+    fn an_unconfirmed_publish_repeats_its_failure_on_resume() {
+        let (updates, _) = mpsc::channel();
+        let terminals = Terminals::new(|_, _| unreachable!(), updates);
+        let lease = terminals.admit("desk".into(), "browser".into(), "device".into());
+        let (wake, _) = mpsc::channel();
+        let files = FileTransfers {
+            path: Arc::new(|_, _, _, _| Ok(PathBuf::from("file"))),
+            upload: Arc::new(|_, _, _| Ok(Box::new(UnconfirmedUpload))),
+            download: Arc::new(|_, _| unreachable!()),
+        };
+        let mut registry = Registry::default();
+        let page = registry.admit("device", "page", "desk", Instant::now() + WAIT);
+        let mut transfers = Transfers::new(files, page, lease, wake);
+        assert!(transfers.offer(1, vec![], "file".into(), Direction::Upload(0)));
+        assert!(transfers.start());
+        let job = transfers.job.as_ref().unwrap();
+        let read = || job.output.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(matches!(read(), Packet::Text(Msg::Ready { id: 1, offset: 0, .. })));
+        job.input.as_ref().unwrap().send(Packet::Text(Msg::Finish { id: 1, offset: 0, sha256: String::new() })).ok().unwrap();
+        assert!(matches!(read(), Packet::End(Msg::Error { id: 1, why: Error::Unconfirmed })));
+
+        transfers.detach();
+        assert!(transfers.resume(1));
+        assert!(transfers.start());
+        assert!(matches!(transfers.pending, Some(Packet::End(Msg::Error { id: 1, why: Error::Unconfirmed }))));
     }
 
     #[test]
