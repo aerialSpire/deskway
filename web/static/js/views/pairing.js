@@ -9,7 +9,7 @@ import { keyCode, normalizeCode } from '../auth-messages.js';
 import { Signal } from '../proto.js';
 import { state, setView } from '../state.js';
 import { dialog, gotIt, closeDialogs } from '../dialogs.js';
-import { codeBox } from './common.js';
+import { codeBox, noDesktop, showNoDesktop } from './common.js';
 
 // Pairing requests waiting for the computer's reply, by session id.
 const pairings = new Map();
@@ -52,6 +52,7 @@ async function pairDevice(d, code) {
 
 // Asks the person sitting at the computer: its panel shows this device and six digits.
 async function requestControl(d, open) {
+  if (noDesktop(state.devices.find((x) => x.id === d.id) || d)) { showNoDesktop(); return; }
   let rec;
   let vouch;
   try {
@@ -87,6 +88,7 @@ async function requestControl(d, open) {
 
 // This device cannot control the computer yet: say how to change that, in one screen.
 export function showNotAdded(d, open) {
+  if (noDesktop(d)) { showNoDesktop(); return; }
   dialog(t('notAdded.title', { name: d.name }), h('div', {},
     h('p', {}, t('notAdded.intro')),
     h('p', {}, t('notAdded.qr')),
@@ -117,12 +119,14 @@ export function offerQrPair(open) {
     gotIt(t('qr.notFoundTitle'), t('qr.notFoundText'));
     return;
   }
+  if (noDesktop(d)) { showNoDesktop(); return; }
   const off = h('input', { type: 'checkbox' });
   dialog(t('qr.title', { name: d.name }), h('div', {},
     h('p', {}, t('qr.text')),
     h('label', { class: 'check' }, off, t('qr.alsoOff'))), [
     { label: t('common.cancel') },
     { label: t('qr.add'), primary: true, run: async () => {
+      if (noDesktop(state.devices.find((x) => x.id === d.id) || d)) { showNoDesktop(); return; }
       try {
         await pairDevice(d, code);
         if (off.checked) await setPolicy(false);

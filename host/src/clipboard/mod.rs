@@ -9,10 +9,9 @@
 //!   `platform/macos/clipboard.rs`).
 //! - The format model and the conversions that are the same on every platform.
 
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use wire::types::{self as types, ClipboardError, FormatKind, Item};
+use wire::types::{self as types, ClipboardError, FormatKind};
 
 pub mod image;
 #[cfg(any(windows, test))]
@@ -32,22 +31,7 @@ pub const INLINE_MAX: usize = 48 * 1024;
 /// longer is given up, as a stalled file transfer is (`transfer::STALL`).
 pub const RENDER_DEADLINE: Duration = Duration::from_secs(30);
 
-/// One clipboard format, as it crosses the agent pipe. The same fields as the wire `Format`,
-/// without its skipped fields (the pipe's encoding is not self-describing).
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
-pub struct Format {
-    pub kind: FormatKind,
-    pub size: Option<u64>,
-    pub w: Option<u32>,
-    pub h: Option<u32>,
-    pub items: Option<Vec<Item>>,
-}
-
-impl Format {
-    pub fn of(kind: FormatKind) -> Format {
-        Format { kind, size: None, w: None, h: None, items: None }
-    }
-}
+pub use crate::platform::ClipFormat as Format;
 
 impl From<types::Format> for Format {
     fn from(f: types::Format) -> Format {

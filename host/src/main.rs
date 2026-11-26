@@ -1,17 +1,25 @@
 //! Deskway host: runs on the computer being controlled.
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+// A host with no desktop still compiles the desktop interfaces the shared code is written
+// against (`Platform`, `Workspace`); it never calls them. Unused code is caught on the desktop builds.
+#![cfg_attr(not(desktop_host), allow(dead_code))]
 
 mod audit;
 mod auth;
+#[cfg(desktop_host)]
 mod clipboard;
 mod config;
 mod display;
 mod i18n;
+#[cfg(desktop_host)]
 mod icon;
+#[cfg(desktop_host)]
 mod input;
 mod mcp;
 mod platform;
+#[cfg(desktop_host)]
 mod power;
+#[cfg(desktop_host)]
 mod product;
 #[cfg(windows)]
 mod service;
@@ -19,13 +27,16 @@ mod session;
 mod settings;
 mod signal;
 mod tools;
+#[cfg(desktop_host)]
 mod transfer;
+#[cfg(desktop_host)]
 mod ui;
+#[cfg(desktop_host)]
 mod video;
 mod workspace;
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::sync::Arc;
 
 use i18n::{t, tf};
@@ -40,10 +51,20 @@ fn read_password() -> Result<String> {
     if let Ok(p) = std::env::var("DESKWAY_PASSWORD") {
         return Ok(p);
     }
-    print!("{}", t("cli.password_prompt"));
-    std::io::stdout().flush()?;
+    let stdin = std::io::stdin();
     let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
+    let mut read = || {
+        let mut stdout = std::io::stdout().lock();
+        write!(stdout, "{}", t("cli.password_prompt"))?;
+        stdout.flush()?;
+        stdin.lock().read_line(&mut line)
+    };
+    if stdin.is_terminal() {
+        platform::without_echo(read)?;
+        println!();
+    } else {
+        read()?;
+    }
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
 
@@ -102,6 +123,7 @@ pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: O
 /// Withdraws a sign-in that was never put to use (the service's elevated step was declined):
 /// the server forgets the computer it just added. Signing out never does this; only removing
 /// the computer from the account does.
+#[cfg(desktop_host)]
 pub fn withdraw(cfg: &config::Config) -> Result<()> {
     agent()?
         .post(&format!("{}/api/host/leave?id={}", cfg.server, cfg.id))
@@ -115,12 +137,17 @@ fn enroll_command(args: &[String]) -> Result<()> {
     let server = flag(args, "--server").with_context(|| need("--server"))?;
     let user = flag(args, "--user").with_context(|| need("--user"))?;
     let name = flag(args, "--name").unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    let _lock = platform::lock()?;
     let cfg = config::Config::settle(enroll_with(&server, &user, &read_password()?, &name, config::Config::kept().as_ref())?)?;
     println!("{}", tf("cli.enrolled", &[("name", shown_name(&cfg.name))]));
+    #[cfg(target_os = "linux")]
+    platform::run(cfg)?;
     Ok(())
 }
 
 fn main() -> Result<()> {
+    #[cfg(desktop_host)]
     platform::attach_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     #[cfg(target_os = "macos")]
@@ -145,6 +172,7 @@ fn main() -> Result<()> {
         Some("enroll") => enroll_command(&args),
         // Opens a ten-minute window for pairing one passkey, and prints its code. With the
         // service installed this needs an administrator.
+        #[cfg(desktop_host)]
         Some("pair") => admin_command(&args, |dialog| {
             let code = auth::Trust::start_pairing(&config::dir()?)?;
             let text = tf("cli.pair_code", &[("code", code.to_string())]);
@@ -152,6 +180,7 @@ fn main() -> Result<()> {
             Ok(())
         }),
         // Lists the paired passkeys, or removes one (`unpair ID`) or all (`unpair --all`).
+        #[cfg(desktop_host)]
         Some("passkeys") => admin_command(&args, |dialog| {
             let cfg = config::Config::load()?;
             let t = auth::Trust::open(config::dir()?, &cfg.id, &cfg.server)?;
@@ -159,6 +188,7 @@ fn main() -> Result<()> {
             if dialog { platform::message(product::NAME, &text) } else if !text.is_empty() { println!("{text}") }
             Ok(())
         }),
+        #[cfg(desktop_host)]
         Some("unpair") => admin_command(&args, |dialog| {
             let cfg = config::Config::load()?;
             let mut t = auth::Trust::open(config::dir()?, &cfg.id, &cfg.server)?;
@@ -232,6 +262,7 @@ fn main() -> Result<()> {
         #[cfg(windows)]
         Some("worker") => service::worker::run(if args.iter().any(|a| a == "--admin") { service::worker::Kind::Admin } else { service::worker::Kind::User }),
         // Shows the on-screen indicator for a made-up controller.
+        #[cfg(desktop_host)]
         Some("indicator-test") => {
             platform::platform_init();
             ui::indicator_test()
@@ -244,6 +275,7 @@ fn main() -> Result<()> {
             platform::platform_init();
             platform::ui::border_capture_test()
         }
+        #[cfg(desktop_host)]
         None | Some("--at-login") => {
             let at_login = args.iter().any(|a| a == "--at-login");
             // Automatic start turned off: nothing at all runs at sign-in.
@@ -257,12 +289,18 @@ fn main() -> Result<()> {
             }
             ui::run(at_login)
         }
+        #[cfg(target_os = "linux")]
+        None => {
+            let _lock = platform::lock()?;
+            platform::run(config::Config::load()?)
+        }
         Some(other) => bail!(tf("err.unknown_command", &[("cmd", other.to_string())])),
     }
 }
 
 /// Runs `f` against the machine-wide data when the service is installed (elevating first if
 /// needed), or against this user's data otherwise. `f` gets whether to answer in a dialog.
+#[cfg(desktop_host)]
 fn admin_command(args: &[String], f: impl FnOnce(bool) -> Result<()>) -> Result<()> {
     let dialog = args.iter().any(|a| a == "--dialog");
     // An explicit DESKWAY_HOME (tests, a second copy) means that copy's data, not the service's.

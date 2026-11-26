@@ -370,6 +370,8 @@
   "session.takenText": "You were disconnected at {time}. Your keys were released; programs on the computer keep running.",
   "session.backToList": "Back to the list",
   "session.takeBack": "Take back",
+  "session.noDesktopTitle": "No desktop on this computer",
+  "session.noDesktopText": "This computer cannot share a desktop session.",
   "session.permissionsTitle": "This Mac lacks remote control permissions",
   "session.permissionsText": "Open Deskway on this Mac, grant Screen Recording and Accessibility as its panel asks, then connect again.",
   "session.endedTitle": "Disconnected",

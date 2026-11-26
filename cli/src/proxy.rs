@@ -47,7 +47,7 @@ enum Request {
 
 /// The account's computers as this AI client sees them; `this_computer`: the one it runs on
 /// (its screen shows this AI client's own windows); `missing_tools`: what this AI client offers
-/// and the computer does not carry out (its Deskway is older), when it said and lacks any.
+/// and the computer does not carry out, based on the tools in its hello.
 fn computers(list: &Value) -> Value {
     Value::Array(
         list.as_array()
@@ -176,7 +176,7 @@ impl Hub {
                 let tool = request["params"]["name"].as_str().unwrap_or_default();
                 if !carries(&d, tool) {
                     let name = d["name"].as_str().unwrap_or(&id);
-                    let _ = reply.send(json!({ "jsonrpc": "2.0", "id": request["id"], "result": link::error_result("unsupported", &format!("{name} does not have {tool}: its Deskway is older than this AI client"), "A person updates Deskway on that computer; computers lists what it lacks.") }));
+                    let _ = reply.send(json!({ "jsonrpc": "2.0", "id": request["id"], "result": link::error_result("unsupported", &format!("{name} does not offer {tool}"), "Call computers to see which tools are missing.") }));
                     return;
                 }
                 if !self.links.contains_key(&id) {

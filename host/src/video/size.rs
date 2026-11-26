@@ -5,6 +5,8 @@
 //! says which H.264 level it accepts before it has said more. The result keeps the source's
 //! aspect ratio, has even dimensions (4:2:0 chroma), and fits the H.264 level it is encoded at.
 
+use crate::platform::Constraints;
+
 /// The most frames a second the capture loop sends. A viewer asks for fewer to get each one
 /// sharper (the browser's Sharper picture asks for 2).
 pub const FPS: u32 = 24;
@@ -122,22 +124,6 @@ impl ProfileLevelId {
         });
         ProfileLevelId::parse(value.unwrap_or("42000a"))
     }
-}
-
-/// What the viewer accepts. Zero means "not known".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Constraints {
-    /// Viewport, device pixels.
-    pub w: u32,
-    pub h: u32,
-    /// Largest size the viewer decodes smoothly (MediaCapabilities), as a box.
-    pub max_w: u32,
-    pub max_h: u32,
-    /// Frames a second the viewer takes: what it decodes smoothly at that size, or fewer when
-    /// the person prefers a sharper picture to a smoother one.
-    pub fps: u32,
-    /// `level_idc` from the negotiated `profile-level-id`.
-    pub level: u8,
 }
 
 /// How a source is encoded.

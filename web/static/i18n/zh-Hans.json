@@ -370,6 +370,8 @@
   "session.takenText": "{time} 断开了你的连接。你的按键已松开，远程程序继续运行。",
   "session.backToList": "返回列表",
   "session.takeBack": "夺回",
+  "session.noDesktopTitle": "这台电脑没有桌面",
+  "session.noDesktopText": "这台电脑无法共享桌面会话。",
   "session.permissionsTitle": "这台 Mac 缺少远程控制权限",
   "session.permissionsText": "请在这台 Mac 上打开 Deskway，根据面板提示授予屏幕录制和辅助功能权限，然后重新连接。",
   "session.endedTitle": "连接已被断开",

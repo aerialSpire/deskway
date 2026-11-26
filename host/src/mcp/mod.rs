@@ -14,9 +14,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::display::DisplayInfo;
-use crate::platform::Desk;
+use crate::platform::{Desk, Features};
 use crate::session::SessionEvent;
-use crate::tools::{self, Ctx, Output};
+use crate::tools::{Ctx, Output};
 
 pub mod gate;
 
@@ -98,7 +98,7 @@ fn summary(o: &Output) -> String {
 
 /// Answers one message. `None` for a notification, or for a call answered later from its own
 /// thread (`spawn` sends that answer to `out`).
-fn handle(text: &str, gate: &Arc<Gate>, ctx: &Arc<Ctx>, out: &Sender<SessionEvent>) -> Option<String> {
+fn handle(text: &str, features: Features, gate: &Arc<Gate>, ctx: &Arc<Ctx>, out: &Sender<SessionEvent>) -> Option<String> {
     let Ok(m) = serde_json::from_str::<Value>(text) else { return Some(error(&Value::Null, PARSE_ERROR, "not JSON")) };
     let id = m.get("id").cloned();
     let method = m["method"].as_str();
@@ -108,14 +108,15 @@ fn handle(text: &str, gate: &Arc<Gate>, ctx: &Arc<Ctx>, out: &Sender<SessionEven
     };
     match method {
         "ping" => Some(reply(&id, json!({}))),
-        "tools/list" => Some(reply(&id, json!({ "version": wire::tools::version(), "tools": tools::implemented() }))),
+        "tools/list" => Some(reply(&id, json!({ "version": wire::tools::version(), "tools": features.tools().collect::<Vec<_>>() }))),
         "tools/call" => {
             let (name, args) = (m["params"]["name"].as_str().unwrap_or_default().to_string(), m["params"].get("arguments").cloned().unwrap_or(json!({})));
             let (gate, ctx, out) = (gate.clone(), ctx.clone(), out.clone());
             let spawned = std::thread::Builder::new().name("tool".into()).spawn(move || {
                 let facts = ctx.facts();
-                let result = gate.check(&name, &args, &facts, tools::has).and_then(|g| {
-                    let r = tools::call(&g, &args, &ctx);
+                let call = features.tool(&name);
+                let result = gate.check(&name, &args, &facts, |_| call.is_some()).and_then(|g| {
+                    let r = call.expect("the gate lets only offered tools through")(&g, &args, &ctx);
                     gate.done(&g, &r.as_ref().map(summary).map_err(Clone::clone));
                     r
                 });
@@ -129,14 +130,14 @@ fn handle(text: &str, gate: &Arc<Gate>, ctx: &Arc<Ctx>, out: &Sender<SessionEven
 
 /// Serves an AI session's requests: each message given to the returned sender is answered
 /// through `out` (`SessionEvent::Mcp`), in its own time.
-pub fn spawn(gate: Gate, ctx: Ctx, out: Sender<SessionEvent>) -> Sender<String> {
+pub fn spawn(features: Features, gate: Gate, ctx: Ctx, out: Sender<SessionEvent>) -> Sender<String> {
     let (tx, rx) = channel::<String>();
     let (gate, ctx) = (Arc::new(gate), Arc::new(ctx));
     std::thread::Builder::new()
         .name("mcp".into())
         .spawn(move || {
             for text in rx {
-                if let Some(answer) = handle(&text, &gate, &ctx, &out) {
+                if let Some(answer) = handle(&text, features, &gate, &ctx, &out) {
                     let _ = out.send(SessionEvent::Mcp(answer));
                 }
             }
@@ -151,16 +152,12 @@ mod tests {
     use crate::audit::Audit;
     use std::time::Duration;
 
-    fn server() -> (Sender<String>, std::sync::mpsc::Receiver<SessionEvent>) {
+    fn server(features: Features) -> (Sender<String>, std::sync::mpsc::Receiver<SessionEvent>) {
         let gate = Gate { audit: Arc::new(Audit::new(None)), client: "Claude".into(), device: "c1".into(), session: "s1".into() };
         let facts = Facts { name: "Desk".into(), os: "windows".into(), ..Facts::default() };
-        struct Nothing;
-        impl crate::platform::Forward for Nothing {
-            fn forward(&self, _: crate::platform::Call) {}
-        }
-        let ctx = Ctx { facts: Arc::new(RwLock::new(facts)), platform: Arc::new(Nothing), session: "s1".into(), replies: Arc::default(), shot: Default::default(), workspace: None, tunnels: Default::default(), admin: None, audit: Arc::new(Audit::new(None)) };
+        let ctx = Ctx { facts: Arc::new(RwLock::new(facts)), platform: None, session: "s1".into(), replies: Arc::default(), shot: Default::default(), workspace: None, tunnels: Default::default(), admin: None, audit: Arc::new(Audit::new(None)) };
         let (out, rx) = channel();
-        (spawn(gate, ctx, out), rx)
+        (spawn(features, gate, ctx, out), rx)
     }
 
     fn answer(rx: &std::sync::mpsc::Receiver<SessionEvent>) -> Value {
@@ -189,8 +186,28 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_checks_the_offered_tools_before_their_other_requirements() {
+        fn run(_: &gate::Granted, _: &Value, _: &Ctx) -> Result<Output, ToolError> {
+            panic!("run needs a user session")
+        }
+
+        let desktop = crate::platform::DesktopFeatures { tools: &[("run", run)], ..crate::platform::TEST_DESKTOP };
+        for (features, error) in [
+            (Features { desktop: Some(desktop), ..Features::default() }, "no_user_session"),
+            (Features::default(), "unsupported"),
+        ] {
+            let (tx, rx) = server(features);
+            tx.send(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.into()).unwrap();
+            let list = answer(&rx);
+            assert_eq!(list["result"]["tools"].as_array().unwrap().contains(&json!("run")), error == "no_user_session");
+            tx.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run","arguments":{"command":"test"}}}"#.into()).unwrap();
+            assert_eq!(answer(&rx)["result"]["structuredContent"]["error"], error);
+        }
+    }
+
+    #[test]
     fn requests_are_answered_and_calls_go_through_the_gate() {
-        let (tx, rx) = server();
+        let (tx, rx) = server(Features::default());
         // (request, what the answer holds)
         let cases: [(&str, fn(&Value) -> bool); 6] = [
             (r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, |a| a["result"] == json!({})),

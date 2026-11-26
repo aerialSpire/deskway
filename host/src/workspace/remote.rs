@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::{Answer, Code, Op, WorkError, Workspace};
+use crate::workspace::{Answer, Code, Op, WorkError, Workspace};
 use crate::service::ipc::Pipe;
 
 #[derive(Serialize, Deserialize)]

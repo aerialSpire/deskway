@@ -13,23 +13,34 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(desktop_host)]
 pub mod apps;
+#[cfg(desktop_host)]
 pub mod elements;
+#[cfg(desktop_host)]
 mod files;
+#[cfg(desktop_host)]
+mod local;
+#[cfg(desktop_host)]
 pub mod procs;
 #[cfg(windows)]
 pub mod remote;
 
-/// How long `run` waits by default, and at most.
+#[cfg(desktop_host)]
+pub use local::Local;
+
+/// How long `run` waits by default.
 const WAIT_DEFAULT: u64 = 30_000;
-const WAIT_MOST: u64 = 600_000;
 
 fn wait_default() -> u64 {
     WAIT_DEFAULT
 }
 
+/// Bytes one read returns at most: a larger file is read in parts.
+pub(crate) const READ_MOST: u64 = 256 << 10;
+
 fn read_default() -> u64 {
-    files::READ_MOST
+    READ_MOST
 }
 
 fn depth_default() -> u32 {
@@ -46,6 +57,33 @@ fn cols_default() -> u16 {
 
 fn rows_default() -> u16 {
     30
+}
+
+/// What `window_act` does to a window.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowAction {
+    Focus,
+    Minimize,
+    Maximize,
+    Restore,
+    Close,
+    Move,
+}
+
+/// What `ui_act` does to an element.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum UiAction {
+    /// What clicking it does (a button, a link, a menu item).
+    Invoke,
+    Toggle,
+    Expand,
+    Collapse,
+    /// Chooses it (an item of a list, a tab, a radio button).
+    Select,
+    Focus,
+    SetValue,
 }
 
 /// One request.
@@ -127,7 +165,7 @@ pub enum Op {
     Windows,
     WindowAct {
         id: u64,
-        action: apps::WindowAction,
+        action: WindowAction,
         #[serde(default)]
         x: Option<i32>,
         #[serde(default)]
@@ -161,7 +199,7 @@ pub enum Op {
     UiAct {
         window: u64,
         element: String,
-        action: elements::UiAction,
+        action: UiAction,
         #[serde(default)]
         value: Option<String>,
     },
@@ -212,17 +250,6 @@ impl WorkError {
     pub fn new(code: Code, message: impl Into<String>, next: impl Into<String>) -> WorkError {
         WorkError { code, message: message.into(), next: next.into() }
     }
-
-    fn io(path: &str, e: std::io::Error) -> WorkError {
-        let (code, next) = match e.kind() {
-            std::io::ErrorKind::NotFound => (Code::NotFound, "Check the path (fs_list its folder)."),
-            std::io::ErrorKind::PermissionDenied => (Code::Denied, "The person signed in may not touch it; an administrator's tool may."),
-            std::io::ErrorKind::AlreadyExists => (Code::Exists, "Choose another name, or delete it first."),
-            std::io::ErrorKind::DirectoryNotEmpty => (Code::NotEmpty, "Pass recursive to delete it with what is in it."),
-            _ => (Code::Io, "Try again, or another path."),
-        };
-        WorkError::new(code, format!("{path}: {e}"), next)
-    }
 }
 
 pub type Answer = Result<Value, WorkError>;
@@ -233,54 +260,5 @@ pub trait Workspace: Send + Sync {
     /// Someone is signed in to carry requests out (the Windows worker is connected).
     fn available(&self) -> bool {
         true
-    }
-}
-
-/// The workspace of this process, which is the person's.
-#[derive(Default)]
-pub struct Local {
-    procs: procs::Table,
-}
-
-impl Local {
-    /// One whose programs are numbered from `first` (the admin worker's, `procs::ADMIN_FIRST`).
-    #[cfg(windows)]
-    pub fn numbered_from(first: u64) -> Local {
-        Local { procs: procs::Table::numbered_from(first) }
-    }
-}
-
-impl Workspace for Local {
-    fn call(&self, op: Op) -> Answer {
-        match op {
-            Op::Run { command, cwd, wait_ms, elevated } => self.procs.run(&command, cwd.as_deref(), wait_ms.min(WAIT_MOST), elevated),
-            Op::ProcStart { command, cwd, cols, rows, elevated } => self.procs.start(command.as_deref(), cwd.as_deref(), cols, rows, elevated),
-            Op::ProcWrite { id, text, keys } => self.procs.write(id, text.as_deref(), &keys),
-            Op::ProcRead { id, from, wait_ms } => self.procs.read(id, from, wait_ms),
-            Op::ProcKill { id } => self.procs.kill(id),
-            Op::ProcList => Ok(self.procs.list()),
-            Op::FsList { path } => files::list(&path),
-            Op::FsStat { path } => files::stat(&path),
-            Op::FsRead { path, offset, length } => files::read(&path, offset, length),
-            Op::FsWrite { path, text, base64, append } => files::write(&path, text, base64, append),
-            Op::FsHash { path } => files::hash(&path),
-            Op::FsMove { from, to } => files::rename(&from, &to),
-            Op::FsDelete { path, recursive } => files::delete(&path, recursive),
-            Op::ClipboardGet => Ok(serde_json::json!({ "text": crate::platform::clipboard_text() })),
-            Op::ClipboardSet { text } => {
-                if crate::platform::set_clipboard_text(&text) {
-                    Ok(serde_json::json!({ "done": "set" }))
-                } else {
-                    Err(WorkError::new(Code::Busy, "another program holds the clipboard", "Try again in a moment."))
-                }
-            }
-            Op::Windows => apps::windows(),
-            Op::WindowAct { id, action, x, y, w, h } => apps::window_act(id, action, x, y, w, h),
-            Op::AppList => apps::apps(),
-            Op::AppOpen { name, args } => apps::open(&name, &args),
-            Op::AppQuit { name, pid, force } => apps::quit(name.as_deref(), pid, force),
-            Op::UiTree { window, depth, max_nodes } => elements::tree(window, depth, max_nodes),
-            Op::UiAct { window, element, action, value } => elements::act(window, &element, action, value.as_deref()),
-        }
     }
 }

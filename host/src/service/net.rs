@@ -64,7 +64,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     let (events, platform_events) = channel();
     let platform = Remote::new(events);
     let dir = crate::config::dir()?;
-    let (settings, awake) = Settings::start(dir.clone(), &cfg, platform.clone(), control_tx);
+    let (settings, awake) = Settings::start(dir.clone(), &cfg, Some(platform.clone()), control_tx);
     if let Err(e) = awake {
         eprintln!("{e:#}");
     }
@@ -95,7 +95,8 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
         (user?, Some(admin?))
     };
     let workspace = Some(workspace);
-    let params = signal::Params { cfg, view_only, platform, events: platform_events, can_host: Box::new(|| true), notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
+    let desktop = Some(signal::DesktopParams { features: crate::platform::DESKTOP, platform, events: platform_events, can_host: Box::new(|| true) });
+    let params = signal::Params { cfg, view_only, desktop, notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
     signal::run(params, control_rx);
     Ok(())
 }

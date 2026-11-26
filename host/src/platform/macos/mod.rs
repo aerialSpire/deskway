@@ -24,9 +24,7 @@ pub use files::Files as NativeFiles;
 pub use input::MacInput as NativeInput;
 
 use std::ffi::c_void;
-use std::fs::{File, OpenOptions};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::File;
 use std::path::PathBuf;
 use std::ptr::{null, null_mut, NonNull};
 use std::sync::OnceLock;
@@ -126,19 +124,7 @@ pub fn set_autostart(_on: bool) -> anyhow::Result<()> {
 
 pub fn first_instance() -> bool {
     static LOCK: OnceLock<File> = OnceLock::new();
-    let lock = (|| -> anyhow::Result<File> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .mode(0o600)
-            .open(crate::config::dir()?.join("host.lock"))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(file)
-    })();
-    match lock {
+    match super::unix::lock_host() {
         Ok(file) => LOCK.set(file).is_ok(),
         Err(error) => {
             eprintln!("cannot lock Deskway host: {error}");

@@ -64,7 +64,7 @@ pub struct Settings {
     /// The folder of the config these settings are saved in.
     dir: PathBuf,
     applied: Mutex<Applied>,
-    platform: Arc<dyn Platform>,
+    platform: Option<Arc<dyn Platform>>,
     control: Sender<Control>,
 }
 
@@ -72,10 +72,12 @@ impl Settings {
     /// Starts from the saved settings and applies what `signal::run` does not start from
     /// itself: the platform's language (replayed to every Windows agent that connects later)
     /// and keep-awake. The error, if any, is keep-awake's: the settings are in place anyway.
-    pub fn start(dir: PathBuf, cfg: &Config, platform: Arc<dyn Platform>, control: Sender<Control>) -> (Settings, Result<()>) {
+    pub fn start(dir: PathBuf, cfg: &Config, platform: Option<Arc<dyn Platform>>, control: Sender<Control>) -> (Settings, Result<()>) {
         let applied = Applied::of(cfg);
-        platform.language(applied.lang.clone());
-        let awake = keep_awake(applied.prevent_sleep);
+        let awake = platform.as_ref().map_or(Ok(()), |p| {
+            p.language(applied.lang.clone());
+            keep_awake(applied.prevent_sleep)
+        });
         (Settings { dir, applied: Mutex::new(applied), platform, control }, awake)
     }
 
@@ -141,9 +143,11 @@ impl Settings {
         }
         if was.lang != now.lang {
             i18n::set(now.lang.as_deref());
-            self.platform.language(now.lang.clone());
+            if let Some(platform) = &self.platform {
+                platform.language(now.lang.clone());
+            }
         }
-        if was.prevent_sleep != now.prevent_sleep {
+        if self.platform.is_some() && was.prevent_sleep != now.prevent_sleep {
             awake = keep_awake(now.prevent_sleep);
         }
         *was = now;
@@ -154,7 +158,7 @@ impl Settings {
 }
 
 fn keep_awake(on: bool) -> Result<()> {
-    crate::power::prevent_sleep(on).with_context(|| t("err.keep_awake"))
+    crate::platform::prevent_sleep(on).with_context(|| t("err.keep_awake"))
 }
 
 #[cfg(test)]
@@ -178,7 +182,7 @@ mod tests {
         std::fs::write(dir.join("host.json"), r#"{"server":"https://s.example","id":"H1","token":"t","name":""}"#).unwrap();
         let calls = Arc::new(Calls::default());
         let (tx, rx) = channel();
-        let (s, awake) = Settings::start(dir.clone(), &Config::load_from(&dir).unwrap(), calls.clone(), tx);
+        let (s, awake) = Settings::start(dir.clone(), &Config::load_from(&dir).unwrap(), Some(calls.clone()), tx);
         awake.unwrap();
         (s, calls, rx, dir)
     }

@@ -70,7 +70,7 @@ impl InProcess {
                 return;
             }
         };
-        let (settings, awake) = Settings::start(dir, &cfg, local.clone(), control.clone());
+        let (settings, awake) = Settings::start(dir, &cfg, Some(local.clone()), control.clone());
         let settings = Arc::new(settings);
         let login = if cfg.login_item_setup_pending { self.set_login_item(true) } else { Ok(()) };
         self.settings_error = [awake, login]
@@ -88,14 +88,17 @@ impl InProcess {
             // Locking when a session ends is a Windows setting: an old config's value is ignored.
             cfg: Config { auto_lock: false, ..cfg },
             view_only: false,
-            platform: local,
-            events: platform_events,
-            can_host: Box::new(|| {
-                let p = platform::permissions();
-                if !p.ready() {
-                    eprintln!("Screen Recording={}, Accessibility={}", p.screen, p.accessibility);
-                }
-                p.ready()
+            desktop: Some(crate::signal::DesktopParams {
+                features: platform::DESKTOP,
+                platform: local,
+                events: platform_events,
+                can_host: Box::new(|| {
+                    let p = platform::permissions();
+                    if !p.ready() {
+                        eprintln!("Screen Recording={}, Accessibility={}", p.screen, p.accessibility);
+                    }
+                    p.ready()
+                }),
             }),
             notify: Box::new(move |s| {
                 let _ = proxy.send_event(UiEvent::Status(Some(s)));

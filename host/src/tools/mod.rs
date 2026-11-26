@@ -15,8 +15,13 @@ use crate::platform::{Platform, Replies};
 
 mod audit;
 mod info;
-mod screen;
 pub mod tunnel;
+
+#[cfg(desktop_host)]
+pub mod desktop;
+#[cfg(desktop_host)]
+mod screen;
+#[cfg(desktop_host)]
 mod work;
 
 /// The latest screenshot of a session: what its pixels are of.
@@ -30,7 +35,7 @@ pub struct Shot {
 /// What one AI session's tools work with.
 pub struct Ctx {
     pub facts: SharedFacts,
-    pub platform: Arc<dyn Platform>,
+    pub platform: Option<Arc<dyn Platform>>,
     /// The AI session: its input is the AI client's hand (`platform::local`).
     pub session: String,
     /// Answers the platform gives under an id (screenshots).
@@ -65,71 +70,9 @@ pub enum Output {
 
 pub(crate) type Tool = fn(&Granted, &Value, &Ctx) -> Result<Output, ToolError>;
 
-pub(crate) const TABLE: &[(&str, Tool)] = &[
+pub(crate) type Table = &'static [(&'static str, Tool)];
+
+pub(crate) const BASE: Table = &[
     ("computer_info", info::computer_info),
     ("audit_read", audit::audit_read),
-    ("screenshot", screen::screenshot),
-    ("wait_for", screen::wait_for),
-    ("click", screen::click),
-    ("move", screen::pointer_move),
-    ("drag", screen::drag),
-    ("scroll", screen::scroll),
-    ("key", screen::key),
-    ("type", screen::type_text),
-    ("run", work::work),
-    ("proc_start", work::work),
-    ("proc_write", work::work),
-    ("proc_read", work::work),
-    ("proc_kill", work::work),
-    ("proc_list", work::work),
-    ("fs_list", work::work),
-    ("fs_stat", work::work),
-    ("fs_read", work::work),
-    ("fs_write", work::work),
-    ("fs_hash", work::work),
-    ("fs_move", work::work),
-    ("fs_delete", work::work),
-    ("clipboard_get", work::work),
-    ("clipboard_set", work::work),
-    ("tunnel", tunnel::tunnel),
-    ("windows", work::work),
-    ("window_act", work::work),
-    ("app_list", work::work),
-    ("app_open", work::work),
-    ("app_quit", work::work),
-    ("ui_tree", work::work),
-    ("ui_act", work::work),
 ];
-
-/// The tools this computer has.
-pub fn implemented() -> Vec<&'static str> {
-    TABLE.iter().map(|(n, _)| *n).collect()
-}
-
-pub fn has(name: &str) -> bool {
-    TABLE.iter().any(|(n, _)| *n == name)
-}
-
-/// Runs the tool the gate let through.
-pub fn call(g: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> {
-    let f = TABLE.iter().find(|(n, _)| *n == g.tool().name).map(|(_, f)| *f).expect("the gate lets only implemented tools through");
-    f(g, args, ctx)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Every tool here is defined, and every tool of the batches finished is here.
-    #[test]
-    fn the_table_has_the_tools_of_the_batches_built_and_only_defined_ones() {
-        const FINISHED: u32 = 3;
-        let here = implemented();
-        for t in wire::tools::all() {
-            assert!(t.batch > FINISHED || here.contains(&t.name.as_str()), "{} has no function", t.name);
-        }
-        for name in here {
-            assert!(wire::tools::all().iter().any(|t| t.name == name), "{name} is not in proto/tools.json");
-        }
-    }
-}

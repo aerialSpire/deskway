@@ -8,10 +8,20 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde_json::{json, Value};
 
-use super::{Answer, Code, WorkError};
+use crate::workspace::{Answer, Code, WorkError, READ_MOST};
 
-/// Bytes one read returns at most: a larger file is read in parts.
-pub const READ_MOST: u64 = 256 << 10;
+impl WorkError {
+    fn io(path: &str, e: std::io::Error) -> WorkError {
+        let (code, next) = match e.kind() {
+            std::io::ErrorKind::NotFound => (Code::NotFound, "Check the path (fs_list its folder)."),
+            std::io::ErrorKind::PermissionDenied => (Code::Denied, "The person signed in may not touch it; an administrator's tool may."),
+            std::io::ErrorKind::AlreadyExists => (Code::Exists, "Choose another name, or delete it first."),
+            std::io::ErrorKind::DirectoryNotEmpty => (Code::NotEmpty, "Pass recursive to delete it with what is in it."),
+            _ => (Code::Io, "Try again, or another path."),
+        };
+        WorkError::new(code, format!("{path}: {e}"), next)
+    }
+}
 /// Entries one listing returns at most.
 const LIST_MOST: usize = 2000;
 

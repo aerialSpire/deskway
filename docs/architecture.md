@@ -26,6 +26,7 @@ Every change follows these rules:
 |---|---|
 | Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
+| Linux | One foreground host process: signaling, the AI seat, and the host information and audit tools. |
 | AI client's machine | `deskway` (cli/): `login`, `mcp` for each MCP client, and one proxy per user that holds the sign-in and a link to each computer. |
 
 Each platform has exactly one process model. The network service talks to the agent only
@@ -69,6 +70,8 @@ auth/              who may connect: the trust store (mod.rs), pairing window and
                    device log (log.rs), offer checks and resume tokens (offers.rs), signature
                    and WebAuthn checks (webauthn.rs)
 platform/
+  features.rs      the host's feature set, including the optional desktop and its tool table
+  linux.rs         foreground entry, operating-system signals, and per-user state directory
   mod.rs           trait Platform + PlatformEvent (and Call, what crosses the agent pipe);
                    Local (in this process); Remote (agent pipe proxy, Windows)
   windows/         capture (DXGI), encoder (MF), input (SendInput), clipboard (owner window,
@@ -94,11 +97,12 @@ session/
 mcp/               an AI session's MCP requests, answered off the session thread: mod.rs
                    (JSON-RPC, Facts: what the AI side knows of this computer, kept by the
                    host), gate.rs (the one checkpoint: Granted, the rules, the audit records)
-tools/             the tools of proto/tools.json, one module per area; mod.rs is their table:
-                   info (computer_info), screen (screenshot and input, in a screenshot's
-                   pixels), work (every workspace tool: its arguments are a workspace::Op)
+tools/             the tools of proto/tools.json: mod.rs registers the host information and audit
+                   tools; desktop.rs registers the screen and workspace tools with the desktop
+                   feature set
 workspace/         an AI client's workspace, as the person: mod.rs (Op, the answers and their
-                   error codes; trait Workspace; Local, in this process), procs.rs (programs
+                   error codes; trait Workspace), local.rs (workspace in this process),
+                   procs.rs (programs
                    and their output, kept for the computer, not for a session), files.rs,
                    remote.rs (Windows: the same over the user worker's pipe)
 audit.rs           what AI clients did here: JSON lines, appended only, bounded
@@ -125,6 +129,21 @@ the computer is signed in, how it starts, the Mac's permissions). Every setting 
 is a `settings::PanelRequest`, which the process running the host carries out in
 `settings::Settings`. The controlling browser's clipboard switch and an administrator's edits to
 host.json also arrive there.
+
+The platform selects the host feature set once at startup. It defines the signaling hello's
+capabilities and AI tool names, which seats can be admitted, and the tool table consulted by the
+MCP gate. Desktop hosts supply a `Platform` and a desk role. `host/build.rs` sets `desktop_host`
+for Windows and macOS. The browser offers desktop control according to the live hello's `desk`
+capability. A verified desk offer to a Linux host receives `bye` with reason `no_desktop`. The
+AI seat uses the same device proofs and signed AI switch on all hosts.
+
+The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
+Starting or enrolling the host takes the same exclusive `host.lock` for that state directory.
+The enrollment prompt hides passwords typed at a terminal and accepts piped input or
+`DESKWAY_PASSWORD`. Whenever the host enters the waiting-for-approval state, it prints the same
+six comparison digits as the desktop panel. SIGTERM and SIGINT enter the signaling host's
+normal quit path. Linux uses str0m's dimpl DTLS implementation with system OpenSSL for
+cryptography and the existing native-tls stack for HTTPS and WebSockets.
 
 ### `platform::Platform`
 
@@ -599,7 +618,7 @@ The source of truth is the viewer's constraints.
 
 ## Power
 
-`prevent_sleep` is a setting on every platform. The panel shows it as **Keep this computer
+`prevent_sleep` is a setting on desktop hosts. The panel shows it as **Keep this computer
 awake**, directly under **Start with Windows** (on Windows, which sets the services' start type)
 or **Open at login** (on macOS, which controls the login item). It only keeps the computer awake;
 the operating system still controls locking and verifies the sign-in password. New macOS

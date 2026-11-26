@@ -416,7 +416,8 @@ mod tests {
             CVPixelBufferUnlockBaseAddress,
         };
 
-        use crate::video::size::{choose, Constraints, Level};
+        use crate::platform::Constraints;
+        use crate::video::size::{choose, Level};
 
         let view = Constraints {
             w: 1279,

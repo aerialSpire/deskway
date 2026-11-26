@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::clipboard::{Data, Native};
 use crate::platform::{Bytes, PlatformEvent};
+pub use crate::platform::TransferNote as Note;
 use wire::file::File;
 use wire::types::{FormatKind, Item, TransferError, TransferKind};
 
@@ -28,14 +29,6 @@ pub const FILE_MAX: u64 = 25 << 20;
 pub const TOTAL_MAX: u64 = 50 << 20;
 pub const FILES_MAX: usize = 10;
 pub const IMAGE_MAX: u64 = 20 << 20;
-
-/// A line for the person at this computer, beside "… is in control".
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Note {
-    pub text: String,
-    /// The folder the files went to, for an “Open folder” button.
-    pub folder: Option<String>,
-}
 
 /// What a transfer needs from the computer's files. Access goes through here so it can run as
 /// the signed-in user, never as SYSTEM.

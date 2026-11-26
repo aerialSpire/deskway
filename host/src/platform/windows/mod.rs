@@ -102,6 +102,20 @@ pub fn attach_console() {
     }
 }
 
+/// Turn off echo for one read from the console and restore its settings afterwards.
+pub fn without_echo<T>(read: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+    use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode, CONSOLE_MODE, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE};
+    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) }?;
+    let mut mode = CONSOLE_MODE::default();
+    unsafe {
+        GetConsoleMode(input, &mut mode)?;
+        SetConsoleMode(input, mode & !ENABLE_ECHO_INPUT)?;
+    }
+    let result = read();
+    unsafe { SetConsoleMode(input, mode) }?;
+    result
+}
+
 /// Only one panel per user session.
 pub fn first_instance() -> bool {
     unsafe {

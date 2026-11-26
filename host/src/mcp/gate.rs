@@ -62,7 +62,7 @@ impl Gate {
         let allowed = (|| {
             let tool = wire::tools::get(name).ok_or_else(|| ToolError::new("not_found", format!("no tool {name}"), "List the tools again."))?;
             if !implemented(name) {
-                return Err(ToolError::new("unsupported", format!("this computer's Deskway has no {name} yet"), "Update Deskway on this computer."));
+                return Err(ToolError::new("unsupported", crate::i18n::tf("mcp.unsupported_tool", &[("tool", name.to_string())]), crate::i18n::t("mcp.unsupported_next")));
             }
             rules(tool, args, facts).map(|()| tool)
         })();

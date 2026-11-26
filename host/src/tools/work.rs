@@ -4,9 +4,10 @@
 
 use serde_json::Value;
 
-use super::{Ctx, Output};
+use crate::tools::{Ctx, Output};
 use crate::mcp::gate::{Granted, ToolError};
-use crate::workspace::{procs, Op, Workspace};
+use crate::workspace::procs;
+use crate::workspace::{Op, Workspace};
 
 /// A tool call as the workspace request of its name.
 fn request(name: &str, args: &Value) -> Result<Op, ToolError> {
@@ -85,7 +86,7 @@ mod tests {
         }
         Ctx {
             facts: Default::default(),
-            platform: std::sync::Arc::new(Still),
+            platform: Some(std::sync::Arc::new(Still)),
             session: "s1".into(),
             replies: Default::default(),
             shot: Default::default(),
@@ -100,7 +101,7 @@ mod tests {
     /// name, with the defaults filled in.
     #[test]
     fn each_workspace_tool_is_the_request_of_its_name() {
-        let ours: Vec<&wire::tools::Tool> = wire::tools::all().iter().filter(|t| crate::tools::TABLE.iter().any(|(n, f)| *n == t.name && std::ptr::fn_addr_eq(*f, work as crate::tools::Tool))).collect();
+        let ours: Vec<&wire::tools::Tool> = wire::tools::all().iter().filter(|t| crate::tools::desktop::TABLE.iter().any(|(n, f)| *n == t.name && std::ptr::fn_addr_eq(*f, work as crate::tools::Tool))).collect();
         assert_eq!(ours.len(), 22);
         for t in ours {
             let mut args = serde_json::json!({});

@@ -4,23 +4,13 @@
 
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 
-use super::{Answer, Code, WorkError};
+use crate::workspace::{Answer, Code, WorkError};
 use crate::platform::apps as native;
 
-/// What `window_act` does to a window.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum WindowAction {
-    Focus,
-    Minimize,
-    Maximize,
-    Restore,
-    Close,
-    Move,
-}
+pub use crate::workspace::WindowAction;
 
 /// A window on the person's screen, in the screen's own coordinates (not a screenshot's).
 #[derive(Serialize, Debug, Clone, PartialEq)]

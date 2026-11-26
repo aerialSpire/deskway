@@ -370,6 +370,8 @@
   "session.takenText": "{time} 中斷了你的連線。你的按鍵已放開，遠端程式繼續執行。",
   "session.backToList": "返回清單",
   "session.takeBack": "奪回",
+  "session.noDesktopTitle": "這台電腦沒有桌面",
+  "session.noDesktopText": "這台電腦無法分享桌面工作階段。",
   "session.permissionsTitle": "這台 Mac 缺少遠端控制權限",
   "session.permissionsText": "請在這台 Mac 上開啟 Deskway，依照面板提示授予螢幕錄製和輔助使用權限，然後重新連線。",
   "session.endedTitle": "連線已被中斷",

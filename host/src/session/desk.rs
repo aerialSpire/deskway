@@ -12,14 +12,13 @@ use str0m::channel::{ChannelData, ChannelId};
 use str0m::media::{MediaTime, Mid, Pt};
 use str0m::{Event, Rtc};
 
-use super::{send, send_message, Cx, Role};
+use crate::session::{self, send, send_message, Cx, Role};
 use crate::clipboard::{self, Act, Out};
-use crate::platform::{Bytes, Platform, PlatformEvent};
+use crate::platform::{Bytes, DeskParams as Params, Platform, PlatformEvent};
 use crate::video::size::ProfileLevelId;
 use crate::video::START_BITRATE;
 use peer::state::Signal;
 use wire::control::Control;
-use wire::types::View;
 
 pub(crate) mod channels;
 mod media;
@@ -39,21 +38,8 @@ pub fn caps(view_only: bool) -> Vec<String> {
     control.iter().chain(input).chain(clipboard).chain(session).map(|c| c.to_string()).collect()
 }
 
-/// What a desk session is started with, besides what every session has (`super::Params`).
-pub struct Params {
-    pub session: String,
-    /// The browser's offer: the picture's track and level come from it.
-    pub offer: String,
-    /// The viewer constraints the offer carried: the picture starts at that size.
-    pub view: Option<View>,
-    pub platform: Arc<dyn Platform>,
-    /// The browser may watch but not control.
-    pub view_only: bool,
-    /// The shared clipboard is on (the computer's setting).
-    pub clip_share: bool,
-    /// Where the browser's request to switch it goes: the host saves it and answers with
-    /// `SessionEvent::ClipShare`.
-    pub share: Sender<bool>,
+pub fn spawn(params: session::Params, desk: Params) -> Sender<session::SessionEvent> {
+    session::spawn(params, |_| Desk::new(desk))
 }
 
 /// However the session ends, an error included: the computer is given up if this session still

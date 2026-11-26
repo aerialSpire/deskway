@@ -57,7 +57,12 @@ fn main() {
     println!("cargo:rerun-if-changed=src/icon.rs");
     println!("cargo:rerun-if-changed=src/product.rs");
     println!("cargo:rerun-if-changed=build.rs");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    let os = std::env::var("CARGO_CFG_TARGET_OS");
+    println!("cargo:rustc-check-cfg=cfg(desktop_host)");
+    if matches!(os.as_deref(), Ok("windows" | "macos")) {
+        println!("cargo:rustc-cfg=desktop_host");
+    }
+    if os.as_deref() != Ok("windows") {
         return;
     }
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());

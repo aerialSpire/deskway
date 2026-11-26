@@ -4,10 +4,10 @@
 //! UI Automation on Windows, the Accessibility API on a Mac); what an AI client asks and is
 //! told is here, the same on both.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 
-use super::{Answer, Code, WorkError};
+use crate::workspace::{Answer, Code, WorkError};
 use crate::platform::elements as native;
 
 /// One element of a window: what it is, what it says, where it is on the screen (screen
@@ -33,20 +33,7 @@ pub struct Node {
     pub children: Vec<Node>,
 }
 
-/// What `ui_act` does to an element.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum UiAction {
-    /// What clicking it does (a button, a link, a menu item).
-    Invoke,
-    Toggle,
-    Expand,
-    Collapse,
-    /// Chooses it (an item of a list, a tab, a radio button).
-    Select,
-    Focus,
-    SetValue,
-}
+pub use crate::workspace::UiAction;
 
 /// Why an element could not be found or acted on.
 #[derive(Debug, PartialEq)]

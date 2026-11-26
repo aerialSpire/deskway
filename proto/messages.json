@@ -429,7 +429,7 @@
           "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), for attach, and for pairing.",
           "fields": {
             "session": { "type": "string", "optional": false, "meaning": "session id" },
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" },
             "controller": { "type": "Controller", "optional": true, "meaning": "busy: who holds the computer, as for the device list" }
@@ -626,7 +626,7 @@
           "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), and pairing refusals.",
           "fields": {
             "session": { "type": "string", "optional": false, "meaning": "session id" },
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is the same device" },
             "holder": { "type": "Holder", "optional": true, "meaning": "busy: the session holding the computer" }
@@ -686,7 +686,7 @@
           "type": "end", "status": "current", "since": 1, "directions": ["browser->host", "host->browser"],
           "meaning": "Ends the session, both ways. A closed control channel ends it too.",
           "fields": {
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with bye (left: the browser left; taken: another session took over; ended: ended at the computer; unpaired: this device was removed; failed: could not be established or recovered in time; ai_off: AI clients may not control this computer now, never allowed or stopped there; idle: an AI session unused for 10 minutes)" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with bye (left: the browser left; taken: another session took over; ended: ended at the computer; unpaired: this device was removed; failed: could not be established or recovered in time; ai_off: AI clients may not control this computer now, never allowed or stopped there; no_desktop: this host has no desk seat; idle: an AI session unused for 10 minutes)" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" }
           }

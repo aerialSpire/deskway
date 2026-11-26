@@ -68,7 +68,14 @@ pub fn write_private(path: &std::path::Path, data: &[u8]) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut f = options.open(&tmp)?;
     f.write_all(data)?;
     f.sync_all()?;
     drop(f);
@@ -85,7 +92,14 @@ pub fn dir() -> Result<PathBuf> {
         .map(PathBuf::from)
         .or_else(crate::platform::config_dir)
         .context("no config directory")?;
-    std::fs::create_dir_all(&base)?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&base)?;
     Ok(base)
 }
 

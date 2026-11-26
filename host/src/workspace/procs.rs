@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::{Answer, Code, WorkError};
+use crate::workspace::{Answer, Code, WorkError};
 
 /// Output kept per program.
 const KEEP: usize = 1 << 20;
