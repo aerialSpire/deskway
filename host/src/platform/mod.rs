@@ -29,11 +29,10 @@ pub const TEST_DESKTOP: DesktopFeatures = DesktopFeatures {
     caps: |_| vec![wire::caps::DESK.into()],
     spawn: |_, _| std::sync::mpsc::channel().0,
     ai_awake: |_| {},
-    tools: &[],
 };
 
 #[cfg(desktop_host)]
-pub const DESKTOP: DesktopFeatures = DesktopFeatures { caps: crate::session::desk::caps, spawn: crate::session::desk::spawn, ai_awake: crate::power::ai_session, tools: crate::tools::desktop::TABLE };
+pub const DESKTOP: DesktopFeatures = DesktopFeatures { caps: crate::session::desk::caps, spawn: crate::session::desk::spawn, ai_awake: crate::power::ai_session };
 
 #[cfg(desktop_host)]
 pub use crate::power::prevent_sleep;
@@ -43,9 +42,9 @@ mod local;
 #[cfg(desktop_host)]
 pub use local::Local;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
 mod unix;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
 pub use unix::without_echo;
 
 #[cfg(target_os = "linux")]

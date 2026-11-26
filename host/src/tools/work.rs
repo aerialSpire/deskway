@@ -1,7 +1,6 @@
-//! The workspace tools (`run`, `proc_*`, `fs_*`, `clipboard_*`, `windows`, `window_act`,
-//! `app_*`, `ui_tree`, `ui_act`): the call, read as the workspace request of the same name, carried out as the
-//! person signed in (`workspace`).
+//! Command and file tools. Requests run with the workspace user's rights.
 
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::tools::{Ctx, Output};
@@ -10,17 +9,19 @@ use crate::workspace::procs;
 use crate::workspace::{Op, Workspace};
 
 /// A tool call as the workspace request of its name.
-fn request(name: &str, args: &Value) -> Result<Op, ToolError> {
+pub(super) fn request<T: DeserializeOwned>(name: &str, args: &Value) -> Result<T, ToolError> {
     let mut request = args.clone();
     request["op"] = Value::from(name);
     serde_json::from_value(request).map_err(|e| ToolError::new("invalid_args", e.to_string(), "Check the tool's arguments."))
 }
 
+pub(super) fn failed(e: crate::workspace::WorkError) -> ToolError {
+    ToolError::new(e.code.as_str(), e.message, e.next)
+}
+
 pub fn work(g: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> {
-    // The gate lets these through only with someone signed in, which is a workspace.
-    let Some(user) = ctx.workspace.as_deref() else { return Err(ToolError::new("no_user_session", "nobody is signed in at this computer", "Sign in at its sign-in screen first.")) };
+    let user = ctx.user_workspace()?;
     let op = request(&g.tool().name, args)?;
-    let failed = |e: crate::workspace::WorkError| ToolError::new(e.code.as_str(), e.message, e.next);
     // Programs as an administrator, and the administrator's programs by their ids, are the
     // admin workspace's where there is one (Windows); elsewhere this one asks for the rights.
     let admin = ctx.admin.as_deref();
@@ -48,6 +49,11 @@ mod tests {
     impl Workspace for Named {
         fn call(&self, op: Op) -> crate::workspace::Answer {
             Ok(if op == Op::ProcList { serde_json::json!([self.0]) } else { serde_json::json!(self.0) })
+        }
+
+        #[cfg(desktop_host)]
+        fn desktop(&self, _: crate::workspace::DesktopOp) -> crate::workspace::Answer {
+            Ok(serde_json::json!(self.0))
         }
     }
 
@@ -101,16 +107,25 @@ mod tests {
     /// name, with the defaults filled in.
     #[test]
     fn each_workspace_tool_is_the_request_of_its_name() {
-        let ours: Vec<&wire::tools::Tool> = wire::tools::all().iter().filter(|t| crate::tools::desktop::TABLE.iter().any(|(n, f)| *n == t.name && std::ptr::fn_addr_eq(*f, work as crate::tools::Tool))).collect();
-        assert_eq!(ours.len(), 22);
-        for t in ours {
+        check_requests::<Op>(work);
+        assert_eq!(request::<Op>("run", &serde_json::json!({ "command": "dir" })).unwrap(), Op::Run { command: "dir".into(), cwd: None, wait_ms: 30_000, elevated: false });
+    }
+
+    #[cfg(desktop_host)]
+    #[test]
+    fn each_desktop_workspace_tool_is_the_request_of_its_name() {
+        check_requests::<crate::workspace::DesktopOp>(crate::tools::desktop::work);
+    }
+
+    fn check_requests<T: DeserializeOwned>(handler: crate::tools::Tool) {
+        for (_, name, _) in crate::tools::TOOLS.iter().filter(|(_, _, f)| std::ptr::fn_addr_eq(*f, handler)) {
+            let t = wire::tools::get(name).unwrap();
             let mut args = serde_json::json!({});
             for r in t.input["required"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                 let p = &t.input["properties"][r];
                 args[r] = if p["type"] == "integer" { 1.into() } else { p["enum"].get(0).cloned().unwrap_or_else(|| "x".into()) };
             }
-            assert!(request(&t.name, &args).is_ok(), "{}: {args}", t.name);
+            assert!(request::<T>(&t.name, &args).is_ok(), "{}: {args}", t.name);
         }
-        assert_eq!(request("run", &serde_json::json!({ "command": "dir" })).unwrap(), Op::Run { command: "dir".into(), cwd: None, wait_ms: 30_000, elevated: false });
     }
 }

@@ -18,10 +18,9 @@ mod info;
 pub mod tunnel;
 
 #[cfg(desktop_host)]
-pub mod desktop;
+mod desktop;
 #[cfg(desktop_host)]
 mod screen;
-#[cfg(desktop_host)]
 mod work;
 
 /// The latest screenshot of a session: what its pixels are of.
@@ -54,7 +53,11 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// The host's facts, with whether someone is signed in as the workspace says it now.
+    pub(super) fn user_workspace(&self) -> Result<&dyn crate::workspace::Workspace, ToolError> {
+        self.workspace.as_deref().ok_or_else(|| ToolError::new("no_user_session", "nobody is signed in at this computer", "Sign in at its sign-in screen first."))
+    }
+
+    /// The host's facts, with the workspace user's availability read at call time.
     pub fn facts(&self) -> Facts {
         let mut f = self.facts.read().unwrap_or_else(|e| e.into_inner()).clone();
         f.user_session = self.workspace.as_ref().is_some_and(|w| w.available());
@@ -70,9 +73,62 @@ pub enum Output {
 
 pub(crate) type Tool = fn(&Granted, &Value, &Ctx) -> Result<Output, ToolError>;
 
-pub(crate) type Table = &'static [(&'static str, Tool)];
+pub(crate) enum Group {
+    Base,
+    Work,
+    Desktop,
+}
 
-pub(crate) const BASE: Table = &[
-    ("computer_info", info::computer_info),
-    ("audit_read", audit::audit_read),
+// Keep the hello's order on hosts that offer the full set.
+pub(crate) const TOOLS: &[(Group, &str, Tool)] = &[
+    (Group::Base, "computer_info", info::computer_info),
+    (Group::Base, "audit_read", audit::audit_read),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "screenshot", screen::screenshot),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "wait_for", screen::wait_for),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "click", screen::click),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "move", screen::pointer_move),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "drag", screen::drag),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "scroll", screen::scroll),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "key", screen::key),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "type", screen::type_text),
+    (Group::Work, "run", work::work),
+    (Group::Work, "proc_start", work::work),
+    (Group::Work, "proc_write", work::work),
+    (Group::Work, "proc_read", work::work),
+    (Group::Work, "proc_kill", work::work),
+    (Group::Work, "proc_list", work::work),
+    (Group::Work, "fs_list", work::work),
+    (Group::Work, "fs_stat", work::work),
+    (Group::Work, "fs_read", work::work),
+    (Group::Work, "fs_write", work::work),
+    (Group::Work, "fs_hash", work::work),
+    (Group::Work, "fs_move", work::work),
+    (Group::Work, "fs_delete", work::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "clipboard_get", desktop::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "clipboard_set", desktop::work),
+    (Group::Work, "tunnel", tunnel::tunnel),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "windows", desktop::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "window_act", desktop::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "app_list", desktop::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "app_open", desktop::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "app_quit", desktop::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "ui_tree", desktop::work),
+    #[cfg(desktop_host)]
+    (Group::Desktop, "ui_act", desktop::work),
 ];

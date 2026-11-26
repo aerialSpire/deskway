@@ -9,7 +9,7 @@ Notable changes to Deskway are recorded here. The format follows
 ### Added
 
 - The Mac host panel offers optional Full Disk Access to skip folder-by-folder prompts during file transfers and AI file operations.
-- Groundwork for running Deskway Host on Linux computers without a desktop.
+- Groundwork for running Deskway Host on Linux computers without a desktop, including AI commands and file transfers.
 - Connection details show whether a direct session is local or over the internet and which relays a relayed session uses.
 - Admins can check whether their browser can pass traffic through each relay over UDP, TCP, and TLS where available.
 - Self-hosted servers can add regional relay nodes from **Relays** in the admin menu with a single command.
@@ -31,6 +31,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Linux and macOS terminals can close while other commands are still running, and reading past command output returns an empty result.
 - Linux hosts hide typed enrollment passwords, show approval codes on restart while waiting, and prevent two launches from sharing a state directory. The web client shows when a computer has no desktop, and AI clients explain when a tool is unavailable.
 - Browser sessions keep the computer's first connection paths while verifying its answer.
 - Computers fall back to the first online relay node when no latency measurement is usable and the main relay is disabled.

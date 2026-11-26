@@ -340,8 +340,8 @@ This section describes what an AI client can do once a computer lets it in. How 
 described in [architecture.md](architecture.md), "AI control".
 
 - **A single checkpoint.** Every tool call passes through `mcp::gate`, which checks that AI is
-  on, that the tool is known and its arguments match `proto/tools.json`, that someone is signed
-  in for tools that need the person's workspace, and that no input is sent to a view-only
+  on, that the tool is known and its arguments match `proto/tools.json`, that the workspace
+  user is available for tools that need one, and that no input is sent to a view-only
   computer. It also writes a start record and an end record to the audit log (`audit.rs`: JSON
   lines, append-only, bounded; in the service's folder on Windows). A secure desktop (the lock
   screen, UAC) is checked again where input is injected, and the AI's input is dropped there,
@@ -357,11 +357,15 @@ described in [architecture.md](architecture.md), "AI control".
   the key to the other (`handshake_*`, as on the agent's pipe). No other process of the person's
   can therefore impersonate either end. Commands and file operations then run with exactly the
   person's rights.
+- **As the host user** (Linux and macOS). An AI client that may run commands has the access
+  of the user running Deskway Host, including that user's files and the host's own state.
+  Choose the account that runs the host based on the access you want to grant.
 - **Administrator rights only when allowed, and only the person's own.** The AI switch has a
   second part, administrator rights, which is signed together with it and is off unless a
-  browser turns it on. Without it, `elevated` is refused at the gate (`elevation_off`). On
-  Windows the `Deskway` service starts the **admin worker** only while the switch stored next to
-  the trusted devices allows it and the signed-in person is an administrator. The admin worker
+  browser turns it on. Linux refuses `elevated` with `elevation_unavailable`. Windows and
+  macOS refuse it with `elevation_off` while the switch is off. On Windows the `Deskway` service
+  starts the **admin worker** only while the switch stored next to the trusted devices allows it
+  and the signed-in person is an administrator. The admin worker
   runs with the person's elevated token (UAC's linked token) and has its own key and pipe
   (`\\.\pipe\deskway-worker-admin`). Its programs are numbered separately, so a program's id shows
   which worker owns it. Turning the switch off, pressing Stop, or the person signing
@@ -370,9 +374,9 @@ described in [architecture.md](architecture.md), "AI control".
   through the system's own administrator prompt, which the person at the Mac answers every time,
   and a terminal is never elevated.
 - **Programs outlive the AI session.** A program an AI client starts is an ordinary program of the
-  person's. It leaves the service's job (`CREATE_BREAKAWAY_FROM_JOB`, which that job permits), so
-  the session ending, idling out, Stop, or the worker restarting does not end it. It
-  ends only when it exits, when `proc_kill` is called, or when the computer shuts down.
+  workspace user. Ending the session, idling out or pressing Stop leaves these programs
+  running. On Windows, programs can leave the service's job (`CREATE_BREAKAWAY_FROM_JOB`),
+  letting them run past a worker restart. Use `proc_kill` to end a running program.
 
 The following risks remain and are accepted:
 

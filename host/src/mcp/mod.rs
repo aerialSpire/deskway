@@ -36,9 +36,9 @@ pub struct Facts {
     pub desk: Option<Desk>,
     /// A person controlling this computer now (their device's name), beside the AI client.
     pub person: Option<String>,
-    /// AI clients may use administrator rights here.
-    pub admin: bool,
-    /// Someone is signed in at the computer: the session's workspace says, when read
+    /// Whether AI clients may use administrator rights here, if the host supports it.
+    pub admin: Option<bool>,
+    /// Whether the workspace user is available, as the workspace says when read
     /// (`tools::Ctx::facts`).
     pub user_session: bool,
     /// The computer may be watched, not controlled (`deskway-host net --view-only`): no input.
@@ -187,13 +187,8 @@ mod tests {
 
     #[test]
     fn dispatch_checks_the_offered_tools_before_their_other_requirements() {
-        fn run(_: &gate::Granted, _: &Value, _: &Ctx) -> Result<Output, ToolError> {
-            panic!("run needs a user session")
-        }
-
-        let desktop = crate::platform::DesktopFeatures { tools: &[("run", run)], ..crate::platform::TEST_DESKTOP };
         for (features, error) in [
-            (Features { desktop: Some(desktop), ..Features::default() }, "no_user_session"),
+            (Features { work: true, ..Features::default() }, "no_user_session"),
             (Features::default(), "unsupported"),
         ] {
             let (tx, rx) = server(features);

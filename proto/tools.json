@@ -2,7 +2,7 @@
   "version": 1,
   "notes": [
     "The tools an AI client can call on a Deskway computer (docs/architecture.md, \"MCP and tools\"). The one definition: crates/wire reads it at build time, the computer implements exactly these (host/src/tools) and the deskway command lists them to MCP clients before it reaches any computer.",
-    "batch: the batch a tool comes in. screen: none, read (looks at the screen) or act (changes what the screen shows); an act is refused on a secure desktop. needs_user: it works only with someone signed in at the computer. Every tool also takes `computer`, added by the deskway command, which picks the computer and is not passed on."
+    "batch: the batch a tool comes in. screen: none, read (looks at the screen) or act (changes what the screen shows); an act is refused on a secure desktop. needs_user: the tool requires an available workspace user. Every tool also takes `computer`, added by the deskway command, which picks the computer and is not passed on."
   ],
   "tools": [
     {
@@ -297,7 +297,7 @@
       "batch": 1,
       "screen": "none",
       "needs_user": true,
-      "description": "Runs a command as the person signed in at the computer (Windows: PowerShell 7 where it is installed, else Windows PowerShell; macOS: their login shell) and waits for it, at most wait_ms. A command that takes longer runs on: its answer has running true and an id, and proc_read reads on from next. Programs started here are the computer's: they keep running when this AI client leaves, is stopped, or is given up for idling.",
+      "description": "Runs a command as the workspace user (the host user on Linux) and waits up to wait_ms. Windows prefers PowerShell 7 and falls back to Windows PowerShell. Ordinary commands on macOS and Linux use $SHELL -lc, defaulting to /bin/zsh and /bin/sh respectively. Programs outlive the AI session. Use proc_read with the returned id and next to read on.",
       "input": {
         "type": "object",
         "properties": {
@@ -315,7 +315,7 @@
           },
           "elevated": {
             "type": "boolean",
-            "description": "As an administrator: only where a person allowed AI clients administrator rights for this computer (computer_info's admin). Windows: with the administrator rights of the person signed in, who must have them; macOS: the person at the Mac confirms in the system's prompt every time."
+            "description": "Requires Allow administrator rights. Windows uses the signed-in user's administrator rights. macOS prompts for each elevated run. Linux refuses elevation."
           }
         },
         "additionalProperties": false,
@@ -329,7 +329,7 @@
       "batch": 2,
       "screen": "none",
       "needs_user": true,
-      "description": "Starts a program in a terminal of its own, as the person signed in: an interactive shell (Windows: PowerShell 7 where it is installed, else Windows PowerShell; macOS: their login shell) when command is left out, or a command that asks questions or needs a terminal (an installer, a REPL, ssh). Type into it with proc_write and read it with proc_read (its output comes without the terminal's colours and cursor moves). Like run's programs, it outlives this AI client.",
+      "description": "Starts a terminal as the workspace user (the host user on Linux). Windows prefers PowerShell 7 and falls back to Windows PowerShell. macOS and Linux use $SHELL -lc for a command or $SHELL -l for an interactive shell, defaulting to /bin/zsh and /bin/sh respectively. Use proc_write for input and proc_read for plain output. The program outlives the AI session.",
       "input": {
         "type": "object",
         "properties": {
@@ -351,7 +351,7 @@
           },
           "elevated": {
             "type": "boolean",
-            "description": "As an administrator: only where a person allowed AI clients administrator rights for this computer (computer_info's admin). Windows: with the administrator rights of the person signed in, who must have them; macOS: the person at the Mac confirms in the system's prompt every time, and a terminal cannot be."
+            "description": "Windows only, with Allow administrator rights and the signed-in user's administrator rights. macOS and Linux refuse elevated terminals."
           }
         },
         "additionalProperties": false

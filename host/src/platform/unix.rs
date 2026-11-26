@@ -1,4 +1,6 @@
 //! Terminal and state-directory operations shared by the Unix hosts.
+pub(super) mod programs;
+
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem::MaybeUninit;

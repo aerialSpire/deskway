@@ -1,6 +1,6 @@
-//! The Linux host runs in the foreground with no desktop or workspace.
-use std::env;
+//! The Linux host runs in the foreground with an in-process workspace.
 use std::cell::Cell;
+use std::env;
 use std::fs::File;
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
@@ -14,6 +14,10 @@ use crate::config::{self, Config};
 use crate::i18n::{t, tf};
 use crate::settings::Settings;
 use crate::signal::{self, Control};
+use crate::workspace::Local;
+
+mod programs;
+pub use programs::{kill_tree, session_members, start_program, start_terminal};
 
 pub fn config_dir() -> Option<PathBuf> {
     let absolute = |name| env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute());
@@ -57,21 +61,25 @@ pub fn run(cfg: Config) -> Result<()> {
                 let _ = writeln!(io::stdout(), "{}", tf("cli.approve_computer", &[("server", status.server), ("code", code)]));
             }
         }),
-        settings: Arc::new(settings), workspace: None, admin: None,
+        settings: Arc::new(settings), workspace: Some(Arc::new(Local::default())), admin: None,
     }, requests);
     Ok(())
 }
 
-/// Block these signals before starting any host threads, then receive them synchronously.
-fn quit_on_signal(control: Sender<Control>) -> io::Result<()> {
+fn quit_signals() -> libc::sigset_t {
     let mut signals = MaybeUninit::uninit();
     // sigemptyset initializes the set, and all three calls use its valid storage.
-    let signals = unsafe {
+    unsafe {
         libc::sigemptyset(signals.as_mut_ptr());
         libc::sigaddset(signals.as_mut_ptr(), libc::SIGINT);
         libc::sigaddset(signals.as_mut_ptr(), libc::SIGTERM);
         signals.assume_init()
-    };
+    }
+}
+
+/// Block these signals before starting any host threads, then receive them synchronously.
+fn quit_on_signal(control: Sender<Control>) -> io::Result<()> {
+    let signals = quit_signals();
     // Spawned threads inherit this mask. The wait below is the only consumer of these signals.
     let error = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut()) };
     if error != 0 {
