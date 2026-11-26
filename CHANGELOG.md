@@ -27,6 +27,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Browser sessions keep the computer's first connection paths while verifying its answer.
 - Computers fall back to the first online relay node when no latency measurement is usable and the main relay is disabled.
 - Relay setup explains when to pass `-public-ip`, supports copying the join command by hand, and keeps relay authentication separate from sign-in limits.
 - The server installer uses DNS for the public TURN address, enables the service on reruns, and shows recent journal entries if startup fails.
