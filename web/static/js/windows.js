@@ -22,6 +22,9 @@ const open = new Set();
 const waiting = new Map();
 // How long a window has to answer before it is taken to be gone (it closed without saying).
 const ANSWER_MS = 300;
+let selectView = () => {};
+
+export function onWindowView(fn) { selectView = fn; }
 
 if (channel) {
   channel.onmessage = ({ data: m }) => {
@@ -31,6 +34,7 @@ if (channel) {
     else if (m.t === 'front' && m.id === ownComputer) {
       channel.postMessage({ t: 'here', id: ownComputer });
       window.focus();
+      selectView(m.view);
     } else if (m.t === 'here') waiting.get(m.id)?.();
   };
   if (ownComputer) {
@@ -44,34 +48,35 @@ if (channel) {
 const separate = () => store.get('deskway.windows') === '1';
 
 // Pressing computer `d`: its own window, when this device has them and this is not it.
-export function openWindow(d, terminal) {
+export function openWindow(d, view) {
   if (!separate() || d.id === ownComputer) return false;
   const mine = opened.get(d.id);
   if (mine && !mine.closed) {
     mine.focus();
+    channel?.postMessage({ t: 'front', id: d.id, view });
     return true;
   }
   if (channel && open.has(d.id)) {
     // Opened by another window: asked to come to the front. No answer, it is gone: opened anew
     // (still within the press, for the browser).
-    const timer = setTimeout(() => { waiting.delete(d.id); open.delete(d.id); openNew(d, terminal); }, ANSWER_MS);
+    const timer = setTimeout(() => { waiting.delete(d.id); open.delete(d.id); openNew(d, view); }, ANSWER_MS);
     waiting.set(d.id, () => {
       clearTimeout(timer);
       waiting.delete(d.id);
       // A browser may not let a window come forward by itself: then this one says where it is.
       setTimeout(() => { if (document.hasFocus()) gotIt(t('windows.openTitle', { name: d.name }), t('windows.openText')); }, ANSWER_MS);
     });
-    channel.postMessage({ t: 'front', id: d.id });
+    channel.postMessage({ t: 'front', id: d.id, view });
     return true;
   }
-  return openNew(d, terminal);
+  return openNew(d, view);
 }
 
 // False when the browser refused the window: the computer is then controlled here.
-function openNew(d, terminal) {
+function openNew(d, view) {
   const url = new URL(location.pathname, location.origin);
   url.searchParams.set('computer', d.id);
-  if (terminal) url.searchParams.set('terminal', '1');
+  if (view !== 'desktop') url.searchParams.set('view', view);
   const w = window.open(url.href, `deskway-${d.id}`);
   if (w) opened.set(d.id, w);
   return !!w;

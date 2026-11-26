@@ -32,7 +32,7 @@ export function renderDetail() {
       : h('div', { class: 'preview offline' }, h('div', { class: 'thumb-inner' }, t('detail.offline')));
   const kept = keptTerminalNotice(d, t, terminalAge);
   const keptText = kept ? h('span', { class: 'text' }, kept) : null;
-  const openTerminal = () => press(device() || d, false, true);
+  const open = (view) => () => press(device() || d, false, view);
   $app.replaceChildren(h('div', { class: 'page', 'data-page': 'detail' },
     topbar(accountMenu()),
     updateNote(),
@@ -41,10 +41,13 @@ export function renderDetail() {
     preview,
     kept ? h('div', { class: 'notice terminal-kept', role: 'status' },
       keptText,
-      h('button', { class: 'btn compact', type: 'button', onclick: openTerminal }, t('terminal.return'))) : null,
-    !kept && d.online && d.caps?.includes(CAPS.TERMINAL)
+      h('button', { class: 'btn compact', type: 'button', onclick: open('terminal') }, t('terminal.return'))) : null,
+    d.online && d.caps?.includes(CAPS.TERMINAL) && (!kept || d.caps.includes(CAPS.BROWSE))
       ? h('div', { class: 'computer-actions' },
-        h('button', { class: 'btn', type: 'button', onclick: openTerminal }, t('terminal.label')))
+        h('button', { class: 'btn', type: 'button', onclick: open('terminal') }, t('terminal.label')),
+        d.caps.includes(CAPS.BROWSE)
+          ? h('button', { class: 'btn', type: 'button', onclick: open('files') }, t('files.label'))
+          : null)
       : null,
     auditSection(d)));
   if (keptText) {

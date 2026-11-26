@@ -301,8 +301,15 @@ struct Host {
 }
 
 impl Host {
+    fn browse_files(&self) -> Option<crate::workspace::BrowseFiles> {
+        self.workspace.as_ref()?.browse_files()
+    }
+
     fn features(&self) -> Features {
-        Features { desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.terminal.as_ref().map(Terminals::launcher), work: self.workspace.is_some(), view_only: self.view_only }
+        Features {
+            desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.terminal.as_ref().map(Terminals::launcher),
+            work: self.workspace.is_some(), browse: self.browse_files().is_some(), view_only: self.view_only,
+        }
     }
 
     fn hello(&self) -> Wire {
@@ -400,7 +407,7 @@ impl Host {
         let Some(cur) = self.sessions.of(seat).current() else { return };
         if seat == Seat::Desk {
             if let Some(terminal) = &self.terminal {
-                terminal.detach(&cur.id, end.reason.as_str());
+                terminal.end(&cur.id, end.reason.as_str());
             }
         }
         if matches!(end.reason, Reason::Taken | Reason::Ended) {
@@ -445,9 +452,9 @@ impl Host {
         // The nonce issued for this session is used up by this offer, whatever its fate.
         let nonce = m["auth"]["nonce"].as_str().unwrap_or_default().to_string();
         let nonce_ok = self.nonces.take(&session, &nonce, Instant::now());
-        let terminal_sdp = session::terminal::data_only(&sdp);
+        let data_only = session::data::data_only(&sdp);
         let permissions = self.desktop.as_ref().is_some_and(|d| !(d.can_host)());
-        if permissions && !terminal_sdp {
+        if permissions && !data_only {
             eprintln!("session refused: this computer cannot host one now");
             return self.bye(&session, Reason::Permissions);
         }
@@ -467,7 +474,7 @@ impl Host {
         };
         let seat = Seat::of(verified.role);
         let browser = if seat == Seat::Desk {
-            match features.browser_session(terminal_sdp) {
+            match features.browser_session(data_only) {
                 Ok(mode) => Some(mode),
                 Err(reason) => return self.bye(&session, reason),
             }
@@ -512,7 +519,7 @@ impl Host {
             Some(mode) => {
                 let caps = match mode {
                     BrowserSession::Desktop(_) => features.desk_caps(),
-                    BrowserSession::Terminal => vec![wire::caps::TERMINAL.into(), wire::caps::TERMINAL_KEEP.into()],
+                    BrowserSession::Data => features.data_caps(),
                 };
                 vec![Message::Hello { version: wire::PROTOCOL_VERSION, caps }, trust.issue_resume(&verified)]
             }
@@ -545,10 +552,11 @@ impl Host {
                 self.note = None;
                 tx
             }
-            Some(BrowserSession::Terminal) => {
+            Some(BrowserSession::Data) => {
                 let lease = self.terminal.as_ref().expect("a terminal was admitted")
                     .admit(session.clone(), name.clone(), verified.controller.clone());
-                session::spawn(params, |_| session::terminal::Terminal::new(lease))
+                let files = self.browse_files();
+                session::spawn(params, |own| session::data::Data::new(lease, files, own))
             }
             None => {
                 let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };
@@ -569,7 +577,7 @@ impl Host {
                 session::spawn(params, move |own| session::ai::Ai::new(id, platform, crate::mcp::spawn(features, gate, ctx, own.clone()), session::ai::IDLE, tunnels, own))
             }
         };
-        if !matches!(browser, Some(BrowserSession::Terminal)) {
+        if !matches!(browser, Some(BrowserSession::Data)) {
             eprintln!("session started by {name} ({seat:?} seat)");
         }
         let user = m["user"].as_str().unwrap_or_default().to_string();
@@ -737,7 +745,7 @@ impl Host {
 
     fn on_ended(&mut self, session: &str) {
         if let Some(terminal) = &self.terminal {
-            terminal.detach(session, Reason::Failed.as_str());
+            terminal.end(session, Reason::Failed.as_str());
         }
         // The replaced session has said goodbye: the status may name its successor now.
         if self.replaced.iter().any(|r| r == session) {
@@ -1307,7 +1315,7 @@ mod tests {
         }
         use base64::Engine;
         use p256::ecdsa::signature::Signer;
-        assert!(session::terminal::data_only(TERMINAL_SDP));
+        assert!(session::data::data_only(TERMINAL_SDP));
         for (case, features, cap) in [
             ("terminal-desktop", Features { desktop: Some(crate::platform::TEST_DESKTOP), ..Features::default() }, false),
             ("terminal-headless", Features { work: true, ..Features::default() }, false),

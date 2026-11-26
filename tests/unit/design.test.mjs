@@ -86,3 +86,12 @@ test('the host embeds design.css itself, not a copy', () => {
     assert.ok(!/--ground:\s*#/.test(read(`host/src/ui/${f}`)), `${f} defines tokens of its own`);
   }
 });
+
+test('file names preserve spaces in breadcrumbs, rows, link targets and confirmations', () => {
+  const selectors = rules(read('web/static/style.css'))
+    .filter(({ prop, value }) => prop === 'white-space-collapse' && value === 'preserve')
+    .flatMap(({ selector }) => selector.split(',').map((part) => part.trim()));
+  for (const selector of ['.files-path .btn', '.files-name', '.files-target', '.files-confirm']) {
+    assert.ok(selectors.includes(selector), selector);
+  }
+});

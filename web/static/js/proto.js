@@ -22,6 +22,7 @@ export const CAPS = Object.freeze({
   DESK: 'desk',
   TERMINAL: 'terminal',
   TERMINAL_KEEP: 'terminal-keep',
+  BROWSE: 'browse',
   AI: 'ai',
   RELAY_RTT: 'relay-rtt',
 });
@@ -43,6 +44,7 @@ export const TYPES = Object.freeze({
   AuditQuery: { since: 'i?', until: 'i?', tool: 's?', client: 's?', failed: 'b?', offset: 'i?', limit: 'i' },
   AuditCall: { at: 'i', client: 's', device: 's', session: 's', tool: 's', args: 's', result: 's', detail: 's', ms: 'i?' },
   AuditPage: { calls: '[AuditCall]', total: 'i', clients: '[s]', tools: '[s]' },
+  FileEntry: { name: 's', kind: 's:folder|file|link|special', size: 'i', modified: 'i?', mode: 'i', owner: 's', target: 's?', opens: 'b?' },
   KeptTerminal: { since: 'i', name: 's', cred: 's?' },
   Holder: { session: 's', cred: 's?', name: 's', user: 's', established: 'b', since: 'i?' },
   Approval: { kind: 's:browser|device', id: 's', label: 's', ip: 's', code: 's?', created: 'i', device: 'a?' },
@@ -143,6 +145,18 @@ export const CHANNELS = Object.freeze({
       err: msg(H2B, { id: 's', why: 's:big|locked|io|gone|unsupported|timeout|size|image' }),
     }),
   },
+  browse: {
+    discriminator: 't',
+    messages: Object.freeze({
+      list: msg(B2H, { path: '[s]?', cursor: 's?' }),
+      mkdir: msg(B2H, { path: '[s]', name: 's' }),
+      rename: msg(B2H, { path: '[s]', entry: 's', name: 's' }),
+      delete: msg(B2H, { path: '[s]', entry: 's' }),
+      listing: msg(H2B, { path: '[s]', entries: '[FileEntry]', cursor: 's?' }),
+      changed: msg(H2B),
+      error: msg(H2B, { why: 's:not_found|denied|exists|not_empty|invalid_name|invalid_path|busy|io' }),
+    }),
+  },
   terminal: {
     discriminator: 't',
     messages: Object.freeze({
@@ -176,6 +190,10 @@ export const Control = Object.freeze({
 export const Move = Object.freeze({ TO: 'm', BY: 'mr', CURSOR_POS: 'cp' });
 // Not named File: that is the DOM's.
 export const FileMsg = Object.freeze({ PUT: 'put', READY: 'ready', DONE: 'done', META: 'meta', FIN: 'fin', CANCEL: 'cancel', ERR: 'err' });
+export const BrowseMsg = Object.freeze({
+  LIST: 'list', MKDIR: 'mkdir', RENAME: 'rename', DELETE: 'delete', LISTING: 'listing', CHANGED: 'changed', ERROR: 'error',
+});
+export const BROWSE_MAX_BYTES = 64 * 1024;
 export const TerminalMsg = Object.freeze({
   OPEN: 'open', OPENED: 'opened', RESIZE: 'resize', ACK: 'ack', CLOSE: 'close', TERMINATE: 'terminate', CLOSED: 'closed', EXIT: 'exit', ERROR: 'error',
 });

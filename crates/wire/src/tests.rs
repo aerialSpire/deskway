@@ -141,6 +141,17 @@ fn terminal_matches_the_definition() {
     assert_eq!(TerminalError::VALUES, values(field(&def, "terminal", "error", "why")));
 }
 
+#[test]
+fn browse_matches_the_definition() {
+    use super::browse::{Browse, BrowseError, FileEntry, FileKind, MAX_BYTES};
+    check_channel::<Browse>("browse", Browse::TYPES, Browse::kind);
+    check_struct::<FileEntry>("FileEntry", FileEntry::FIELDS);
+    let def = def();
+    assert_eq!(def["channels"]["browse"]["max_bytes"], MAX_BYTES);
+    assert_eq!(BrowseError::VALUES, values(field(&def, "browse", "error", "why")));
+    assert_eq!(FileKind::VALUES, values(&def["types"]["FileEntry"]["fields"]["kind"]));
+}
+
 // ---- shared types and value sets ----
 
 fn check_struct<T: Serialize + DeserializeOwned + Debug>(name: &str, fields: &[&str]) {

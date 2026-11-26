@@ -48,13 +48,8 @@ export class TerminalView {
     terminal.onopen = () => this.active();
   }
 
-  applyCaps() {
-    if (this.s.hasCap(CAPS.TERMINAL)) this.active();
-    else this.s.connection.end('no_terminal');
-  }
-
   active() {
-    if (!this.s.connected || !this.s.hasCap(CAPS.TERMINAL) || this.stream.channel.readyState !== 'open') return;
+    if (this.s.stage.hidden || !this.s.connected || !this.s.hasCap(CAPS.TERMINAL) || this.stream?.channel.readyState !== 'open') return;
     if (!this.loading) this.loading = this.load();
     this.fit();
   }
@@ -144,7 +139,7 @@ export class TerminalView {
 
   onStatus(m) {
     if (m.t === Msg.CLOSED) { this.s.leave(); return; }
-    this.s.ready();
+    if (!this.s.stage.hidden) this.s.ready();
     if (m.t === Msg.OPENED) {
       this.fit();
       if (m.dropped) this.showStatus(t('terminal.dropped'));

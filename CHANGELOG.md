@@ -11,6 +11,7 @@ Notable changes to Deskway are recorded here. The format follows
 - Serve a Deskway AI profile over MCP Streamable HTTP with `deskway gateway`, behind an authenticating HTTPS server.
   Gateway error messages are in English.
 - Open a Linux computer's terminal from the browser, with the same on-screen keyboard and takeover controls as a desktop session.
+- Browse a Linux computer’s files, create folders, rename entries and delete files or empty folders from the browser.
 - Run a supervised MCP gateway with a private Unix socket on Linux and macOS and a proxy that stops with the gateway.
 - The Mac host panel offers optional Full Disk Access to skip folder-by-folder prompts during file transfers and AI file operations.
 - Install Deskway Host as a Linux service on x86-64 or ARM64 for AI commands, files and tunnels, and stop AI control locally with `deskway-host stop-ai`.
@@ -37,6 +38,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Files keeps operating on the folder it showed when a symbolic link is retargeted, and preserves spaces in file names.
 - The MCP gateway rejects oversized bodies and excess concurrent requests, and the profile proxy discards queued calls after their gateway deadline.
 - Paste large or multiline text into a Linux terminal without losing the shell, with bracketed paste where the application supports it.
 - When a Linux computer refuses a terminal connection from an untrusted browser, Deskway explains how to get approval from a trusted device.

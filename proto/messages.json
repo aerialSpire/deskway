@@ -19,6 +19,7 @@
     { "name": "desk", "who": "host", "since": 2, "meaning": "The host reports which input desktop is active (desk): lock screen, secure prompts." },
     { "name": "terminal", "who": "host", "since": 4, "meaning": "The host offers a data-only browser terminal on its desk seat." },
     { "name": "terminal-keep", "who": "host", "since": 4, "meaning": "The host keeps the browser terminal across sessions and supports explicit termination." },
+    { "name": "browse", "who": "host", "since": 4, "meaning": "The data-only browser session also offers the browse channel for the host user’s files." },
     { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
     { "name": "relay-rtt", "who": "host", "since": 4, "meaning": "The host accepts relay-list on its signaling socket and reports UDP round-trip times." }
   ],
@@ -133,6 +134,19 @@
         "user": { "type": "string", "optional": false, "meaning": "the controller's account id, as the server gave it in the offer" },
         "established": { "type": "boolean", "optional": false, "meaning": "the control channel opened; false: still connecting" },
         "since": { "type": "integer", "optional": true, "status": "current", "since": 4, "meaning": "unix seconds: since when it holds the computer" }
+      }
+    },
+    "FileEntry": {
+      "meaning": "An entry in a browser file listing.",
+      "fields": {
+        "name": {"type": "string", "optional": false, "meaning": "The name’s bytes, base64url without padding."},
+        "kind": {"type": "string", "optional": false, "meaning": "Entry type without following links.", "enum": ["folder", "file", "link", "special"]},
+        "size": {"type": "integer", "optional": false, "meaning": "Size in bytes."},
+        "modified": {"type": "integer", "optional": true, "meaning": "Modification time in Unix seconds."},
+        "mode": {"type": "integer", "optional": false, "meaning": "The permission and special mode bits."},
+        "owner": {"type": "string", "optional": false, "meaning": "Owner name, or numeric user ID if unresolved."},
+        "target": {"type": "string", "optional": true, "meaning": "The link target’s bytes, base64url without padding."},
+        "opens": {"type": "boolean", "optional": true, "meaning": "Whether a link opens as a directory."}
       }
     },
     "KeptTerminal": {
@@ -675,7 +689,7 @@
       ]
     },
     "control": {
-      "transport": "Reliable, ordered WebRTC data channel input for the picture or control for the terminal; JSON text",
+      "transport": "Reliable, ordered WebRTC data channel input for the picture or control for the data-only browser session; JSON text",
       "discriminator": "t",
       "messages": [
         {
@@ -987,6 +1001,67 @@
           "fields": {
             "id": { "type": "string", "optional": false, "meaning": "transfer id" },
             "why": { "type": "string", "enum": ["big", "locked", "io", "gone", "unsupported", "timeout", "size", "image"], "optional": false, "meaning": "big: over the limits; locked: the computer is locked; io; gone: nothing to send; unsupported: no transfers here; timeout: stalled 30 s; size: more bytes than announced; image: not a usable image" }
+          }
+        }
+      ]
+    },
+    "browse": {
+      "transport": "Reliable, ordered WebRTC data channel browse; JSON text, one request awaiting a reply at a time",
+      "discriminator": "t",
+      "max_bytes": 65536,
+      "messages": [
+        {
+          "type": "list", "directions": ["browser->host"],
+          "meaning": "List the requested directory, starting at home when path is absent.",
+          "fields": {
+            "path": {"type": "array", "optional": true, "meaning": "Absolute path as base64url components, or [] for root.", "items": "string"},
+            "cursor": {"type": "string", "optional": true, "meaning": "Opaque cursor from the previous listing for this path."}
+          }
+        },
+        {
+          "type": "mkdir", "directions": ["browser->host"],
+          "meaning": "Create an empty directory.",
+          "fields": {
+            "path": {"type": "array", "optional": false, "meaning": "Absolute path as base64url components, or [] for root.", "items": "string"},
+            "name": {"type": "string", "optional": false, "meaning": "A new UTF-8 name, one path component."}
+          }
+        },
+        {
+          "type": "rename", "directions": ["browser->host"],
+          "meaning": "Rename an entry in the same directory.",
+          "fields": {
+            "path": {"type": "array", "optional": false, "meaning": "Absolute path as base64url components, or [] for root.", "items": "string"},
+            "entry": {"type": "string", "optional": false, "meaning": "The current entry’s encoded name from its listing."},
+            "name": {"type": "string", "optional": false, "meaning": "A new UTF-8 name, one path component."}
+          }
+        },
+        {
+          "type": "delete", "directions": ["browser->host"],
+          "meaning": "Remove an entry, requiring an empty directory and never following the final link.",
+          "fields": {
+            "path": {"type": "array", "optional": false, "meaning": "Absolute path as base64url components, or [] for root.", "items": "string"},
+            "entry": {"type": "string", "optional": false, "meaning": "The current entry’s encoded name from its listing."}
+          }
+        },
+        {
+          "type": "listing", "directions": ["host->browser"],
+          "meaning": "A page in folder-first bytewise name order. Cursor is absent at the end.",
+          "fields": {
+            "path": {"type": "array", "optional": false, "meaning": "Absolute path as base64url components, or [] for root.", "items": "string"},
+            "entries": {"type": "array", "optional": false, "meaning": "Entries on this page.", "items": "FileEntry"},
+            "cursor": {"type": "string", "optional": true, "meaning": "Opaque cursor from the previous listing for this path."}
+          }
+        },
+        {
+          "type": "changed", "directions": ["host->browser"],
+          "meaning": "A change to the directory succeeded.",
+          "fields": {}
+        },
+        {
+          "type": "error", "directions": ["host->browser"],
+          "meaning": "The requested filesystem operation failed.",
+          "fields": {
+            "why": {"type": "string", "optional": false, "meaning": "Reason for the failure.", "enum": ["not_found", "denied", "exists", "not_empty", "invalid_name", "invalid_path", "busy", "io"]}
           }
         }
       ]

@@ -1,6 +1,7 @@
 //! Files, as the workspace user: list, look at, read and write in parts, move, delete.
 
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::fs;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -32,19 +33,28 @@ fn about(path: &Path, m: &std::fs::Metadata) -> Value {
     json!({ "name": path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string()), "kind": kind, "size": m.len(), "modified": modified })
 }
 
-pub fn list(path: &str) -> Answer {
-    let mut entries: Vec<Value> = Vec::new();
+#[cfg(target_os = "linux")]
+pub(super) mod browse;
+
+fn list_entries<T>(dir: impl Iterator<Item = io::Result<T>>, mut describe: impl FnMut(T) -> Option<Value>) -> (Vec<Value>, bool) {
+    let mut entries = Vec::new();
     let mut more = false;
-    for e in std::fs::read_dir(path).map_err(|e| WorkError::io(path, e))?.flatten() {
+    for entry in dir.flatten() {
         if entries.len() == LIST_MOST {
             more = true;
             break;
         }
-        if let Ok(m) = e.metadata() {
-            entries.push(about(&e.path(), &m));
+        if let Some(entry) = describe(entry) {
+            entries.push(entry);
         }
     }
     entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    (entries, more)
+}
+
+pub fn list(path: &str) -> Answer {
+    let dir = fs::read_dir(path).map_err(|e| WorkError::io(path, e))?;
+    let (entries, more) = list_entries(dir, |e| e.metadata().ok().map(|m| about(&e.path(), &m)));
     Ok(json!({ "path": path, "entries": entries, "more": more }))
 }
 
@@ -98,19 +108,41 @@ pub fn rename(from: &str, to: &str) -> Answer {
 }
 
 pub fn delete(path: &str, recursive: bool) -> Answer {
-    let m = std::fs::symlink_metadata(path).map_err(|e| WorkError::io(path, e))?;
-    let r = match (m.is_dir(), recursive) {
-        (true, true) => std::fs::remove_dir_all(path),
-        (true, false) => std::fs::remove_dir(path),
-        (false, _) => std::fs::remove_file(path),
-    };
-    r.map_err(|e| WorkError::io(path, e))?;
+    remove(Path::new(path), recursive).map_err(|e| WorkError::io(path, e))?;
     Ok(json!({ "deleted": path }))
+}
+
+fn remove(path: &Path, recursive: bool) -> io::Result<()> {
+    match (fs::symlink_metadata(path)?.is_dir(), recursive) {
+        (true, true) => fs::remove_dir_all(path),
+        (true, false) => fs::remove_dir(path),
+        (false, _) => fs::remove_file(path),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_listing_keeps_its_scan_limit_and_skips_unreadable_entries() {
+        for (label, before, after, more, scanned, described) in [
+            ("exact limit", LIST_MOST, &[][..], false, LIST_MOST, LIST_MOST),
+            ("extra entry", LIST_MOST, &[Ok(true), Ok(true)], true, LIST_MOST + 1, LIST_MOST),
+            ("iterator errors", LIST_MOST - 1, &[Err(io::ErrorKind::PermissionDenied), Ok(true), Err(io::ErrorKind::Other)], false, LIST_MOST + 2, LIST_MOST),
+            ("entry disappears", LIST_MOST - 1, &[Ok(false), Ok(true), Ok(false)], true, LIST_MOST + 2, LIST_MOST + 1),
+        ] {
+            let mut read = 0;
+            let mut metadata_reads = 0;
+            let dir = std::iter::repeat_n(Ok(true), before).chain(after.iter().copied())
+                .map(|entry| entry.map_err(io::Error::from)).inspect(|_| read += 1);
+            let (entries, has_more) = list_entries(dir, |exists| {
+                metadata_reads += 1;
+                exists.then(|| json!({"name": "file"}))
+            });
+            assert_eq!((entries.len(), has_more, read, metadata_reads), (LIST_MOST, more, scanned, described), "{label}");
+        }
+    }
 
     #[test]
     fn files_are_written_read_in_parts_moved_listed_and_deleted() {

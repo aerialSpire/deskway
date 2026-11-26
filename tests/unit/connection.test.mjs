@@ -60,7 +60,7 @@ const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) 
 let ids = 0;
 // A connection to computer `pc1` and everything it talks to; `verdict` is what checking an
 // answer says.
-function setup({ force = false, verdict = 'ok', socketOpen = true, terminal = false } = {}) {
+function setup({ force = false, verdict = 'ok', socketOpen = true, dataOnly = false } = {}) {
   const socket = { open: socketOpen, sent: [], isOpen() { return this.open; }, send(m) { this.sent.push(m); } };
   const timers = fakeTimers();
   let peer = null;
@@ -69,7 +69,7 @@ function setup({ force = false, verdict = 'ok', socketOpen = true, terminal = fa
     id: `S${++ids}`,
     device: 'pc1',
     force,
-    terminal,
+    dataOnly,
     deps: {
       socket,
       timers,
@@ -116,8 +116,8 @@ function trickle(env, candidate) {
   env.signal({ type: 'candidate', candidate: { candidate, sdpMLineIndex: 0 } });
 }
 
-test('the terminal negotiates only control and terminal channels and keeps them on ICE restart', async () => {
-  const env = await offered({ terminal: true });
+test('the data-only offer negotiates control and terminal channels and keeps them on ICE restart', async () => {
+  const env = await offered({ dataOnly: true });
   const channels = env.c.channels;
   assert.deepEqual(Object.keys(env.peer.channels), ['control', 'terminal']);
   assert.equal(channels.input.label, 'control');

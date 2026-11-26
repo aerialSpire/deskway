@@ -119,17 +119,24 @@ When the computer has a holder, the page asks one of these questions (`views/tak
 - otherwise: "Your {name} is controlling this computer. Take over?" (or, if the holder is still
   connecting, a question that says so).
 
-**Terminal** offers start without force, as do picture offers when the cached holder is this
-device. The host's current holder decides whether the page asks about taking over, including
-if another tab of this browser is connected. Taking over detaches the prior browser and the
-new browser attaches to the same shell.
+**Terminal** and **Files** offers start without force, as do picture offers when the cached
+holder is this device. The host's current holder decides whether the page asks about taking
+over, including if another tab of this browser is connected. Both actions open the same
+kind of session. The toolbar switches views on the one connection. An ICE restart preserves
+the file view and terminal attachment.
+
+Opening Files starts no shell. The first visit to Terminal in that session starts or
+reattaches the shell. Switching views leaves an attached terminal running. Taking over
+detaches the prior browser. The new browser reattaches to the same shell when it shows
+Terminal. A session with no terminal has an ordinary Disconnect dialog.
 
 The host keeps one browser terminal independently of the desk session. Disconnect, the end
 of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's
 page shows when the last device left and offers **Return** while the terminal is detached.
 During recovery the terminal view says that the terminal is running on the computer and
 that missed output will appear when the browser returns. An established connection that
-recovers in place continues its existing stream.
+recovers in place continues its existing stream. Reconnecting after an end reopens the
+view that was showing when the connection ended.
 
 The shell ends on exit, **Close the terminal and disconnect**, 24 hours without an attachment,
 or host shutdown. The deliberate close is available from the attached terminal's Disconnect

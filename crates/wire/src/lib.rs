@@ -10,6 +10,7 @@
 //! are built for this crate's tests and, with the `contract` feature, for the contract tests of
 //! the crates that build on it (the host checks its agent pipe and its pairing against them).
 
+pub mod browse;
 pub mod challenge;
 pub mod control;
 pub mod crypto;
@@ -47,11 +48,12 @@ pub mod caps {
     pub const DESK: &str = "desk";
     pub const TERMINAL: &str = "terminal";
     pub const TERMINAL_KEEP: &str = "terminal-keep";
+    pub const BROWSE: &str = "browse";
     /// It takes AI clients (docs/architecture.md, "AI control").
     pub const AI: &str = "ai";
     pub const RELAY_RTT: &str = "relay-rtt";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, AI, RELAY_RTT];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, BROWSE, AI, RELAY_RTT];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of

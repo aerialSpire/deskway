@@ -41,11 +41,11 @@ const DROPS_TOKEN = new Set(['taken', 'ended', 'unpaired', 'auth', 'keyChanged',
 const OWN_REASONS = { keyChanged: 'auth', forged: 'auth' };
 
 export class Connection {
-  constructor({ id, device, force = false, terminal = false, deps }) {
+  constructor({ id, device, force = false, dataOnly = false, deps }) {
     this.id = id;
     this.device = device;
     this.force = !!force;
-    this.terminal = terminal;
+    this.dataOnly = dataOnly;
     this.deps = deps;
     this.state = 'connecting';
     this.handlers = {};
@@ -109,8 +109,8 @@ export class Connection {
     if (this.ended) return;
     const pc = new this.deps.Peer({ iceServers: ice });
     this.pc = pc;
-    const input = pc.createDataChannel(this.terminal ? 'control' : 'input');
-    this.channels = this.terminal
+    const input = pc.createDataChannel(this.dataOnly ? 'control' : 'input');
+    this.channels = this.dataOnly
       ? { input, terminal: pc.createDataChannel('terminal') }
       : { input, move: pc.createDataChannel('move', { ordered: false, maxRetransmits: 0 }), file: pc.createDataChannel('file') };
     this.emit('channels', this.channels);

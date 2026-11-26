@@ -1,6 +1,16 @@
 # Install Deskway Host on Linux
 
-When the Linux computer is online, choose **Terminal** below the desktop notice on its page.
+When the Linux computer is online, choose **Terminal** or **Files** below the desktop notice
+on its page. The session toolbar switches between the two. Files opens the host user's home
+directory without starting a shell. Use the path above the entries to go to an ancestor or the
+root. Scroll for more entries and use **Refresh** to see changes. The folder menu creates
+folders. Each entry's menu can rename or delete it. A folder must be empty to be deleted.
+Opening a symbolic link to a folder shows the resolved path and operates on that folder's
+entries. Deleting a symbolic link removes the link itself. Files uses the host user's permissions
+and includes dotfiles. The host writes each operation's device, path and outcome to its
+output, which systemd sends to the journal.
+
+Choose **Terminal** to start or return to the shell.
 A browser this computer trusts can use the host user's login shell, starting in that user's
 home directory. Type with a physical keyboard or choose **Keyboard** for Deskway's on-screen
 keyboard. Select **Input method** on that keyboard to use your device's input method.

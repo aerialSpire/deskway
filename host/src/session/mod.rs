@@ -31,6 +31,7 @@ use wire::signal::Signal as Wire;
 use wire::types::{AnswerAuth, IceCandidate, Reason};
 
 pub mod ai;
+pub mod data;
 pub mod terminal;
 #[cfg(desktop_host)]
 pub mod desk;
@@ -51,6 +52,8 @@ pub enum SessionEvent {
     ClipShare(bool),
     /// An answer to an AI client's MCP request (`crate::mcp`), to send it.
     Mcp(String),
+    /// A completed filesystem operation on the data-only browser session.
+    Browse(Vec<u8>),
     /// A tunnel's connection gave bytes, or closed (`peer::pipe`).
     Pipe(PipeEvent),
 }
@@ -125,6 +128,7 @@ pub trait Role: Send + 'static {
     fn clip_share(&mut self, _cx: &mut Cx, _on: bool) {}
     /// An answer to an MCP request, to send.
     fn mcp_reply(&mut self, _cx: &mut Cx, _text: String) {}
+    fn file_reply(&mut self, _text: Vec<u8>) {}
     /// A tunnel's connection gave bytes, or closed.
     fn pipe(&mut self, _cx: &mut Cx, _e: PipeEvent) {}
     /// After each pass over str0m's output.
@@ -414,6 +418,7 @@ impl<R: Role> Session<R> {
             SessionEvent::Platform(e) => self.role.platform(cx!(self, rtc), e),
             SessionEvent::ClipShare(on) => self.role.clip_share(cx!(self, rtc), on),
             SessionEvent::Mcp(text) => self.role.mcp_reply(cx!(self, rtc), text),
+            SessionEvent::Browse(text) => self.role.file_reply(text),
             SessionEvent::Pipe(e) => self.role.pipe(cx!(self, rtc), e),
             SessionEvent::RemoteCandidate(s) => {
                 // Browsers may send mDNS candidates, which are skipped: the other end still

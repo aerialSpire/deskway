@@ -1,16 +1,12 @@
-//! The desk seat's data-only role, with an attachment to the host's PTY.
+//! A terminal channel's attachment to the host's PTY.
 
 use std::collections::VecDeque;
 use std::io;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use peer::state::Signal;
-use str0m::change::SdpOffer;
-use str0m::channel::{Channel, ChannelData, ChannelId, Reliability};
-use str0m::Event;
-use wire::control::Control;
-use wire::terminal::{Terminal as Msg, TerminalError, CHANNEL, FRAME, INPUT_WINDOW, OUTPUT_WINDOW};
+use str0m::channel::{Channel, ChannelData, ChannelId};
+use wire::terminal::{Terminal as Msg, TerminalError, FRAME, INPUT_WINDOW, OUTPUT_WINDOW};
 
 use crate::i18n::t;
 use wire::types::Reason;
@@ -19,19 +15,11 @@ use replay::History;
 
 pub mod registry;
 mod replay;
-use super::{Cx, Role};
+use super::Cx;
 
 const HIGH: usize = 64 * 1024;
 const LOW: usize = 16 * 1024;
 const POLL: Duration = Duration::from_millis(10);
-
-/// A data-only offer has a single application section. The original SDP is covered by the
-/// same proof as a picture offer.
-pub fn data_only(sdp: &str) -> bool {
-    SdpOffer::from_sdp_string(sdp).is_ok_and(|offer| {
-        matches!(&offer.media_lines[..], [media] if media.typ.is_channel() && !media.disabled)
-    })
-}
 
 #[derive(Default)]
 struct OutputCredit {
@@ -179,7 +167,6 @@ fn retry(e: &io::Error) -> bool {
 
 pub struct Terminal {
     lease: Lease,
-    channel: Option<ChannelId>,
     stream: Option<Stream>,
     reply: Option<Msg>,
     done: bool,
@@ -187,7 +174,7 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(lease: Lease) -> Self {
-        Self { lease, channel: None, stream: None, reply: None, done: false }
+        Self { lease, stream: None, reply: None, done: false }
     }
 
     fn finish(&mut self, reply: Option<Msg>) {
@@ -218,7 +205,7 @@ impl Terminal {
         }
     }
 
-    fn message(&mut self, active: bool, d: ChannelData) {
+    pub(super) fn message(&mut self, active: bool, d: ChannelData) {
         if self.done {
             return;
         }
@@ -290,56 +277,18 @@ impl Terminal {
         }
         Ok(Some(if progress || exit.is_some() { Instant::now() } else { Instant::now() + POLL }))
     }
-}
 
-impl Role for Terminal {
-    fn releaser(&self) -> Box<dyn Fn() + Send> {
-        Box::new(|| {})
+    pub(super) fn channel_closed(&mut self) {
+        self.lease.detach(Reason::Failed.as_str());
+        self.finish(None);
     }
 
-    fn accepts(&self, sdp: &str) -> bool {
-        data_only(sdp)
+    pub(super) fn ended(&self, reason: Reason) {
+        self.lease.end(reason.as_str());
     }
 
-    fn channel_open(&mut self, cx: &mut Cx, id: ChannelId, label: &str) -> bool {
-        let reliable = cx.rtc.channel(id).is_some_and(|ch| {
-            ch.config().is_some_and(|c| c.ordered && matches!(c.reliability, Reliability::Reliable))
-        });
-        match label {
-            "control" if reliable && cx.control().is_none() => return true,
-            CHANNEL if reliable && self.channel.is_none() => self.channel = Some(id),
-            _ => cx.rtc.direct_api().close_data_channel(id),
-        }
-        false
-    }
-
-    fn channel_data(&mut self, cx: &mut Cx, d: ChannelData) -> bool {
-        if cx.control() == Some(d.id) && !d.binary {
-            if let Ok(Control::End { reason, .. }) = serde_json::from_slice(&d.data) {
-                return cx.signal(Signal::PeerEnded(reason));
-            }
-        } else if self.channel == Some(d.id) {
-            self.message(cx.active(), d);
-        }
-        false
-    }
-
-    fn rtc_event(&mut self, _: &mut Cx, e: Event) {
-        if matches!(e, Event::ChannelClose(id) if self.channel == Some(id)) {
-            self.lease.detach(Reason::Failed.as_str());
-            self.finish(None);
-        }
-    }
-
-    fn ended(&mut self, reason: Reason) {
-        self.lease.detach(reason.as_str());
-    }
-
-    fn before_wait(&mut self, cx: &mut Cx, _: usize) -> Option<Instant> {
-        if !cx.active() {
-            return None;
-        }
-        let mut ch = cx.rtc.channel(self.channel?)?;
+    pub(super) fn poll(&mut self, cx: &mut Cx, id: ChannelId) -> Option<Instant> {
+        let mut ch = cx.rtc.channel(id)?;
         match self.pump(&mut ch) {
             Ok(next) => next,
             Err(e) => {
@@ -350,7 +299,7 @@ impl Role for Terminal {
                 self.error(TerminalError::Io);
                 // If the channel cannot send even an error, its close reports the failure.
                 if self.pump(&mut ch).is_err() {
-                    cx.rtc.direct_api().close_data_channel(self.channel?);
+                    cx.rtc.direct_api().close_data_channel(id);
                     self.finish(None);
                 }
                 Some(Instant::now())

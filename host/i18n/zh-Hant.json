@@ -1,4 +1,5 @@
 {
+  "files.operation": "檔案操作",
   "terminal.opened": "{name} 開啟了終端機",
   "terminal.left": "{name} 離開了終端機（{reason}）",
   "terminal.returned": "{name} 返回了終端機",
