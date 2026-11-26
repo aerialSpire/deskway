@@ -102,6 +102,16 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// A detached terminal, as the host reports it.
+    pub struct KeptTerminal {
+        "since" since: u64,
+        "name" name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "cred" cred: Option<String>,
+    }
+}
+
+wire_struct! {
     /// The host's signature over offer and answer (`deskway-answer-v1`).
     pub struct AnswerAuth {
         "sig" sig: String,

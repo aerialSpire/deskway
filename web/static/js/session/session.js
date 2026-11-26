@@ -15,6 +15,7 @@ import { OnscreenKeyboard } from './onscreen-keyboard.js';
 import { Toolbar } from './toolbar.js';
 import { Desktop } from './desktop.js';
 import { TerminalView } from './terminal-view.js';
+import { terminalDisconnectActions } from '../terminal-ui.js';
 
 // What the stage says while the session is not active, by why.
 const AWAY_TEXT = { network: 'session.reconnecting', host: 'session.hostAway', server: 'session.serverAway' };
@@ -69,7 +70,7 @@ export class Session {
     // that started the session, which browsers require.
     if (full && store.get('deskway.autofull') !== '0') this.toolbar.toggleFullscreen();
     // The stage reports progress until its contents are ready.
-    this.setWaiting(t('session.connecting'));
+    this.setWaiting(t(this.content.connectingNotice || 'session.connecting'));
 
     this.connection = new Connection({
       id: this.id,
@@ -191,9 +192,9 @@ export class Session {
         this.content.recover?.();
       }
       this.toolbar.route('reconnecting');
-      this.showNotice(t(AWAY_TEXT[cause]));
+      this.showNotice(t(this.content.recoveringNotice || AWAY_TEXT[cause]));
     } else if (state === 'connecting') {
-      this.setWaiting(t(cause === 'network' ? 'session.connecting' : AWAY_TEXT[cause]));
+      this.setWaiting(t(this.content.connectingNotice || (cause === 'network' ? 'session.connecting' : AWAY_TEXT[cause])));
     }
   }
 
@@ -265,17 +266,24 @@ export class Session {
 
   // The person ends the session (Disconnect, the back gesture, leaving the page).
   leave() {
-    this.content.leave?.();
     this.connection.end('left');
   }
 
   // Ending a session by accident is costly (a long task loses its watcher), so it asks.
   confirmLeave() {
     const busy = this.content.busy;
+    const cancel = () => this.stage.focus({ preventScroll: true });
+    const leave = () => this.leave();
+    const title = t('leave.title', { name: this.device.name });
+    if (this.terminal && this.content.keeps) {
+      dialog(title, t('terminal.leaveKeeping'),
+        terminalDisconnectActions(t, cancel, () => this.content.terminate(), leave, this.connected && this.content.canClose));
+      return;
+    }
     const text = this.terminal ? t('terminal.leave') : busy ? t('leave.textBusy', { n: busy }) : t('leave.text');
-    dialog(t('leave.title', { name: this.device.name }), text, [
-      { label: t('common.cancel'), run: () => this.stage.focus({ preventScroll: true }) },
-      { label: t('tb.disconnect'), primary: true, run: () => this.leave() },
+    dialog(title, text, [
+      { label: t('common.cancel'), run: cancel },
+      { label: t('tb.disconnect'), primary: true, run: leave },
     ]);
   }
 

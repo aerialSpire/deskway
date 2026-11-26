@@ -451,9 +451,14 @@ The following risks remain and are accepted:
 An approved browser can open a terminal on a Linux host under the same admission and
 takeover rules as a picture session. The signed SDP selects the session kind. The terminal
 is a login shell in the home directory of the account running Deskway Host, with that
-account's access to programs and files. Deskway starts it without elevation. The host logs
-the device and terminal session start and end to its output, which systemd collects in the
-journal. Terminal input and output are never recorded.
+account's access to programs and files. Deskway starts it without elevation. The shell and its
+programs survive the session that opened them. Any browser admitted to the desk seat can
+return to that shell and receive the host's most recent 256 KiB of output, held only in memory.
+The shell ends on exit, when an attached browser explicitly closes it, after 24 hours detached,
+or when the host stops. Stopping the service ends the shell and its jobs and clears its output.
+The host logs when the terminal opens, is left, is returned to or closes, including the
+device and the reason where applicable. Systemd collects these events in the journal.
+Terminal input and output never go to the journal or to disk through Deskway.
 
 Before sending its offer, the browser asks the host for a nonce (`challenge`). The host answers
 with 16 random bytes (`nonce`), valid for one offer on that session and for 60 seconds. Every

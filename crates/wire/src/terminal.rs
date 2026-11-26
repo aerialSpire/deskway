@@ -10,6 +10,7 @@ pub const INPUT_WINDOW: usize = 64 * 1024;
 wire_values! {
     pub enum TerminalError {
         "open" => Open,
+        "close" => Close,
         "io" => Io,
         "protocol" => Protocol,
     }
@@ -18,10 +19,17 @@ wire_values! {
 wire_enum! {
     pub enum Terminal (tag "t") {
         "open" => Open { "rows" rows: u16, "cols" cols: u16 },
-        "opened" => Opened {},
+        "opened" => Opened {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "replay" replay: Option<usize>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "dropped" dropped: Option<bool>,
+        },
         "resize" => Resize { "rows" rows: u16, "cols" cols: u16 },
         "ack" => Ack { "bytes" bytes: usize },
         "close" => Close {},
+        "terminate" => Terminate {},
+        "closed" => Closed {},
         "exit" => Exit { "code" code: i32 },
         "error" => Error { "why" why: TerminalError },
     }

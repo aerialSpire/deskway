@@ -7,9 +7,21 @@ keyboard. Select **Input method** on that keyboard to use your device's input me
 Paste into the terminal with your browser's Paste command or from the input-method box.
 When a shell or terminal application enables bracketed paste, it receives a multiline paste
 as one paste. On a Mac controller, Option can type characters from the local keyboard layout.
-Disconnecting or losing the session ends the shell and its jobs. Choose **Terminal** again
-to start a fresh shell. If another tab still holds the terminal, Deskway asks before taking over.
-The host records session start, end and PTY errors in its output, which systemd sends to the journal.
+**Disconnect** leaves the terminal and its programs running. On the computer's page, choose
+**Return** to rejoin the shell and see recent output. If another device or tab holds the
+terminal, Deskway asks before taking over the same shell. If older output was discarded,
+the terminal displays a notice in your browser's language. Replay restores private modes
+such as bracketed paste and the alternate screen. Colours, cursor position for
+non-full-screen programs, scroll regions and character sets can be lost when older output
+is discarded. Full-screen programs redraw when notified of the terminal size, and shells
+redraw their prompts.
+
+In the terminal's Disconnect dialog, choose **Close the terminal and disconnect** to end the
+shell and its jobs. If closing fails, Deskway shows an error in the attached terminal.
+You can also type `exit`. Deskway closes a terminal left unattended for
+24 hours. Stopping, updating or rebooting the host also ends the terminal and its jobs.
+The host writes terminal opens, departures, returns and closures to its output, which systemd
+sends to the journal.
 The service runs headless.
 
 To use another browser, sign in there and approve its six-digit request from a browser the

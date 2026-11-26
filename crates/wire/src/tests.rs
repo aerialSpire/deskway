@@ -167,6 +167,7 @@ fn shared_types_match_the_definition() {
     check_struct::<OfferAuth>("OfferAuth", OfferAuth::FIELDS);
     check_struct::<AnswerAuth>("AnswerAuth", AnswerAuth::FIELDS);
     check_struct::<Holder>("Holder", Holder::FIELDS);
+    check_struct::<KeptTerminal>("KeptTerminal", KeptTerminal::FIELDS);
     check_struct::<VouchEntry>("VouchEntry", VouchEntry::FIELDS);
     check_struct::<Vouch>("Vouch", Vouch::FIELDS);
     check_struct::<PairAuth>("PairAuth", PairAuth::FIELDS);

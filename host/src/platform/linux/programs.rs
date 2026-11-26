@@ -33,6 +33,7 @@ pub(super) fn open_pty(rows: u16, cols: u16) -> io::Result<Box<dyn Pty>> {
 struct BrowserPty {
     terminal: programs::Terminal,
     status: Option<i32>,
+    termination_incomplete: bool,
 }
 
 impl BrowserPty {
@@ -43,7 +44,7 @@ impl BrowserPty {
             }
             Ok(())
         })?;
-        Ok(Self { terminal, status: None })
+        Ok(Self { terminal, status: None, termination_incomplete: false })
     }
 
     fn exited(&self) -> io::Result<bool> {
@@ -60,9 +61,14 @@ impl BrowserPty {
         if cleanup.is_err() && self.terminal.child.kill().is_err() && self.terminal.child.try_wait()?.is_none() {
             return cleanup;
         }
+        self.reap()?;
+        cleanup
+    }
+
+    fn reap(&mut self) -> io::Result<()> {
         let status = self.terminal.child.wait()?;
         self.status = Some(status.code().unwrap_or_else(|| -status.signal().expect("process exit signal")));
-        cleanup
+        Ok(())
     }
 }
 
@@ -90,11 +96,45 @@ impl Pty for BrowserPty {
         self.terminal.resize(rows, cols)
     }
 
+    fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()> {
+        let fd = self.terminal.master.as_raw_fd();
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut size) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if (rows, cols) != (size.ws_row, size.ws_col) {
+            return self.resize(rows, cols);
+        }
+        // TIOCSWINSZ sends SIGWINCH only when the size changes.
+        let group = unsafe { libc::tcgetpgrp(fd) };
+        if group < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if group > 0 && unsafe { libc::kill(-group, libc::SIGWINCH) } < 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
     fn exit(&mut self) -> io::Result<Option<i32>> {
-        if self.status.is_none() && self.exited()? {
+        // A failed terminate can have killed the leader but left jobs behind. Keep
+        // its ID reserved and the attachment open so the person can retry cleanup.
+        if self.status.is_none() && !self.termination_incomplete && self.exited()? {
             self.finish()?;
         }
         Ok(self.status)
+    }
+
+    fn terminate(&mut self) -> io::Result<bool> {
+        if self.status.is_some() || (!self.termination_incomplete && self.exited()?) {
+            return Ok(false);
+        }
+        let result = self.terminal.kill().and_then(|()| self.reap());
+        self.termination_incomplete = result.is_err();
+        result.map(|()| true)
     }
 }
 
@@ -102,7 +142,7 @@ impl Drop for BrowserPty {
     fn drop(&mut self) {
         if self.status.is_none() {
             if let Err(e) = self.finish() {
-                eprintln!("terminal cleanup failed: {e}");
+                eprintln!("{}: {e}", t("terminal.close_failed"));
             }
         }
     }
@@ -187,6 +227,17 @@ mod tests {
         wait(|| pty.exit().unwrap() == Some(17));
         wait(|| read(&mut pty, &mut output));
         assert_eq!(output, b"\x1b[31mready\x1b[0m\r\n24 80\r\n31 93\r\nlast line\r\n");
+    }
+
+    #[test]
+    fn browser_pty_notifies_the_foreground_program_at_the_same_size() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "trap 'echo redraw' WINCH; echo ready; while :; do sleep 0.1; done"]);
+        let mut pty = BrowserPty::start(command, 24, 80).unwrap();
+        let mut output = Vec::new();
+        wait(|| { read(&mut pty, &mut output); output.ends_with(b"ready\r\n") });
+        pty.redraw(24, 80).unwrap();
+        wait(|| { read(&mut pty, &mut output); output.ends_with(b"redraw\r\n") });
     }
 
     #[test]

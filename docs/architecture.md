@@ -95,8 +95,9 @@ session/
   desk/            channels.rs: those channels' messages, read once and routed; pace.rs:
                    real time over a congested path, encoding waits while the queue is full;
                    media.rs: the picture's track (payload, mid, keyframes)
-  terminal.rs      the desk seat's data-only role, one raw PTY stream with resize and bounded
-                   input and output credit. The role drops its PTY when the session ends
+  terminal.rs      the desk seat's data-only role, with one attachment's resize and credit
+  terminal/        registry.rs: the host's one browser PTY, attachment and idle timeout;
+                   replay.rs: the bounded recent output and its safe start
   ai.rs            the AI role, an AI client's deskway: control and ai channels (MCP in
                    frames, wire::mcp), no media; idle for 10 minutes gives the seat up
 mcp/               an AI session's MCP requests, answered off the session thread: mod.rs
@@ -136,11 +137,17 @@ capabilities and AI tool names, which seats can be admitted, and the tool table 
 MCP gate. Every host offers the base tools. A workspace adds work tools, including loopback
 tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
-according to the live hello's `desk` capability. Linux offers the `terminal` capability and
-supplies a PTY launcher. Verified terminal and picture offers contend for the same desk seat.
+according to the live hello's `desk` capability. Linux offers `terminal` and `terminal-keep`
+and supplies a PTY launcher. Verified terminal and picture offers contend for the same desk seat.
 A picture offer to a Linux host receives `no_desktop`. A terminal offer to a host without
 terminal support receives `no_terminal`. The AI seat uses the same device proofs and signed AI
 switch on all hosts.
+
+The host's terminal registry owns the PTY even with no desk session. Only the admitted desk
+session can attach. It owns its own input queue and credit, while the registry owns the recent
+output. A worker drains the PTY when detached, including when signaling is unavailable.
+The registry reports a detached shell's last device and departure time through host status.
+It drops the shell, jobs and replay when the terminal closes or the host stops.
 
 The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
 Starting or enrolling the host takes the same exclusive `host.lock` for that state directory.

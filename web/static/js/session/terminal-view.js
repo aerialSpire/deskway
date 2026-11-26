@@ -13,7 +13,7 @@ export class TerminalView {
   constructor(s) {
     this.s = s;
     this.buttons = [s.osk.button];
-    this.waiting = 'terminal.starting';
+    this.waiting = this.connectingNotice || 'terminal.starting';
     this.onscreenCapsLock = false;
     this.el = h('div', { class: 'terminal-surface' });
     this.status = h('div', { class: 'notice dark passive terminal-status', role: 'status', hidden: true });
@@ -23,6 +23,14 @@ export class TerminalView {
 
   get controlsReady() { return !!this.stream?.running; }
   get blocked() { return !this.controlsReady; }
+  get keeps() {
+    return this.s.caps ? this.s.hasCap(CAPS.TERMINAL_KEEP) : this.s.device.caps?.includes(CAPS.TERMINAL_KEEP);
+  }
+  get canClose() { return !!this.stream?.attached && !this.stream.closing; }
+  get connectingNotice() { if (this.s.device.kept_terminal) return 'terminal.reconnecting'; }
+  get recoveringNotice() {
+    if (this.stream?.attached && this.keeps) return 'terminal.reconnecting';
+  }
 
   bind() {
     this.el.addEventListener('pointerdown', () => this.s.stage.focus({ preventScroll: true }));
@@ -135,16 +143,23 @@ export class TerminalView {
   }
 
   onStatus(m) {
+    if (m.t === Msg.CLOSED) { this.s.leave(); return; }
     this.s.ready();
-    if (m.t === Msg.OPENED) this.fit();
-    else {
-      this.s.osk.toggle(false);
-      this.status.textContent = m.t === Msg.EXIT
+    if (m.t === Msg.OPENED) {
+      this.fit();
+      if (m.dropped) this.showStatus(t('terminal.dropped'));
+    } else {
+      if (m.why !== 'close') this.s.osk.toggle(false);
+      this.showStatus(m.t === Msg.EXIT
         ? t(m.code < 0 ? 'terminal.signal' : 'terminal.exit', { code: Math.abs(m.code) })
-        : t(`terminal.error.${m.why}`);
-      this.status.hidden = false;
+        : t(`terminal.error.${m.why}`));
     }
     this.s.updateRemoteControls();
+  }
+
+  showStatus(text) {
+    this.status.textContent = text;
+    this.status.hidden = false;
   }
 
   placeIme(area, stripTop) {
@@ -166,7 +181,12 @@ export class TerminalView {
       .map((gap) => `${Math.max(0, gap)}px`).join(' ');
   }
 
-  leave() { this.stream?.leave(); }
+  terminate() {
+    if (this.stream?.terminate()) {
+      this.s.setWaiting(t('terminal.closing'));
+      this.s.updateRemoteControls();
+    }
+  }
 
   destroy() {
     this.stream?.dispose();

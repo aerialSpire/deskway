@@ -1,7 +1,7 @@
 // A computer's page: its name with the way back and its ⋯, its status, and its picture (or its
 // displays, where they sit), followed by the available actions and AI activity.
 import { $app, h, loading } from '../dom.js';
-import { t } from '../i18n.js';
+import { agoText, t } from '../i18n.js';
 import { state, device, setView } from '../state.js';
 import { statusLine, staleNote, thumbFor, topbar, heading, updateNote, hereTag, noDesktop } from './common.js';
 import { accountMenu } from './account.js';
@@ -10,8 +10,13 @@ import { press } from './takeover.js';
 import { auditSection } from './audit.js';
 import { chosenDisplay, rememberDisplay, orderedDisplays } from '../session/displays.js';
 import { CAPS } from '../proto.js';
+import { keptTerminalNotice } from '../terminal-ui.js';
+
+let keptAge;
+const terminalAge = (since) => agoText(since, { seen: false });
 
 export function renderDetail() {
+  clearTimeout(keptAge);
   const d = device();
   if (!d && !state.devicesLoaded) {
     $app.replaceChildren(h('div', { class: 'page' }, topbar(accountMenu()), heading('', { back: true }), loading(t('common.loading'))));
@@ -25,17 +30,31 @@ export function renderDetail() {
     : d.online
       ? displayLayout(d) || h('button', { class: 'preview clickable', 'aria-label': t('detail.takeOverLabel', { name: d.name }), onclick: () => press(device() || d) }, hint(), thumbFor(d))
       : h('div', { class: 'preview offline' }, h('div', { class: 'thumb-inner' }, t('detail.offline')));
+  const kept = keptTerminalNotice(d, t, terminalAge);
+  const keptText = kept ? h('span', { class: 'text' }, kept) : null;
+  const openTerminal = () => press(device() || d, false, true);
   $app.replaceChildren(h('div', { class: 'page', 'data-page': 'detail' },
     topbar(accountMenu()),
     updateNote(),
     heading(d.name, { back: true, beside: hereTag(d), end: computerMenu(d).el, sub: statusLine(d) }),
     state.socketDown ? staleNote('detail.stale') : null,
     preview,
-    d.online && d.caps?.includes(CAPS.TERMINAL)
+    kept ? h('div', { class: 'notice terminal-kept', role: 'status' },
+      keptText,
+      h('button', { class: 'btn compact', type: 'button', onclick: openTerminal }, t('terminal.return'))) : null,
+    !kept && d.online && d.caps?.includes(CAPS.TERMINAL)
       ? h('div', { class: 'computer-actions' },
-        h('button', { class: 'btn', type: 'button', onclick: () => press(device() || d, false, true) }, t('terminal.label')))
+        h('button', { class: 'btn', type: 'button', onclick: openTerminal }, t('terminal.label')))
       : null,
     auditSection(d)));
+  if (keptText) {
+    function updateAge() {
+      if (!keptText.isConnected) return;
+      keptText.textContent = keptTerminalNotice(d, t, terminalAge);
+      keptAge = setTimeout(updateAge, 60000);
+    }
+    keptAge = setTimeout(updateAge, 60000);
+  }
 }
 
 // The one line over an online computer's picture: pressing a screen takes over.

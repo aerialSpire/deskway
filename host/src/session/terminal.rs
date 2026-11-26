@@ -1,4 +1,4 @@
-//! The desk seat's data-only role, with one session-owned PTY.
+//! The desk seat's data-only role, with an attachment to the host's PTY.
 
 use std::collections::VecDeque;
 use std::io;
@@ -12,7 +12,13 @@ use str0m::Event;
 use wire::control::Control;
 use wire::terminal::{Terminal as Msg, TerminalError, CHANNEL, FRAME, INPUT_WINDOW, OUTPUT_WINDOW};
 
-use crate::platform::{OpenPty, Pty};
+use crate::i18n::t;
+use wire::types::Reason;
+use registry::{Closed, Lease, Shell};
+use replay::History;
+
+pub mod registry;
+mod replay;
 use super::{Cx, Role};
 
 const HIGH: usize = 64 * 1024;
@@ -86,45 +92,84 @@ impl Input {
     }
 }
 
+struct Replay {
+    prefix: Vec<u8>,
+    len: usize,
+    sent: usize,
+}
+
+impl Replay {
+    fn new(history: &History) -> Self {
+        let prefix = history.mode_prefix();
+        Self { len: prefix.len() + history.bytes.len(), prefix, sent: 0 }
+    }
+}
+
 struct Stream {
-    pty: Box<dyn Pty>,
+    size: (u16, u16),
+    replay: Option<Replay>,
     input: Input,
     output: Vec<u8>,
     credit: OutputCredit,
-    eof: bool,
 }
 
 impl Stream {
-    fn new(pty: Box<dyn Pty>) -> Self {
-        Self { pty, input: Input::default(), output: Vec::new(), credit: OutputCredit::default(), eof: false }
+    fn new(rows: u16, cols: u16, replay: Option<Replay>) -> Self {
+        Self { size: (rows, cols), replay, input: Input::default(), output: Vec::new(), credit: OutputCredit::default() }
     }
 
-    /// At most one PTY read and write per pass, so continuous output still yields to
-    /// incoming control messages and terminal input.
-    fn pump(&mut self, ch: &mut Channel<'_>) -> anyhow::Result<(bool, Option<i32>)> {
-        let code = self.pty.exit().context("check PTY exit status")?;
-        let capacity = self.credit.capacity(ch.buffered_amount());
-        if self.output.is_empty() && !self.eof && capacity > 0 {
+    fn resize(&mut self, shell: &mut Shell, rows: u16, cols: u16) -> io::Result<()> {
+        self.size = (rows, cols);
+        if self.replay.is_none() {
+            shell.pty.resize(rows, cols)?;
+        }
+        Ok(())
+    }
+
+    fn pump(&mut self, shell: &mut Shell, buffered: usize, mut send: impl FnMut(bool, &[u8]) -> anyhow::Result<bool>) -> anyhow::Result<(bool, Option<i32>)> {
+        let code = shell.pty.exit().context("check PTY exit status")?;
+        let capacity = self.credit.capacity(buffered);
+        if let Some(replay) = &mut self.replay {
+            if replay.sent < replay.len {
+                self.output.clear();
+                self.output.extend(replay.prefix.iter().chain(&shell.replay.bytes).skip(replay.sent).take(capacity));
+                let sent = !self.output.is_empty() && send(true, &self.output)?;
+                if sent {
+                    replay.sent += self.output.len();
+                    self.credit.outstanding += self.output.len();
+                }
+                self.output.clear();
+                return Ok((sent, None));
+            }
+            // Refresh the foreground program only after the emulator consumed the replay.
+            if self.credit.outstanding != 0 {
+                return Ok((false, None));
+            }
+            if code.is_none() {
+                if let Err(e) = shell.pty.redraw(self.size.0, self.size.1) {
+                    eprintln!("{}: {e}", t("terminal.redraw_failed"));
+                }
+            }
+            self.replay = None;
+        }
+        // At most one read and write per pass, even with a busy PTY.
+        if self.output.is_empty() && capacity > 0 {
             self.output.resize(capacity, 0);
-            let len = match self.pty.read(&mut self.output) {
-                Ok(n) => { self.eof = n == 0; n }
-                Err(e) if retry(&e) => 0,
-                Err(e) => return Err(e).context("read PTY"),
-            };
+            let len = shell.read(&mut self.output).context("read PTY")?;
             self.output.truncate(len);
         }
-        let sent = !self.output.is_empty() && self.output.len() <= capacity && ch.write(true, &self.output)?;
+        let sent = !self.output.is_empty() && self.output.len() <= capacity && send(true, &self.output)?;
         if sent {
             self.credit.outstanding += self.output.len();
             self.output.clear();
         }
-        if !self.eof && code.is_none() {
-            self.input.write(&mut *self.pty).context("write PTY")?;
+        if !shell.eof && code.is_none() {
+            self.input.write(&mut *shell.pty).context("write PTY")?;
         }
         let acked = self.input.acknowledge(|bytes| {
-            Ok(ch.write(false, &serde_json::to_vec(&Msg::Ack { bytes })?)?)
+            send(false, &serde_json::to_vec(&Msg::Ack { bytes })?)
         })?;
-        Ok((sent || acked, code.filter(|_| self.eof)))
+        Ok((sent || acked, code.filter(|_| shell.eof && self.output.is_empty())))
     }
 }
 
@@ -133,31 +178,48 @@ fn retry(e: &io::Error) -> bool {
 }
 
 pub struct Terminal {
-    name: String,
-    open: Option<OpenPty>,
+    lease: Lease,
     channel: Option<ChannelId>,
     stream: Option<Stream>,
     reply: Option<Msg>,
+    done: bool,
 }
 
 impl Terminal {
-    pub fn new(name: String, open: OpenPty) -> Self {
-        eprintln!("terminal session started by {name} (Desk seat)");
-        Self { name, open: Some(open), channel: None, stream: None, reply: None }
+    pub fn new(lease: Lease) -> Self {
+        Self { lease, channel: None, stream: None, reply: None, done: false }
     }
 
-    fn close(&mut self, reply: Option<Msg>) {
-        self.open = None;
+    fn finish(&mut self, reply: Option<Msg>) {
         self.stream = None;
         self.reply = reply;
+        self.done = true;
     }
 
     fn error(&mut self, why: TerminalError) {
-        self.close(Some(Msg::Error { why }));
+        self.lease.detach(why.as_str());
+        self.finish(Some(Msg::Error { why }));
     }
 
-    fn message(&mut self, cx: &Cx<'_>, d: ChannelData) {
-        if self.open.is_none() && self.stream.is_none() {
+    fn open(&mut self, rows: u16, cols: u16) {
+        match self.lease.attach(rows, cols) {
+            Ok(Some((replay, dropped))) => {
+                self.reply = Some(Msg::Opened {
+                    replay: replay.as_ref().map(|replay| replay.len),
+                    dropped: dropped.then_some(true),
+                });
+                self.stream = Some(Stream::new(rows, cols, replay));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("{}: {e}", t("terminal.open_failed"));
+                self.error(TerminalError::Open);
+            }
+        }
+    }
+
+    fn message(&mut self, active: bool, d: ChannelData) {
+        if self.done {
             return;
         }
         if d.data.len() > FRAME {
@@ -173,23 +235,12 @@ impl Terminal {
             return;
         }
         match serde_json::from_slice(&d.data) {
-            Ok(Msg::Open { rows, cols }) if cx.control().is_some() && rows > 0 && cols > 0 => {
-                let Some(open) = self.open.take() else { return self.error(TerminalError::Protocol) };
-                match open(rows, cols) {
-                    Ok(pty) => {
-                        self.stream = Some(Stream::new(pty));
-                        self.reply = Some(Msg::Opened {});
-                    }
-                    Err(e) => {
-                        eprintln!("open PTY: {e}");
-                        self.error(TerminalError::Open);
-                    }
-                }
-            }
+            Ok(Msg::Open { rows, cols }) if active && rows > 0 && cols > 0 && self.stream.is_none() => self.open(rows, cols),
             Ok(Msg::Resize { rows, cols }) if rows > 0 && cols > 0 => {
                 if let Some(stream) = &mut self.stream {
-                    if let Err(e) = stream.pty.resize(rows, cols) {
-                        eprintln!("resize PTY: {e}");
+                    if let Some(Err(e)) = self.lease.with_shell(|shell| stream.resize(shell, rows, cols)) {
+                        eprintln!("{}: {e}", t("terminal.io"));
+                        self.lease.close(Closed::Io);
                         self.error(TerminalError::Io);
                     }
                 }
@@ -201,7 +252,19 @@ impl Terminal {
                     }
                 }
             }
-            Ok(Msg::Close {}) => self.close(None),
+            Ok(Msg::Close {}) => {
+                self.lease.detach(Reason::Left.as_str());
+                self.finish(None);
+            }
+            Ok(Msg::Terminate {}) if active => match self.lease.terminate() {
+                Some(Ok(true)) => self.finish(Some(Msg::Closed {})),
+                Some(Ok(false)) => {} // The stream will drain the shell's output and send exit.
+                Some(Err(e)) => {
+                    eprintln!("{}: {e}", t("terminal.close_failed"));
+                    self.reply = Some(Msg::Error { why: TerminalError::Close });
+                }
+                None => self.error(TerminalError::Protocol),
+            },
             _ => self.error(TerminalError::Protocol),
         }
     }
@@ -217,18 +280,15 @@ impl Terminal {
             false
         };
         let Some(stream) = &mut self.stream else { return Ok(replied.then(Instant::now)) };
-        let (progress, exit) = stream.pump(ch)?;
+        let Some(result) = self.lease.with_shell(|shell| {
+            stream.pump(shell, ch.buffered_amount(), |binary, data| Ok(ch.write(binary, data)?))
+        }) else { return Ok(None) };
+        let (progress, exit) = result?;
         if let Some(code) = exit {
-            self.close(Some(Msg::Exit { code }));
+            self.lease.close(Closed::Exit(code));
+            self.finish(Some(Msg::Exit { code }));
         }
         Ok(Some(if progress || exit.is_some() { Instant::now() } else { Instant::now() + POLL }))
-    }
-}
-
-impl Drop for Terminal {
-    fn drop(&mut self) {
-        self.close(None);
-        eprintln!("terminal session ended for {} (Desk seat)", self.name);
     }
 }
 
@@ -259,15 +319,20 @@ impl Role for Terminal {
                 return cx.signal(Signal::PeerEnded(reason));
             }
         } else if self.channel == Some(d.id) {
-            self.message(cx, d);
+            self.message(cx.active(), d);
         }
         false
     }
 
     fn rtc_event(&mut self, _: &mut Cx, e: Event) {
         if matches!(e, Event::ChannelClose(id) if self.channel == Some(id)) {
-            self.close(None);
+            self.lease.detach(Reason::Failed.as_str());
+            self.finish(None);
         }
+    }
+
+    fn ended(&mut self, reason: Reason) {
+        self.lease.detach(reason.as_str());
     }
 
     fn before_wait(&mut self, cx: &mut Cx, _: usize) -> Option<Instant> {
@@ -278,12 +343,15 @@ impl Role for Terminal {
         match self.pump(&mut ch) {
             Ok(next) => next,
             Err(e) => {
-                eprintln!("terminal stream failed: {e:#}");
+                eprintln!("{}: {e:#}", t("terminal.io"));
+                if e.is::<io::Error>() {
+                    self.lease.close(Closed::Io);
+                }
                 self.error(TerminalError::Io);
                 // If the channel cannot send even an error, its close reports the failure.
                 if self.pump(&mut ch).is_err() {
                     cx.rtc.direct_api().close_data_channel(self.channel?);
-                    self.close(None);
+                    self.finish(None);
                 }
                 Some(Instant::now())
             }
