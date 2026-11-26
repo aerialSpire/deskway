@@ -8,6 +8,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Added
 
+- Self-hosted servers can add regional relay nodes from **Relays** in the admin menu with a single command.
 - Install the Deskway server on Debian or Ubuntu with one command and upgrade released servers with verified GitHub release assets.
 - Self-hosted servers that terminate TLS can relay sessions over the HTTPS port when a network blocks the usual TURN port.
 - Released servers fetch and verify missing AI client programs in the background at startup.
@@ -25,6 +26,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Fixed
 
+- Relay setup explains when to pass `-public-ip`, supports copying the join command by hand, and keeps relay authentication separate from sign-in limits.
 - The server installer uses DNS for the public TURN address, enables the service on reruns, and shows recent journal entries if startup fails.
 - Sessions can start over the HTTPS relay while attempts to reach the usual TURN port are still pending.
 - Server upgrades replace outdated cached AI client programs in place.

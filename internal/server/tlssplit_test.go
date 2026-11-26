@@ -131,7 +131,7 @@ func TestTURNAndHTTPSShareTheTLSListener(t *testing.T) {
 	go srv.Serve(web)
 	defer srv.Close()
 
-	ice := ICEProvider(&cfg, nil)("test-account")[0]
+	ice := appendTURN(nil, cfg, "test-account")[0]
 	if got, want := ice.URLs[len(ice.URLs)-1], "turns:localhost:"+port+"?transport=tcp"; got != want {
 		t.Fatalf("TLS TURN URL = %q, want %q", got, want)
 	}

@@ -190,6 +190,67 @@ func (s *Store) Members() []Member {
 	return list
 }
 
+// ---- relay nodes ----
+
+var errNoRelay = errors.New("no such relay")
+
+func (s *Store) relayRecords() []RelayRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.Relays)
+}
+
+func (s *Store) relaySecret(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := s.relayIndexLocked(id); i >= 0 {
+		return s.Relays[i].Secret
+	}
+	return ""
+}
+
+func (s *Store) relayIndexLocked(id string) int {
+	return slices.IndexFunc(s.Relays, func(r RelayRecord) bool { return r.ID == id })
+}
+
+func (s *Store) addRelay(r RelayRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveRelaysLocked(append(s.Relays, r))
+}
+
+func (s *Store) renameRelay(id, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.relayIndexLocked(id)
+	if i < 0 {
+		return errNoRelay
+	}
+	next := slices.Clone(s.Relays)
+	next[i].Name = name
+	return s.saveRelaysLocked(next)
+}
+
+func (s *Store) removeRelay(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.relayIndexLocked(id)
+	if i < 0 {
+		return errNoRelay
+	}
+	return s.saveRelaysLocked(slices.Delete(slices.Clone(s.Relays), i, i+1))
+}
+
+func (s *Store) saveRelaysLocked(next []RelayRecord) error {
+	prev := s.Relays
+	s.Relays = next
+	if err := s.saveLocked(); err != nil {
+		s.Relays = prev
+		return err
+	}
+	return nil
+}
+
 // ---- the device log ----
 
 // maxLog is how many entries of an account's device log are kept; older ones go first.

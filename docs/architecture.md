@@ -555,6 +555,8 @@ The source of truth is the viewer's constraints.
   | `previews.go` | previews |
   | `signaling.go` | the sockets, routed through `sessions.go` |
   | `turn.go` | the relay and the ICE servers, whose TURN credentials name the account |
+  | `relays.go` | relay enrollment, admin routes, signed reports, and selection of online nodes |
+  | `relaynode.go` | the standalone node's local identity, TURN startup, and HTTPS reports |
   | `tlssplit.go` | the shared HTTPS listener that sends decrypted connections to HTTP or TURN |
   | `relaylimit.go` | each account's share of the relay |
   | `store.go`, `records.go` | the state |
@@ -573,8 +575,9 @@ The source of truth is the viewer's constraints.
   the super password, sessions, and the `user` that a host is given and reports.
 - Connect signatures use a nonce issued by the host, not the clock.
 - Connecting waits only for what it must. The server sends a browser its ICE servers on every
-  socket and renews them before the TURN credentials expire. The host answers with its host
-  candidates and then trickles its STUN address (`crates/peer/src/stun.rs`, with probes answered
+  socket, updates them when the relay selection changes, and renews them before the TURN
+  credentials expire. The host answers with its host candidates and then trickles its STUN
+  address (`crates/peer/src/stun.rs`, with probes answered
   through the sockets' own readers) and its relay candidates. Capture and the encoder start when
   the offer is accepted, at the offer's `view`, and the first frame sent after DTLS connects is a
   keyframe.
@@ -584,6 +587,12 @@ The source of truth is the viewer's constraints.
   listeners. ICE advertises the certificate hostname and HTTPS port in the `turns:` URL. The
   host and CLI verify that hostname using system trust. They offer direct candidates first
   and publish each relay as it is ready. ICE candidate priorities prefer UDP, TCP, then TLS.
+- `deskway-server relay` runs the same UDP and TCP TURN listeners in a separate process and
+  reports to the main server over HTTPS. The main store owns each relay record and its TURN
+  secret. Join tokens are single-use and expire in 10 minutes. Tokens and last report times
+  live in server memory. A node reports every 30 seconds and is online for 90 seconds from the
+  last accepted report. The ICE provider appends the three newest online nodes at most. It
+  makes TURN credentials with each relay's own secret.
 
 ## Power
 
@@ -668,8 +677,8 @@ js/pwa.js            the offline shell's worker and the browser's install prompt
 js/windows.js        each computer in a window of its own, when the device chose so (?computer=
                      <id>; the windows find each other over a BroadcastChannel)
 js/views/            login (with choosing an initial password's replacement), list, detail,
-                     devices, menu, account (with installing), members (**Members**), computer,
-                     approvals, pairing, takeover (pressing a picture: the one question, and
+                     devices, menu, account (with installing), members (**Members**), relays
+                     (**Relays**), computer, approvals, pairing, takeover (pressing a picture: the one question, and
                      the one mapping from end reasons to what is shown); common.js holds the
                      pieces every page shares
 js/session/          connection.js (the session's lifecycle: peer connection, negotiation,

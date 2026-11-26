@@ -79,6 +79,14 @@ type BrowserRecord struct {
 	Role string `json:"role,omitempty"`
 }
 
+type RelayRecord struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	PublicIP string `json:"public_ip"`
+	Port     int    `json:"port"`
+	Secret   string `json:"secret"`
+}
+
 // Store holds persistent state in one JSON file, written atomically. The process that opened it
 // holds the file's lock until Close (statelock.go).
 type Store struct {
@@ -91,6 +99,7 @@ type Store struct {
 	Users      map[string]*User          `json:"users"` // by account id
 	Devices    map[string]*DeviceRecord  `json:"devices"`
 	Browsers   map[string]*BrowserRecord `json:"browsers"`
+	Relays     []RelayRecord             `json:"relays,omitempty"` // in join order
 }
 
 // OpenStore takes the state file's lock, then loads path or creates it with fresh secrets. It

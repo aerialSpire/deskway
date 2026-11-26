@@ -12,7 +12,7 @@ import { dropdown, menuSeparator } from './menu.js';
 import { topbar, heading, updateNote, settingRow } from './common.js';
 
 // The name in the top bar opens the account's places: its page, its devices, and for the admin
-// Members (members.js).
+// Members and Relays.
 export function accountMenu() {
   const button = h('button', { class: 'btn text bar-btn name-btn' }, state.me.display, svg(ICONS.chevron));
   return dropdown('account', button, (item) => {
@@ -22,6 +22,7 @@ export function accountMenu() {
       item(t('account.title'), () => setView('account')),
       item(t('devices.title'), () => setView('devices')),
       state.me.admin && item(t('members.title'), () => setView('members')),
+      state.me.admin && item(t('relays.title'), () => setView('relays')),
       install && menuSeparator(), install,
       menuSeparator(),
       item(t('menu.signOut'), async () => { await api('POST', '/api/logout').catch(() => {}); showLogin(); }),

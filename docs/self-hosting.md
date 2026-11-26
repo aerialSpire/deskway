@@ -214,6 +214,50 @@ the phone from your first browser when asked, then open the computer and check t
 and control it. The session toolbar shows whether the connection is direct or goes through the
 relay. If the session works over mobile data, the TURN relay is working.
 
+## Relay nodes
+
+Run relay nodes in regions near your computers to give sessions additional paths when they need
+TURN. Accounts, signaling, and the website stay on the main server. A relay node forwards
+encrypted session traffic and needs a reachable public IPv4 address. Only the main server
+needs a domain and HTTPS certificate. The fallback on TCP 443 stays on the main server.
+
+Open the following inbound ports on each node and allow outbound HTTPS to the main server.
+
+| Ports | Used for |
+|---|---|
+| TCP and UDP 3478 | STUN and TURN |
+| UDP 49160–49359 | TURN relay traffic |
+
+Put the same `deskway-server` binary on the node. Sign in as the admin over HTTPS, open
+**Relays** from your account menu, and choose **Add a relay**. Run the generated command on the
+node within 10 minutes. Each token works once.
+
+```sh
+deskway-server relay -join https://desk.example.net -token TOKEN
+```
+
+The main server can infer the relay's address when it sees a public IPv4 address on the join
+request. If the main server is behind a reverse proxy or the relay uses a different address for
+inbound traffic, pass `-public-ip` with the relay's public IPv4 address. Use `-turn-port`,
+`-turn-min-port`, and `-turn-max-port` to change the ports, and open the matching ports on the node.
+
+The node keeps its identity, secret, and the per-account limit it received at enrollment in a
+private `relay.json` in `-data` (default `deskway-relay`). Restart it with the same directory and
+port settings. You can omit `-token` after the first run. To change the advertised address or
+TURN port, enroll again with a new token and data directory and remove the old entry.
+
+For systemd, use the main unit template on the node. Enroll once as the `deskway` user with
+`-data /var/lib/deskway`, stop the foreground process, then replace the unit's `ExecStart` line.
+
+```ini
+ExecStart=/usr/local/bin/deskway-server relay -join https://desk.example.net -data /var/lib/deskway
+```
+
+Keep any custom TURN port and range flags in the unit. On **Relays**, use **Refresh** to see
+the latest online or last-seen status. The server offers its own relay followed by up to
+three online nodes, newest joins first. Removing a node stops the main server from offering
+it and renewing its credentials. Stop the process on the node to end any remaining traffic.
+
 ## Running in Docker
 
 The server is also published as a container image, `ghcr.io/aerialspire/deskway-server`, for
@@ -267,10 +311,10 @@ Set these flags on the `ExecStart` line of the unit.
 | `-domain` | | Get a Let's Encrypt certificate for this domain automatically, through port 443 (port 80 can stay closed) |
 | `-tls-cert`, `-tls-key` | | Use your own certificate and key files instead of `-domain` |
 | `-public-host` | | Public hostname for TURN over TLS with your own certificate, when it has no single concrete DNS name |
-| `-public-ip` | | The public IPv4 address. Turns on the built-in TURN relay. Without it, computers behind strict NATs can't be reached |
+| `-public-ip` | | The main server's public IPv4 address. Enables its built-in TURN relay |
 | `-turn-port` | `3478` | TURN port, UDP and TCP |
 | `-turn-min-port`, `-turn-max-port` | `49160`, `49359` | Relay port range. Open the same range in the firewall |
-| `-relay-account-mbps` | `30` | Each account's share of the relay bandwidth, both directions together |
+| `-relay-account-mbps` | `30` | Each account's share of bandwidth per relay, both directions together. New nodes receive this value when they join |
 | `-stun` | | Comma-separated STUN URLs to hand out when TURN is off |
 | `-clients` | `clients` beside the state file | Folder of AI client programs |
 | `-fetch-clients` | `true` | Fetch missing AI client programs from the server's GitHub release. Use `-fetch-clients=false` to disable outbound fetching |

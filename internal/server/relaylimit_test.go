@@ -36,8 +36,8 @@ func TestTheRelayBucketDropsBeyondTheRateAndRefills(t *testing.T) {
 // The credentials a browser or a host is given name the account; the relay's auth handler
 // gives that account back as the allocation's user, which the relay socket is limited by.
 func TestRelayCredentialsCarryTheAccount(t *testing.T) {
-	cfg := &TURNConfig{PublicIP: "203.0.113.1", Port: 3478, Secret: "s"}
-	ice := ICEProvider(cfg, nil)("acct1")
+	cfg := TURNConfig{PublicIP: "203.0.113.1", Port: 3478, Secret: "s"}
+	ice := appendTURN(nil, cfg, "acct1")
 	if len(ice) != 1 {
 		t.Fatalf("%+v", ice)
 	}

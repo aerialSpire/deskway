@@ -61,6 +61,11 @@ func newFixture(t *testing.T) *fixture {
 
 func newFixtureWithServer(t *testing.T, configure func(*Server)) *fixture {
 	t.Helper()
+	return newHTTPFixture(t, configure, httptest.NewServer)
+}
+
+func newHTTPFixture(t *testing.T, configure func(*Server), listen func(http.Handler) *httptest.Server) *fixture {
+	t.Helper()
 	data := filepath.Join(t.TempDir(), "state.json")
 	store, err := OpenStore(data)
 	if err != nil {
@@ -69,11 +74,11 @@ func newFixtureWithServer(t *testing.T, configure func(*Server)) *fixture {
 	// Cleanups run last-registered first: the server stops (its WebSocket handlers still save
 	// state as they end), then the store lets go of the file, then the folder is removed.
 	t.Cleanup(func() { store.Close() })
-	s := New(store, func(string) []proto.ICEServer { return nil }, fstest.MapFS{})
+	s := New(store, TURNConfig{}, nil, fstest.MapFS{})
 	if configure != nil {
 		configure(s)
 	}
-	srv := httptest.NewServer(s.Handler())
+	srv := listen(s.Handler())
 	t.Cleanup(func() {
 		srv.Close()
 		s.Shutdown()
@@ -90,7 +95,7 @@ func newFixtureWithServer(t *testing.T, configure func(*Server)) *fixture {
 // browser is an HTTP client with its own cookies, like a separate browser.
 func (f *fixture) browser() *http.Client {
 	jar, _ := cookiejar.New(nil)
-	return &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &http.Client{Jar: jar, Transport: f.srv.Client().Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 // signedIn is a browser of `user` (created if needed), let in with that account's super

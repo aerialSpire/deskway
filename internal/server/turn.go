@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/pion/logging"
@@ -97,30 +98,35 @@ func publicPeersOnly(_ net.Addr, ip net.IP) bool {
 // ICEProvider returns, for an account (by its id), ICE servers with short-lived TURN credentials
 // that name it, so the relay counts its traffic against it (relaylimit.go). A browser gets its
 // account's; a host, those of the account of the session it is offered.
-// Without a relay it offers only the given STUN URLs.
-func ICEProvider(cfg *TURNConfig, stun []string) func(account string) []proto.ICEServer {
-	return func(account string) []proto.ICEServer {
-		out := []proto.ICEServer{}
-		if len(stun) > 0 {
-			out = append(out, proto.ICEServer{URLs: stun})
-		}
-		if cfg == nil {
-			return out
-		}
-		user, pass, err := turn.GenerateLongTermTURNRESTCredentials(cfg.Secret, account, turnCredTTL)
-		if err != nil {
-			log.Printf("server: TURN credentials: %v", err)
-			return out
-		}
-		base := fmt.Sprintf("%s:%d", cfg.PublicIP, cfg.Port)
-		urls := []string{"stun:" + base, "turn:" + base + "?transport=udp", "turn:" + base + "?transport=tcp"}
-		if cfg.TLSAddr != "" {
-			urls = append(urls, "turns:"+cfg.TLSAddr+"?transport=tcp")
-		}
-		return append(out, proto.ICEServer{
-			URLs:       urls,
-			Username:   user,
-			Credential: pass,
-		})
+func (s *Server) ICEProvider(account string) []proto.ICEServer {
+	nodes, _, _ := s.offeredRelays()
+	return s.iceServers(account, nodes)
+}
+
+func (s *Server) iceServers(account string, nodes []TURNConfig) []proto.ICEServer {
+	out := []proto.ICEServer{}
+	if len(s.stun) > 0 {
+		out = append(out, proto.ICEServer{URLs: s.stun})
 	}
+	if s.turn.PublicIP != "" {
+		out = appendTURN(out, s.turn, account)
+	}
+	for _, node := range nodes {
+		out = appendTURN(out, node, account)
+	}
+	return out
+}
+
+func appendTURN(out []proto.ICEServer, cfg TURNConfig, account string) []proto.ICEServer {
+	user, pass, err := turn.GenerateLongTermTURNRESTCredentials(cfg.Secret, account, turnCredTTL)
+	if err != nil {
+		log.Printf("server: TURN credentials: %v", err)
+		return out
+	}
+	base := net.JoinHostPort(cfg.PublicIP, strconv.Itoa(cfg.Port))
+	urls := []string{"stun:" + base, "turn:" + base + "?transport=udp", "turn:" + base + "?transport=tcp"}
+	if cfg.TLSAddr != "" {
+		urls = append(urls, "turns:"+cfg.TLSAddr+"?transport=tcp")
+	}
+	return append(out, proto.ICEServer{URLs: urls, Username: user, Credential: pass})
 }
