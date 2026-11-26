@@ -18,6 +18,6 @@ pub fn computer_info(_: &Granted, _: &Value, ctx: &Ctx) -> Result<Output, ToolEr
         "signed_in": f.user_session,
         "view_only": f.view_only,
         "person_controlling": f.person,
-        "admin": f.admin,
+        "admin": f.admin.unwrap_or(false),
     })))
 }

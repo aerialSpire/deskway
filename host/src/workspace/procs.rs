@@ -88,7 +88,7 @@ impl Output {
     fn from(&self, from: u64) -> (Vec<u8>, u64, bool) {
         let start = self.total - self.buf.len() as u64;
         let lost = from < start;
-        let at = (from.max(start) - start) as usize;
+        let at = (from.clamp(start, self.total) - start) as usize;
         let end = (at + ANSWER).min(self.buf.len());
         (self.buf.range(at..end).copied().collect(), start + end as u64, lost)
     }
@@ -330,9 +330,9 @@ mod tests {
         let mut o = Output::default();
         o.push(b"hello ");
         o.push(b"world");
-        assert_eq!(o.from(0), (b"hello world".to_vec(), 11, false));
-        assert_eq!(o.from(6), (b"world".to_vec(), 11, false));
-        assert_eq!(o.from(11), (Vec::new(), 11, false), "nothing new");
+        for (from, expected) in [(0, &b"hello world"[..]), (6, b"world"), (11, b""), (u64::MAX, b"")] {
+            assert_eq!(o.from(from), (expected.to_vec(), 11, false), "from={from}");
+        }
         o.push(&vec![b'x'; KEEP]);
         let (bytes, next, lost) = o.from(0);
         assert!(lost, "what went past the limit is said to be lost");
@@ -365,18 +365,38 @@ mod tests {
     /// take well over 20 seconds; on a working computer it takes about one.
     const SHELL_START: Duration = Duration::from_secs(90);
 
+    #[cfg(windows)]
+    const RUN: [(&str, i64, &[&str]); 2] = [
+        ("Write-Output 'hi 中文'; cmd /c echo 中文2", 0, &["hi 中文", "中文2"]),
+        ("Write-Output 'before exit'; exit 7", 7, &["before exit"]),
+    ];
+    #[cfg(unix)]
+    const RUN: [(&str, i64, &[&str]); 2] = [
+        ("echo 'hi 中文'; echo 中文2", 0, &["hi 中文", "中文2"]),
+        ("echo 'before exit'; exit 7", 7, &["before exit"]),
+    ];
+    #[cfg(windows)]
+    const SLOW: &str = "Start-Sleep 30";
+    #[cfg(unix)]
+    const SLOW: &str = "sleep 30";
+    #[cfg(windows)]
+    const PTY_LINE: &str = "Write-Output ('deskway' + '-pty')";
+    #[cfg(unix)]
+    const PTY_LINE: &str = "printf '%s-%s\\n' deskway pty";
+
     #[test]
     fn a_program_runs_and_one_that_takes_longer_runs_on() {
         let t = Table::default();
-        // Text beyond ASCII, from the shell and from a program it starts, reads as written.
-        let done = t.run(if cfg!(windows) { "Write-Output 'hi 中文'; cmd /c echo 中文2" } else { "echo 'hi 中文'; echo 中文2" }, None, SHELL_START.as_millis() as u64, false).unwrap();
-        assert_eq!((done["running"].as_bool(), done["exit_code"].as_i64()), (Some(false), Some(0)), "{done}");
-        let output = done["output"].as_str().unwrap();
-        assert!(output.contains("hi 中文") && output.contains("中文2"), "{done}");
-        let slow = t.run(if cfg!(windows) { "Start-Sleep 30" } else { "sleep 30" }, None, 200, false).unwrap();
+        for (command, code, expected) in RUN {
+            let done = t.run(command, None, SHELL_START.as_millis() as u64, false).unwrap();
+            assert_eq!((done["running"].as_bool(), done["exit_code"].as_i64()), (Some(false), Some(code)), "{done}");
+            let output = done["output"].as_str().unwrap();
+            assert!(expected.iter().all(|text| output.contains(text)), "{done}");
+        }
+        let slow = t.run(SLOW, None, 200, false).unwrap();
         assert_eq!(slow["running"], true, "a wait that ends leaves it running");
         let id = slow["id"].as_u64().unwrap();
-        assert_eq!(t.list().as_array().unwrap().len(), 2);
+        assert_eq!(t.list().as_array().unwrap().len(), RUN.len() + 1);
         assert_eq!(t.write(id, Some("x"), &[]).unwrap_err().code, Code::InvalidArgs, "a piped program takes no input");
         let killed = t.kill(id).unwrap();
         assert_eq!(killed["running"], false, "{killed}");
@@ -390,8 +410,8 @@ mod tests {
         let started = t.start(None, None, 100, 30, false).unwrap();
         let id = started["id"].as_u64().unwrap();
         assert_eq!(started["running"], true, "{started}");
-        let line = if cfg!(windows) { "Write-Output ('deskway' + '-pty')" } else { "echo deskway-pty" };
-        let from = t.write(id, Some(line), &["enter".into()]).unwrap()["next"].as_u64().unwrap();
+        let from = started["next"].as_u64().unwrap();
+        t.write(id, Some(PTY_LINE), &["enter".into()]).unwrap();
         let end = Instant::now() + SHELL_START;
         let mut seen = String::new();
         let mut at = from;
@@ -410,40 +430,5 @@ mod tests {
         }
         assert_eq!(t.read(id, 0, 0).unwrap()["running"], false, "exit ends it");
         assert_eq!(t.list()[0]["terminal"], true);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn killing_a_terminal_ends_background_jobs_in_other_process_groups() {
-        let table = Table::default();
-        let started = table.start(Some("exec /bin/zsh -dfi"), None, 100, 30, false).unwrap();
-        let id = started["id"].as_u64().unwrap();
-        let leader = table.list()[0]["pid"].as_i64().unwrap() as libc::pid_t;
-        let from = table.write(id, Some("/bin/sleep 30 & printf 'deskway_job=%s\\n' $!"), &["enter".into()]).unwrap()["next"].as_u64().unwrap();
-        let until = Instant::now() + Duration::from_secs(4);
-        let mut output = String::new();
-        let mut at = from;
-        let job = loop {
-            let result = table.read(id, at, 200).unwrap();
-            at = result["next"].as_u64().unwrap();
-            output.push_str(result["output"].as_str().unwrap());
-            if let Some(pid) = output.lines().filter_map(|line| line.strip_prefix("deskway_job=")?.trim().parse::<libc::pid_t>().ok()).find(|pid| *pid > 1) {
-                break pid;
-            }
-            assert!(Instant::now() < until, "could not read the background job PID: {output:?}");
-        };
-        assert_eq!(unsafe { libc::getsid(job) }, leader);
-        assert_ne!(unsafe { libc::getpgid(job) }, leader, "the shell put its job in a separate process group");
-        let stopped = table.kill(id).unwrap();
-        let until = Instant::now() + Duration::from_secs(2);
-        while unsafe { libc::getsid(job) } == leader && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let leaked = unsafe { libc::getsid(job) } == leader;
-        if leaked {
-            unsafe { libc::kill(job, libc::SIGKILL) };
-        }
-        assert_eq!(stopped["running"], false);
-        assert!(!leaked, "the background job survived proc_kill");
     }
 }

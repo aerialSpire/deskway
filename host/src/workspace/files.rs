@@ -1,4 +1,4 @@
-//! Files, as the person signed in: list, look at, read and write in parts, move, delete.
+//! Files, as the workspace user: list, look at, read and write in parts, move, delete.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -8,13 +8,14 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde_json::{json, Value};
 
+use crate::i18n::t;
 use crate::workspace::{Answer, Code, WorkError, READ_MOST};
 
 impl WorkError {
     fn io(path: &str, e: std::io::Error) -> WorkError {
         let (code, next) = match e.kind() {
             std::io::ErrorKind::NotFound => (Code::NotFound, "Check the path (fs_list its folder)."),
-            std::io::ErrorKind::PermissionDenied => (Code::Denied, "The person signed in may not touch it; an administrator's tool may."),
+            std::io::ErrorKind::PermissionDenied => return WorkError::new(Code::Denied, format!("{path}: {e}"), t("mcp.file_permission")),
             std::io::ErrorKind::AlreadyExists => (Code::Exists, "Choose another name, or delete it first."),
             std::io::ErrorKind::DirectoryNotEmpty => (Code::NotEmpty, "Pass recursive to delete it with what is in it."),
             _ => (Code::Io, "Try again, or another path."),
@@ -113,16 +114,16 @@ mod tests {
 
     #[test]
     fn files_are_written_read_in_parts_moved_listed_and_deleted() {
-        let dir = std::env::temp_dir().join(format!("deskway-files-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = std::env::temp_dir().join(format!("deskway-files-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+        std::fs::create_dir(&dir).unwrap();
         let p = |n: &str| dir.join(n).display().to_string();
         write(&p("a.txt"), Some("héllo".into()), None, false).unwrap();
         write(&p("a.txt"), Some(" world".into()), None, true).unwrap();
-        let r = read(&p("a.txt"), 0, 3).unwrap();
-        assert_eq!((r["text"].as_str(), r["next"].as_u64(), r["more"].as_bool()), (Some("hé"), Some(3), Some(true)));
-        let r = read(&p("a.txt"), 3, 100).unwrap();
-        assert_eq!((r["text"].as_str(), r["more"].as_bool()), (Some("llo world"), Some(false)));
+        for (offset, length, text, next, more) in [(0, 3, "hé", 3, true), (3, 100, "llo world", 12, false)] {
+            let r = read(&p("a.txt"), offset, length).unwrap();
+            assert_eq!((r["text"].as_str(), r["next"].as_u64(), r["more"].as_bool()), (Some(text), Some(next), Some(more)));
+        }
+        assert_eq!(hash(&p("a.txt")).unwrap()["sha256"], wire::crypto::hex(&wire::crypto::sha256("héllo world".as_bytes())));
         write(&p("b.bin"), None, Some(STANDARD.encode([0u8, 159, 146, 150])), false).unwrap();
         assert_eq!(read(&p("b.bin"), 0, 10).unwrap()["base64"], STANDARD.encode([0u8, 159, 146, 150]), "bytes that are not UTF-8 come back as base64");
         rename(&p("a.txt"), &p("c.txt")).unwrap();

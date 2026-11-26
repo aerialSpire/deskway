@@ -1,14 +1,6 @@
-//! What an AI client does as the person signed in at the computer (docs/architecture.md,
-//! "Workspace and process lifetime"): run programs and read their output, work with files, read and set the
-//! clipboard's text, open and quit apps and move their windows, read and use their controls. One request type ([`Op`]) answered by one function ([`Workspace::call`]),
-//! so carrying it to another process (the Windows user worker, `service::worker`) is carrying
-//! that one type and its answer. `Op` is also the tools' arguments: its tags are the tool names
-//! of `proto/tools.json` and its fields their arguments, so a tool call is read into one
-//! directly (`tools::work`).
-//!
-//! Where it runs: in this process when this process is the person (the macOS app; a Windows host
-//! started by hand, `--dev`), else in the user worker the Windows service starts as the person
-//! signed in at the console.
+//! An AI client's workspace runs with the local user's rights. Requests use the tool names
+//! and arguments from proto/tools.json. The Windows user worker carries the same requests
+//! over its pipe; Linux and macOS run them in-process.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,16 +10,16 @@ pub mod apps;
 #[cfg(desktop_host)]
 pub mod elements;
 #[cfg(desktop_host)]
+mod desktop;
 mod files;
-#[cfg(desktop_host)]
 mod local;
-#[cfg(desktop_host)]
 pub mod procs;
 #[cfg(windows)]
 pub mod remote;
 
-#[cfg(desktop_host)]
 pub use local::Local;
+#[cfg(desktop_host)]
+pub use desktop::{DesktopOp, UiAction, WindowAction};
 
 /// How long `run` waits by default.
 const WAIT_DEFAULT: u64 = 30_000;
@@ -43,47 +35,12 @@ fn read_default() -> u64 {
     READ_MOST
 }
 
-fn depth_default() -> u32 {
-    12
-}
-
-fn nodes_default() -> usize {
-    400
-}
-
 fn cols_default() -> u16 {
     120
 }
 
 fn rows_default() -> u16 {
     30
-}
-
-/// What `window_act` does to a window.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum WindowAction {
-    Focus,
-    Minimize,
-    Maximize,
-    Restore,
-    Close,
-    Move,
-}
-
-/// What `ui_act` does to an element.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum UiAction {
-    /// What clicking it does (a button, a link, a menu item).
-    Invoke,
-    Toggle,
-    Expand,
-    Collapse,
-    /// Chooses it (an item of a list, a tab, a radio button).
-    Select,
-    Focus,
-    SetValue,
 }
 
 /// One request.
@@ -160,49 +117,6 @@ pub enum Op {
         #[serde(default)]
         recursive: bool,
     },
-    ClipboardGet,
-    ClipboardSet { text: String },
-    Windows,
-    WindowAct {
-        id: u64,
-        action: WindowAction,
-        #[serde(default)]
-        x: Option<i32>,
-        #[serde(default)]
-        y: Option<i32>,
-        #[serde(default)]
-        w: Option<i32>,
-        #[serde(default)]
-        h: Option<i32>,
-    },
-    AppList,
-    AppOpen {
-        name: String,
-        #[serde(default)]
-        args: Vec<String>,
-    },
-    AppQuit {
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        pid: Option<u32>,
-        #[serde(default)]
-        force: bool,
-    },
-    UiTree {
-        window: u64,
-        #[serde(default = "depth_default")]
-        depth: u32,
-        #[serde(default = "nodes_default")]
-        max_nodes: usize,
-    },
-    UiAct {
-        window: u64,
-        element: String,
-        action: UiAction,
-        #[serde(default)]
-        value: Option<String>,
-    },
 }
 
 /// What kind of failure: the code an AI client sees.
@@ -254,10 +168,13 @@ impl WorkError {
 
 pub type Answer = Result<Value, WorkError>;
 
-/// Carries out requests as the person signed in.
+/// Carries out requests with the workspace user's rights.
 pub trait Workspace: Send + Sync {
     fn call(&self, op: Op) -> Answer;
-    /// Someone is signed in to carry requests out (the Windows worker is connected).
+    #[cfg(desktop_host)]
+    fn desktop(&self, op: DesktopOp) -> Answer;
+
+    /// The workspace can carry requests out (the Windows worker is connected).
     fn available(&self) -> bool {
         true
     }

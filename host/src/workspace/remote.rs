@@ -10,13 +10,21 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::workspace::{Answer, Code, Op, WorkError, Workspace};
+use crate::workspace::{Answer, Code, DesktopOp, Op, WorkError, Workspace};
 use crate::service::ipc::Pipe;
 
 #[derive(Serialize, Deserialize)]
 struct Request {
     id: u64,
-    op: Op,
+    op: RequestOp,
+}
+
+// Both variants use the original {"op": "<tool>", ...} form on the pipe.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum RequestOp {
+    Work(Op),
+    Desktop(DesktopOp),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -69,14 +77,8 @@ impl Remote {
         }
         served
     }
-}
 
-impl Workspace for Remote {
-    fn available(&self) -> bool {
-        self.worker.lock().unwrap().is_some()
-    }
-
-    fn call(&self, op: Op) -> Answer {
+    fn request(&self, op: RequestOp) -> Answer {
         let pipe = self.worker.lock().unwrap().clone().ok_or_else(|| self.absent())?;
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = channel();
@@ -89,13 +91,30 @@ impl Workspace for Remote {
     }
 }
 
+impl Workspace for Remote {
+    fn available(&self) -> bool {
+        self.worker.lock().unwrap().is_some()
+    }
+
+    fn call(&self, op: Op) -> Answer {
+        self.request(RequestOp::Work(op))
+    }
+
+    fn desktop(&self, op: DesktopOp) -> Answer {
+        self.request(RequestOp::Desktop(op))
+    }
+}
+
 /// The worker's side: answers every request, each on a thread of its own, until the pipe closes.
 pub fn serve(pipe: Arc<Pipe>, ws: Arc<dyn Workspace>) -> Result<()> {
     loop {
         let Request { id, op } = pipe.recv_json()?;
         let (pipe, ws) = (pipe.clone(), ws.clone());
         std::thread::spawn(move || {
-            let answer = ws.call(op);
+            let answer = match op {
+                RequestOp::Work(op) => ws.call(op),
+                RequestOp::Desktop(op) => ws.desktop(op),
+            };
             let _ = pipe.send_json(&Reply { id, answer });
         });
     }
@@ -119,6 +138,23 @@ mod tests {
                 Op::FsStat { path } => Err(WorkError::new(Code::NotFound, path, "")),
                 other => Ok(serde_json::to_value(other).unwrap()),
             }
+        }
+
+        fn desktop(&self, op: DesktopOp) -> Answer {
+            Ok(serde_json::to_value(op).unwrap())
+        }
+    }
+
+    #[test]
+    fn workspace_requests_keep_their_pipe_shape() {
+        for (op, wire_op) in [
+            (RequestOp::Work(Op::FsStat { path: "p".into() }), json!({ "op": "fs_stat", "path": "p" })),
+            (RequestOp::Desktop(DesktopOp::ClipboardSet { text: "t".into() }), json!({ "op": "clipboard_set", "text": "t" })),
+        ] {
+            let wire = json!({ "id": 1, "op": wire_op });
+            assert_eq!(serde_json::to_value(Request { id: 1, op }).unwrap(), wire);
+            let decoded: Request = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
         }
     }
 

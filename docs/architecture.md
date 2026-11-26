@@ -26,7 +26,7 @@ Every change follows these rules:
 |---|---|
 | Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
-| Linux | One foreground host process: signaling, the AI seat, and the host information and audit tools. |
+| Linux | One foreground host process: signaling, the AI seat, and an in-process workspace for commands and files. |
 | AI client's machine | `deskway` (cli/): `login`, `mcp` for each MCP client, and one proxy per user that holds the sign-in and a link to each computer. |
 
 Each platform has exactly one process model. The network service talks to the agent only
@@ -70,8 +70,10 @@ auth/              who may connect: the trust store (mod.rs), pairing window and
                    device log (log.rs), offer checks and resume tokens (offers.rs), signature
                    and WebAuthn checks (webauthn.rs)
 platform/
-  features.rs      the host's feature set, including the optional desktop and its tool table
+  features.rs      the host's feature set selects seats, capabilities and tools
   linux.rs         foreground entry, operating-system signals, and per-user state directory
+  linux/programs.rs process setup and enumeration on Linux
+  unix/programs.rs  login shell, process groups and pseudo-terminals on Linux and macOS
   mod.rs           trait Platform + PlatformEvent (and Call, what crosses the agent pipe);
                    Local (in this process); Remote (agent pipe proxy, Windows)
   windows/         capture (DXGI), encoder (MF), input (SendInput), clipboard (owner window,
@@ -97,14 +99,10 @@ session/
 mcp/               an AI session's MCP requests, answered off the session thread: mod.rs
                    (JSON-RPC, Facts: what the AI side knows of this computer, kept by the
                    host), gate.rs (the one checkpoint: Granted, the rules, the audit records)
-tools/             the tools of proto/tools.json: mod.rs registers the host information and audit
-                   tools; desktop.rs registers the screen and workspace tools with the desktop
-                   feature set
-workspace/         an AI client's workspace, as the person: mod.rs (Op, the answers and their
-                   error codes; trait Workspace), local.rs (workspace in this process),
-                   procs.rs (programs
-                   and their output, kept for the computer, not for a session), files.rs,
-                   remote.rs (Windows: the same over the user worker's pipe)
+tools/             the tools of proto/tools.json: mod.rs registers base, work and desktop tools
+workspace/         commands and files as the workspace user: mod.rs (Op, Workspace and errors),
+                   local.rs (in this process), procs.rs (programs and retained output), files.rs,
+                   desktop.rs (DesktopOp), remote.rs (Windows user worker pipe)
 audit.rs           what AI clients did here: JSON lines, appended only, bounded
 video/             capture loop (Pipeline: commands, capture, encode step), encoder choice,
                    size from viewer constraints
@@ -132,9 +130,10 @@ host.json also arrive there.
 
 The platform selects the host feature set once at startup. It defines the signaling hello's
 capabilities and AI tool names, which seats can be admitted, and the tool table consulted by the
-MCP gate. Desktop hosts supply a `Platform` and a desk role. `host/build.rs` sets `desktop_host`
-for Windows and macOS. The browser offers desktop control according to the live hello's `desk`
-capability. A verified desk offer to a Linux host receives `bye` with reason `no_desktop`. The
+MCP gate. Every host offers the base tools. A workspace adds work tools, including loopback
+tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and a desk role.
+`host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
+according to the live hello's `desk` capability. A verified desk offer to a Linux host receives `bye` with reason `no_desktop`. The
 AI seat uses the same device proofs and signed AI switch on all hosts.
 
 The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
@@ -235,7 +234,7 @@ MCP client window 2 -stdio-> deskway mcp -+-127.0.0.1-> deskway proxy (one per u
                                                           | one WebRTC connection per computer:
                                                           |   "control", "ai", "tunnel:<port>"
                                                           v
-DeskwayNet (Windows) / the app (macOS)
+DeskwayNet (Windows) / the app (macOS) / the foreground host (Linux)
    session (ai role) -> mcp (gate) -> tools -> Platform (screenshots, input)
                                            +-> Workspace (programs, files, clipboard text, apps;
                                                on Windows in the user worker)
@@ -345,22 +344,29 @@ client can type a password at the sign-in screen.
 ### The gate
 
 Every call passes through `mcp::gate` (`host/src/mcp/gate.rs`), the only place that creates a
-`Granted`. The gate checks that AI is on; that the tool is known and its arguments are valid;
-that it is supported on this computer; that someone is signed in, for `needs_user` tools; that
-no input is sent to a view-only computer; and that administrator rights are used only when the
-switch allows them. For `act` tools it reports `secure_desktop` early. It writes an audit record
-at the start and at the end of each call.
+`Granted`. The gate checks that AI is on, the computer offers the requested tool, and the
+arguments are valid. Tools marked `needs_user` require an available workspace user. The gate
+blocks input on view-only computers and checks both availability and consent for administrator
+rights. For `act` tools it reports `secure_desktop` early. It writes an audit record at the start
+and at the end of each call.
 
 ### Workspace and process lifetime
 
-`workspace::Workspace` covers everything an AI client does as the person (`Op`, whose tags are
-tool names). On macOS it runs in the app; on Windows it runs in the user worker, which the
-service starts as the person signed in at the console (`service/worker.rs`). Programs belong to
-the computer, not to a session (`workspace/procs.rs`). Ending the session, idling out, Stop or
-removing the AI client does not end them. Their output is kept in a bounded buffer that is read
-by offset, so a client that comes back continues reading where it left off. On Windows the
-programs leave the service's job; a terminal program loses its console if the user worker
-restarts.
+`workspace::Workspace` runs commands and works with files (`Op`). Desktop hosts also implement
+clipboard text, apps, windows and accessibility controls (`DesktopOp`). Both request types
+use tool names as tags. On Windows they cross the user worker's JSON pipe with the same
+request and reply shape. The service starts that worker as the person signed in at the
+console. On macOS and Linux the workspace runs in the host process as its user.
+
+On macOS and Linux, ordinary commands use `$SHELL -lc` and an interactive terminal starts `$SHELL -l`.
+The defaults when `SHELL` is unset are `/bin/zsh` on macOS and `/bin/sh` on Linux. On both
+systems, `proc_kill` ends a piped command's process group or a terminal's session, including
+its job-control groups.
+
+Programs belong to the computer and can outlive the AI session. The computer keeps their
+output in a bounded buffer, read by offset. The host has no shutdown sweep for programs it
+started. On Windows programs can leave the service's job, and a terminal program loses its
+console if the user worker restarts.
 
 ### Audit
 

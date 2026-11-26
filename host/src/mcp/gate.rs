@@ -112,8 +112,12 @@ fn what_was_asked(tool: &str, args: &Value) -> String {
 /// What the computer's state and the tool's own definition allow.
 fn rules(tool: &Tool, args: &Value, facts: &Facts) -> Result<(), ToolError> {
     check_args(&tool.input, args).map_err(|e| ToolError::new("invalid_args", e, "Call it again with the arguments its schema describes."))?;
-    if args["elevated"] == true && !facts.admin {
-        return Err(ToolError::new("elevation_off", "AI clients may not use administrator rights on this computer", "A person turns on Allow administrator rights for it in My devices."));
+    if args["elevated"] == true {
+        match facts.admin {
+            None => return Err(ToolError::new("elevation_unavailable", crate::i18n::t("mcp.elevation_unavailable"), crate::i18n::t("mcp.elevation_next"))),
+            Some(false) => return Err(ToolError::new("elevation_off", "AI clients may not use administrator rights on this computer", "A person turns on Allow administrator rights for it in My devices.")),
+            Some(true) => {}
+        }
     }
     if tool.needs_user && !facts.user_session {
         return Err(ToolError::new("no_user_session", "nobody is signed in at this computer", "Sign in at its sign-in screen first (screenshot, then type)."));
@@ -194,7 +198,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let gate = Gate { audit: Arc::new(Audit::new(Some(dir.clone()))), client: "Claude".into(), device: "c1".into(), session: "s1".into() };
-        let facts = |user: bool, desk: Option<Desk>| Facts { user_session: user, desk, ..Facts::default() };
+        let facts = |user: bool, desk: Option<Desk>| Facts { user_session: user, desk, admin: Some(false), ..Facts::default() };
         let all = |_: &str| true;
         let none = |_: &str| false;
         // Tools made up here: the rules read only their flags and schema.
@@ -218,8 +222,9 @@ mod tests {
         assert!(rules(&tool(Screen::Read, false), &json!({}), &watched).is_ok(), "but may be looked at");
         // Administrator rights only where they are allowed.
         let elevated = json!({ "elevated": true });
-        assert_eq!(rules(&tool(Screen::None, false), &elevated, &Facts::default()).err().map(|e| e.code), Some("elevation_off"));
-        assert!(rules(&tool(Screen::None, false), &elevated, &Facts { admin: true, ..Facts::default() }).is_ok());
+        for (admin, refusal) in [(None, Some("elevation_unavailable")), (Some(false), Some("elevation_off")), (Some(true), None)] {
+            assert_eq!(rules(&tool(Screen::None, false), &elevated, &Facts { admin, ..Facts::default() }).err().map(|e| e.code), refusal);
+        }
         assert!(rules(&tool(Screen::None, false), &json!({ "elevated": false }), &Facts::default()).is_ok());
         // And through the gate, with a real tool.
         let code = |name: &str, args: Value, f: Facts, imp: &dyn Fn(&str) -> bool| gate.check(name, &args, &f, imp).err().map(|e| e.code);

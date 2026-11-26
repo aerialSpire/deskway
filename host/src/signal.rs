@@ -299,7 +299,7 @@ struct Host {
 
 impl Host {
     fn features(&self) -> Features {
-        Features { desktop: self.desktop.as_ref().map(|d| d.features), view_only: self.view_only }
+        Features { desktop: self.desktop.as_ref().map(|d| d.features), work: self.workspace.is_some(), view_only: self.view_only }
     }
 
     fn hello(&self) -> Wire {
@@ -363,7 +363,7 @@ impl Host {
             displays: self.displays.clone(),
             desk: self.desk,
             person: self.sessions.of(Seat::Desk).controller(),
-            admin: self.desktop.is_some() && matches!(self.trust.as_ref().map(Trust::ai_state), Some(AiState::On { admin: true })),
+            admin: self.desktop.as_ref().map(|_| matches!(self.trust.as_ref().map(Trust::ai_state), Some(AiState::On { admin: true }))),
             view_only: self.view_only,
             // Asked of the workspace when read (`tools::Ctx::facts`).
             user_session: false,
@@ -1095,7 +1095,8 @@ mod tests {
             let to = shown.clone();
             let trust = trust.then(|| Trust::open(dir.clone(), &cfg.id, &cfg.server).unwrap());
             let desktop = features.desktop.map(|features| DesktopParams { features, platform, events, can_host: Box::new(move || can_host) });
-            let p = Params { cfg, view_only: features.view_only, desktop, notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace: None, admin: None };
+            let workspace = features.work.then(|| Arc::new(crate::workspace::Local::default()) as Arc<dyn crate::workspace::Workspace>);
+            let p = Params { cfg, view_only: features.view_only, desktop, notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
             Test { host, q, shown, dir, calls }
         }
@@ -1217,24 +1218,22 @@ mod tests {
     fn hello_and_desk_admission_follow_the_feature_set() {
         let desktop = crate::platform::TEST_DESKTOP;
         for (case, features, refusal) in [
-            ("desktop", Features { desktop: Some(desktop), view_only: false }, None),
-            ("view-only", Features { desktop: Some(desktop), view_only: true }, None),
-            ("headless", Features::default(), Some("no_desktop")),
+            ("desktop", Features { desktop: Some(desktop), work: true, view_only: false }, None),
+            ("view-only", Features { desktop: Some(desktop), work: true, view_only: true }, None),
+            ("base", Features::default(), Some("no_desktop")),
+            ("headless", Features { work: true, ..Features::default() }, Some("no_desktop")),
         ] {
             let mut t = Test::with_features(case, true, true, features);
             let Wire::Hello { caps, tools, .. } = t.host.hello() else { panic!("expected hello") };
             assert_eq!(caps.iter().any(|c| c == wire::caps::DESK), refusal.is_none());
             assert_eq!(caps.last().map(String::as_str), Some(wire::caps::RELAY_RTT));
-            let names = tools.unwrap();
+            assert_eq!(tools.unwrap(), features.tools().collect::<Vec<_>>());
             if refusal.is_some() {
                 assert_eq!(caps, [wire::caps::RELAY_RTT]);
-                assert_eq!(names, ["computer_info", "audit_read"]);
             } else {
                 let mut expected = (desktop.caps)(features.view_only);
                 expected.push(wire::caps::RELAY_RTT.into());
                 assert_eq!(caps, expected);
-                assert!(names.iter().any(|n| n == "computer_info"));
-                assert_eq!(&names[2..], desktop.tools.iter().map(|(name, _)| *name).collect::<Vec<_>>());
             }
             let phone = t.pair_phone();
             let sent = t.signed_offer(&phone, "desk", false);

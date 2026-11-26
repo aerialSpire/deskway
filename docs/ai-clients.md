@@ -16,13 +16,15 @@ only within 10 minutes after you copy the setup prompt.
 
 Approval alone does not give access to any computer. AI control is off for every computer until
 you turn on **Allow AI control** for it on the **My devices** page. While an AI client is in
-control, both the computer and your browser sessions say so, and the person at the computer can
-end it with **Stop AI control**. Each computer keeps its own record of what AI clients did there,
+control, your browser sessions show it. On desktop hosts the person at the computer can end it
+with **Stop AI control**. Each computer keeps its own record of what AI clients did there,
 which you can read in the browser's audit view or with the `audit_read` tool.
 
 Administrator rights are a separate setting, **Allow administrator rights**. On Windows it
 requires the signed-in user to be an administrator. On a Mac, each use has to be confirmed at the
-Mac.
+Mac. Linux hosts run commands and file operations as the host user and refuse elevation.
+On Linux, `run` and `proc_start` with a command use `$SHELL -lc`. An interactive `proc_start`
+uses `$SHELL -l`. The default shell is `/bin/sh` when `SHELL` is unset.
 
 ## Requirements
 
@@ -32,8 +34,7 @@ Mac.
   programs in the background at startup. The administrator can also supply them as described in
   [Self-hosting, step 5](self-hosting.md#5-ai-client-programs-automatic-for-releases).
 - The computers to be controlled run a current version of Deskway Host. A computer with an older
-  version shows "This computer's Deskway is too old for AI control". A Linux host without a
-  desktop offers `computer_info` and `audit_read`.
+  version shows "This computer's Deskway is too old for AI control".
 
 ## Connect an AI client
 
@@ -105,7 +106,10 @@ programs you supply by hand. Those files take priority over the release download
 ## Tools
 
 The tools are defined in [`proto/tools.json`](../proto/tools.json). Each computer reports which
-of them it supports.
+of them it supports. Linux hosts offer Computer, Commands and programs, Files, and Network
+from the table below. On Linux, `computer_info` reports `os: "linux"`, an empty display list
+and `signed_in: true` for the user running the host. The AI client can also use `copy_to`
+and `copy_from` with a Linux host.
 
 | Group | Tools |
 |---|---|
@@ -119,6 +123,8 @@ of them it supports.
 | Accessibility tree | `ui_tree`, `ui_act` |
 | Network | `tunnel` (reach a port on the computer's loopback from the AI's machine) |
 
+A `proc_read` offset past the end of the output returns empty text and the current end offset.
+
 ## Troubleshooting
 
 | Symptom | Check |
@@ -127,3 +133,4 @@ of them it supports.
 | The SHA-256 doesn't match | Don't run the file. Download it again from the server; if it still differs, tell the server's administrator |
 | `computers` lists a computer but calls are refused | Turn on **Allow AI control** for it on **My devices**, and check the person at the computer didn't stop AI control |
 | A tool is reported as unsupported | That computer does not offer the tool. Call `computers` to see which tools it lacks. |
+| A file operation is denied | Check the workspace user's permissions on the path. |

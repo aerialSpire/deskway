@@ -1,4 +1,4 @@
-use super::{apps, elements, files, procs, Answer, Code, Op, WorkError, Workspace};
+use super::{files, procs, Answer, Op, Workspace};
 
 const WAIT_MOST: u64 = 600_000;
 
@@ -32,21 +32,11 @@ impl Workspace for Local {
             Op::FsHash { path } => files::hash(&path),
             Op::FsMove { from, to } => files::rename(&from, &to),
             Op::FsDelete { path, recursive } => files::delete(&path, recursive),
-            Op::ClipboardGet => Ok(serde_json::json!({ "text": crate::platform::clipboard_text() })),
-            Op::ClipboardSet { text } => {
-                if crate::platform::set_clipboard_text(&text) {
-                    Ok(serde_json::json!({ "done": "set" }))
-                } else {
-                    Err(WorkError::new(Code::Busy, "another program holds the clipboard", "Try again in a moment."))
-                }
-            }
-            Op::Windows => apps::windows(),
-            Op::WindowAct { id, action, x, y, w, h } => apps::window_act(id, action, x, y, w, h),
-            Op::AppList => apps::apps(),
-            Op::AppOpen { name, args } => apps::open(&name, &args),
-            Op::AppQuit { name, pid, force } => apps::quit(name.as_deref(), pid, force),
-            Op::UiTree { window, depth, max_nodes } => elements::tree(window, depth, max_nodes),
-            Op::UiAct { window, element, action, value } => elements::act(window, &element, action, value.as_deref()),
         }
+    }
+
+    #[cfg(desktop_host)]
+    fn desktop(&self, op: super::DesktopOp) -> Answer {
+        super::desktop::call(op)
     }
 }
