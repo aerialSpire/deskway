@@ -167,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/members/{id}/password", s.requireAdmin(s.handleMemberReset))
 	mux.HandleFunc("DELETE /api/members/{id}", s.requireAdmin(s.handleMemberRemove))
 	mux.HandleFunc("GET /api/relays", s.requireAdmin(s.handleRelays))
+	mux.HandleFunc("GET /api/relays/check", s.requireAdmin(s.handleRelayCheck))
 	mux.HandleFunc("POST /api/relays/token", s.requireAdmin(s.handleRelayToken))
 	mux.HandleFunc("PATCH /api/relays/{id}", s.requireAdmin(s.handleRelayRename))
 	mux.HandleFunc("DELETE /api/relays/{id}", s.requireAdmin(s.handleRelayRemove))
