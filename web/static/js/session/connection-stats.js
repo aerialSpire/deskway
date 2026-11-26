@@ -17,6 +17,27 @@ function selectedPair(report, transportId) {
   return nominated;
 }
 
+export function describePath(pair, local, remote) {
+  if (!pair) return { route: 'connected' };
+  const localType = local?.candidateType;
+  const remoteType = remote?.candidateType;
+  const browser = localType === 'relay' ? local : null;
+  const computer = remoteType === 'relay' ? remote : null;
+  if (browser || computer) {
+    const browserRelay = browser?.url?.match(/^turns?:([^?]+)/)?.[1];
+    const relayProtocol = browser?.relayProtocol;
+    const computerRelay = computer?.address;
+    return {
+      route: 'relay',
+      ...(computerRelay && { computerRelay }),
+      ...(browserRelay && { browserRelay }),
+      ...(relayProtocol && { relayProtocol }),
+    };
+  }
+  if (!localType || !remoteType) return { route: 'connected' };
+  return { route: 'direct', sameNetwork: localType === 'host' && remoteType === 'host' };
+}
+
 const valid = (value) => Number.isFinite(value) && value >= 0;
 const delta = (first, last) => valid(first) && valid(last) && last >= first ? last - first : null;
 
@@ -52,7 +73,7 @@ function readings(samples, generation) {
 export class ConnectionHistory {
   constructor() {
     this.samples = [];
-    this.path = null;
+    this.pairId = null;
     this.generation = 0;
   }
 
@@ -60,17 +81,15 @@ export class ConnectionHistory {
     const streams = [...report.values()].filter((s) => s.type === 'inbound-rtp' && s.kind === 'video');
     const incoming = streams.reduce((best, s) => !best || (s.lastPacketReceivedTimestamp ?? 0) > (best.lastPacketReceivedTimestamp ?? 0) ? s : best, null);
     const pair = selectedPair(report, incoming?.transportId);
-    const local = report.get(pair?.localCandidateId)?.candidateType;
-    const remote = report.get(pair?.remoteCandidateId)?.candidateType;
-    const route = local === 'relay' || remote === 'relay' ? 'relay' : local && remote ? 'direct' : 'connected';
+    const path = describePath(pair, report.get(pair?.localCandidateId), report.get(pair?.remoteCandidateId));
     if (!pair) {
       this.samples = [];
-      this.path = null;
-      return { route, current: {}, previous: {}, mode };
+      this.pairId = null;
+      return { path, current: {}, previous: {}, mode };
     }
     const latest = this.samples.at(-1);
-    if (pair.id !== this.path || (latest && now - latest.at > WINDOW_MS)) this.samples = [];
-    this.path = pair.id;
+    if (pair.id !== this.pairId || (latest && now - latest.at > WINDOW_MS)) this.samples = [];
+    this.pairId = pair.id;
 
     const video = mode && incoming?.framesDecoded > 0 ? incoming : null;
     const last = this.samples.at(-1);
@@ -89,7 +108,7 @@ export class ConnectionHistory {
     const previous = oldest.at <= start
       ? readings(this.samples.filter((s) => s.at >= start && s.at <= split), oldest.generation === generation ? generation : null)
       : {};
-    return { route, current, previous, mode };
+    return { path, current, previous, mode };
   }
 }
 

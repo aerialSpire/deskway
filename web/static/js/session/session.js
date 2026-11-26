@@ -93,7 +93,7 @@ export class Session {
     const details = new ConnectionDetails(() => this.toolbar.closePanel(this.toolbar.routeButton));
     this.toolbar.addPanel('connection', this.toolbar.routeButton, () => details.el);
     this.connectionStats = new ConnectionStats(() => this.video.statsMode, (sample) => {
-      this.toolbar.route(sample.route, details.update(sample));
+      this.toolbar.route(sample.path.route, details.update(sample));
     });
     this.toolbar.showAi(this.device);
     this.toolbar.addPanel('displays', this.displays.button, () => this.displays.buildPanel());

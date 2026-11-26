@@ -24,6 +24,9 @@ allows. Otherwise they go through the server's TURN relay, which only forwards e
 - You see the screen and use the mouse and keyboard from any browser. Phones and tablets get
   touch controls: pointer modes, a touchpad, an on-screen keyboard and the device's own input
   method.
+- Select **Direct** or **Relay** in the session toolbar to open **Connection details**. The
+  **Path** row shows whether the session is direct on the same network, direct over the internet,
+  or relayed. Separate rows show available relay addresses and the browser's relay protocol.
 - With several displays, the browser shows a preview of each and lets you switch between them.
 - There are two picture settings. **Sharper** keeps text crisp, and **Smoother** runs at up to
   24 fps.

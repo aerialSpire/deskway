@@ -8,6 +8,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Added
 
+- Connection details show whether a direct session is local or over the internet and which relays a relayed session uses.
 - Self-hosted servers can add regional relay nodes from **Relays** in the admin menu with a single command.
 - Install the Deskway server on Debian or Ubuntu with one command and upgrade released servers with verified GitHub release assets.
 - Self-hosted servers that terminate TLS can relay sessions over the HTTPS port when a network blocks the usual TURN port.
