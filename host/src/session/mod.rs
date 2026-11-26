@@ -31,6 +31,7 @@ use wire::signal::Signal as Wire;
 use wire::types::{AnswerAuth, IceCandidate, Reason};
 
 pub mod ai;
+pub mod terminal;
 #[cfg(desktop_host)]
 pub mod desk;
 

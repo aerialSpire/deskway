@@ -6,10 +6,10 @@
 // keyboard apply: a single character with them on is a combination (Ctrl+C), and so is the
 // first letter of a word started with them on.
 //
-// Public surface: bindTextBox(box, s, { endWord }), resetBox(box), typeKey(s, code, extra),
+// Public surface: bindTextBox(box, s, { endWord }), resetBox(box), typeKey(s, code, extra, event),
 // typeText(s, text).
 import { buzz } from '../env.js';
-import { CAPS, Control } from '../proto.js';
+import { Control } from '../proto.js';
 import { charMessage } from './input-messages.js';
 
 // A little invisible text lets Backspace register even when nothing was typed.
@@ -22,11 +22,13 @@ export function resetBox(box) {
 
 // One key with the on-screen keyboard's modifiers (and `extra`) held around it. Modifiers tapped
 // once are then released.
-export function typeKey(s, code, extra = []) {
-  const send = (c, d) => s.send({ t: Control.KEY, c, d });
-  const mods = [...new Set([...s.osk.mods.keys(), ...extra])];
+export function typeKey(s, code, extra = [], event) {
+  const { sink } = s.keyboard;
+  const send = (c, d) => sink.send({ t: Control.KEY, c, d });
+  const latched = [...s.osk.mods.keys()];
+  const mods = [...new Set([...latched, ...extra])];
   for (const m of mods) send(m, true);
-  send(code, true);
+  sink.send({ t: Control.KEY, c: code, d: true }, event, latched);
   send(code, false);
   for (const m of [...mods].reverse()) send(m, false);
   s.osk.usedMods();
@@ -37,8 +39,9 @@ export function typeKey(s, code, extra = []) {
 // a combination (Ctrl+C): the computer finds its key with its own layout.
 export function typeText(s, text) {
   const mods = s.osk.mods;
-  if (mods.size && [...text].length === 1 && s.hasCap(CAPS.CHARS)) {
-    s.send(charMessage(text, [...mods.keys()]));
+  const { sink } = s.keyboard;
+  if (mods.size && [...text].length === 1 && sink.acceptsModifiedText) {
+    sink.send(charMessage(text, [...mods.keys()]));
     s.osk.usedMods();
     buzz(5);
     return;
@@ -46,7 +49,7 @@ export function typeText(s, text) {
   const parts = text.replace(/\r\n?/g, '\n').split('\n');
   parts.forEach((p, i) => {
     if (i > 0) typeKey(s, 'Enter');
-    if (p) s.send({ t: Control.TEXT, v: p });
+    if (p) sink.send({ t: Control.TEXT, v: p });
   });
 }
 
@@ -62,8 +65,10 @@ export function bindTextBox(box, s, { endWord = () => box.blur() } = {}) {
     if (!s.osk.mods.size || !e.data || comboTaken) return;
     const ch = e.data[0];
     if (!/[a-z0-9]/i.test(ch)) return;
+    const key = s.keyboard.sink.compositionKey(ch, s.osk.mods);
+    if (!key) return;
     comboTaken = true;
-    typeText(s, ch.toLowerCase());
+    typeText(s, key);
     endWord();
   });
   box.addEventListener('compositionend', (e) => {

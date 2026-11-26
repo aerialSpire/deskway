@@ -5,14 +5,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 
 const root = new URL('../../', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 const read = (p) => readFileSync(join(root, p), 'utf8');
 
 
 // The stylesheets held to the standard: the client's, and every <style> in the host's windows.
-const sheets = [['web/static/style.css', read('web/static/style.css')]];
+const VENDORED = new Map([
+  ['vendor/xterm.css', 'The upstream terminal stylesheet is checked in byte for byte.'],
+]);
+const sheets = readdirSync(join(root, 'web/static'), { recursive: true, withFileTypes: true })
+  .filter((f) => f.isFile() && extname(f.name) === '.css')
+  .map((f) => join(f.parentPath, f.name).slice(join(root, 'web/static').length + 1).replaceAll('\\', '/'))
+  .filter((f) => f !== 'design.css' && !VENDORED.has(f))
+  .map((f) => [`web/static/${f}`, read(`web/static/${f}`)]);
 for (const f of readdirSync(join(root, 'host/src/ui')).filter((f) => f.endsWith('.html'))) {
   const html = read(`host/src/ui/${f}`);
   for (const m of html.matchAll(/<style>([\s\S]*?)<\/style>/g)) sheets.push([`host/src/ui/${f}`, m[1]]);

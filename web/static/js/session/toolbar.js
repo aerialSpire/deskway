@@ -42,7 +42,7 @@ export class Toolbar {
     this.main = h('div', { class: 'tool-main' },
       h('div', { class: 'tool-name' }, this.nameText),
       this.routeButton,
-      h('div', { class: 'tool-picture' }, ...picture.filter(Boolean)),
+      picture.length ? h('div', { class: 'tool-picture' }, ...picture) : null,
       this.group,
       h('span', { class: 'tool-sep', 'aria-hidden': 'true' }),
       h('button', { class: 'tool end', onclick: () => s.confirmLeave() }, t('tb.disconnect')));

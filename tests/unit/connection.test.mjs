@@ -60,7 +60,7 @@ const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) 
 let ids = 0;
 // A connection to computer `pc1` and everything it talks to; `verdict` is what checking an
 // answer says.
-function setup({ force = false, verdict = 'ok', socketOpen = true } = {}) {
+function setup({ force = false, verdict = 'ok', socketOpen = true, terminal = false } = {}) {
   const socket = { open: socketOpen, sent: [], isOpen() { return this.open; }, send(m) { this.sent.push(m); } };
   const timers = fakeTimers();
   let peer = null;
@@ -69,6 +69,7 @@ function setup({ force = false, verdict = 'ok', socketOpen = true } = {}) {
     id: `S${++ids}`,
     device: 'pc1',
     force,
+    terminal,
     deps: {
       socket,
       timers,
@@ -114,6 +115,20 @@ async function active(opts) {
 function trickle(env, candidate) {
   env.signal({ type: 'candidate', candidate: { candidate, sdpMLineIndex: 0 } });
 }
+
+test('the terminal negotiates only control and terminal channels and keeps them on ICE restart', async () => {
+  const env = await offered({ terminal: true });
+  const channels = env.c.channels;
+  assert.deepEqual(Object.keys(env.peer.channels), ['control', 'terminal']);
+  assert.equal(channels.input.label, 'control');
+  channels.input.open();
+  assert.equal(env.c.state, 'active');
+  env.peer.set('disconnected');
+  await settle();
+  assert.equal(env.sent('restart').length, 1);
+  assert.equal(env.c.channels, channels);
+  assert.equal(env.c.channels.terminal, env.peer.channels.terminal);
+});
 
 test('the offer is epoch 0 over the nonce, its candidates follow it', async () => {
   const env = setup();

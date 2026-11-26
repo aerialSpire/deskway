@@ -28,7 +28,7 @@ export class Video {
     this.lastView = null;
     this.resizes = null;
     // The first picture clears the progress message, whichever event shows it first.
-    const pictured = () => { if (this.el.videoWidth > 0) this.s.onPicture(); };
+    const pictured = () => { if (this.el.videoWidth > 0) this.s.ready(); };
     this.el.onplaying = pictured;
     this.el.onloadeddata = pictured;
     this.el.addEventListener('resize', () => { this.refit(); pictured(); });

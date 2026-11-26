@@ -17,6 +17,13 @@ this document at the same time.
 | The admin, who made the account | Use the member's account | The admin is shown only the initial password; the member's first sign-in replaces it with a password and super password the admin never sees. A reset makes a new initial password, which the member replaces at the next sign-in; it does not approve any browser |
 | A thief with an unlocked phone | Control a computer | Nothing on the phone: a device key signs without a prompt. **My devices** on another device, or the computer itself, removes the phone; it is signed out of the website at once and computers stop trusting it when they receive the log |
 
+The page's Content Security Policy limits scripts to the server's own files. It allows inline
+styles because xterm.js creates stylesheets and sets cell styles at runtime. Inline styles
+cannot execute scripts. Allowing these styles keeps the upstream emulator intact and lets
+the terminal share the page's existing keyboard and layout. The client builds elements
+through DOM APIs and parses only its own fixed SVG icons as markup. Names, files and
+terminal output do not supply markup to the page.
+
 The following are not covered:
 
 - **The web page itself.** The server delivers the page's JavaScript. Someone who controls the
@@ -214,7 +221,10 @@ checked by the server, without a device signature. The policy entry is
 
 Device checks are on by default. The switch is on **My devices**, and the corresponding checkbox
 is in the approve and add dialogs. The server cannot turn checks off on its own, because the
-entry must be signed by a device the computer trusts.
+entry must be signed by a device the computer trusts. With checks off, the account password
+alone reaches a shell on a Linux computer. The picture and the terminal inherit the same
+policy. The host treats the server as the authority for an unsigned browser offer under
+that policy.
 
 ### Cost
 
@@ -251,6 +261,11 @@ digits derived from it. A device already in the list shows the same request with
 digits. When someone presses **Approve** there, that device signs an endorsement with its key.
 The server records the endorsement in the account's device log, and every computer that trusts
 the approving device then trusts the new one as well. No visit to each computer is needed.
+
+Headless computers use this signed approval path. If you signed in with the super password,
+open **My devices**, choose **Sign out** from the menu for **This device**, and sign in again
+with the account password. Compare the six digits and approve the request on a device the
+computer already trusts.
 
 ### The pairing message (QR path)
 
@@ -428,6 +443,13 @@ The following risks remain and are accepted:
 
 ## Starting a session
 
+An approved browser can open a terminal on a Linux host under the same admission and
+takeover rules as a picture session. The signed SDP selects the session kind. The terminal
+is a login shell in the home directory of the account running Deskway Host, with that
+account's access to programs and files. Deskway starts it without elevation. The host logs
+the device and terminal session start and end to its output, which systemd collects in the
+journal. Terminal input and output are never recorded.
+
 Before sending its offer, the browser asks the host for a nonce (`challenge`). The host answers
 with 16 random bytes (`nonce`), valid for one offer on that session and for 60 seconds. Every
 proof covers that nonce instead of a timestamp, so no clock needs to be correct, and a captured
@@ -467,7 +489,7 @@ equals the fingerprint in the session's authenticated offer, and signs its answe
 below.
 
 A browser that has never created a device key sends its offer without `auth`. The host answers
-`unpaired`, and the page opens pairing instead.
+`unpaired` when device checks are on, and the page opens pairing instead.
 
 The host refuses with these `bye` errors:
 

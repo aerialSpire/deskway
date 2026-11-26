@@ -61,6 +61,12 @@ let current = null;
 export const currentSession = () => (current && !current.closed ? current : null);
 export function setCurrentSession(s) { current = s; }
 
+export function endCurrentSession(s) {
+  if (current !== s) return false;
+  current = null;
+  return true;
+}
+
 // Fingers and buttons down on the page, by pointer. A page rebuilt now would take the control
 // from under them and the tap would do nothing, so updates from the server wait until they lift;
 // at most HOLD_MAX, then the page is drawn anyway: a lift that never arrives (the element went

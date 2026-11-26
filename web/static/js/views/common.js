@@ -31,7 +31,7 @@ export const hereTag = (d) => (d.here ? h('span', { class: 'tag accent' }, t('he
 
 // The live hello supplies the caps. Before it arrives, the desk seat is unknown.
 export const noDesktop = (d) => d.online && Array.isArray(d.caps) && !d.caps.includes(CAPS.DESK);
-export const showNoDesktop = () => gotIt(t('session.noDesktopTitle'), t('session.noDesktopText'));
+export const showNoDesktop = () => gotIt(t('session.noDesktop'));
 
 // Whether the computer takes AI control: it said which AI tools it carries out (an older
 // Deskway says none). Known while it is offline too: the server keeps what it last said.

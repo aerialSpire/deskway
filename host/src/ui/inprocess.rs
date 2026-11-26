@@ -100,6 +100,7 @@ impl InProcess {
                     p.ready()
                 }),
             }),
+            terminal: None,
             notify: Box::new(move |s| {
                 let _ = proxy.send_event(UiEvent::Status(Some(s)));
             }),

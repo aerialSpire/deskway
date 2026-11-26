@@ -111,13 +111,17 @@ always a device of the browser's own account:
 - `name`: the holder's device name.
 - `connecting`: the holder is still connecting.
 
-Pressing a computer's picture asks exactly one of these questions (`views/takeover.js`):
+When the computer has a holder, the page asks one of these questions (`views/takeover.js`):
 
 - `device`: "This device still has a remote connection open. The network may have dropped, or it is in
   another window. End it and connect again?"
   (a session of this device that is still connecting is replaced without asking; see Admission);
 - otherwise: "Your {name} is controlling this computer. Take over?" (or, if the holder is still
   connecting, a question that says so).
+
+**Terminal** offers start without force, as do picture offers when the cached holder is this
+device. The host's current holder decides whether the page asks about taking over, including
+if another tab of this browser is connected. Disconnecting leaves the computer's last report intact.
 
 When **Each computer in its own window** is on (a per-device setting, off by default), pressing a
 computer asks nothing on this page. Instead, the computer's own window (`windows.js`,
@@ -159,10 +163,11 @@ computer: the mark is a hint, never a rule. This is a separate module (`peer::he
 
 The reasons on the wire form a single list in `proto/messages.json`, used by both `bye` and the
 control channel's `end`: `left`, `taken`, `ended`, `busy`, `failed`, `gone`, `offline`, `auth`,
-`unpaired`, `forbidden`, `permissions`, `pair`, `denied`, `full`, `ai_off`, `idle`. What the browser shows comes
-from a single mapping in `views/takeover.js`. It covers those reasons and also the page's own
-reasons, which never travel on the wire: no device key, the server being unreachable when the
-picture is pressed, and the computer's identity not being confirmed (`keyChanged`, `forged`).
+`unpaired`, `forbidden`, `permissions`, `no_desktop`, `no_terminal`, `pair`, `denied`, `full`, `ai_off`, `idle`.
+The browser handles them in `views/takeover.js`, with offer and takeover messages in
+`views/offer-message.js`. The page also has its own reasons, which never travel on the wire:
+no device key, the server being unreachable, and the computer's identity not being confirmed
+(`keyChanged`, `forged`).
 
 - **An end always goes through the server (`bye`), in both directions, and is also sent on the
   control channel (`end`) while that channel is open.** Whichever arrives first ends the session,
@@ -298,7 +303,7 @@ are written `tests/e2e/area.test.mjs::"check"`.
 | C1 | `failed` / `gone` / `offline` | **Retry** / **Reconnect** (offline: once the computer is online) | `connection.test.mjs::"A12 bye gone…"` (gone ends it at once); e2e `host-restart.test.mjs` (**Reconnect**) |
 | C2 | `taken` | **Take back** | e2e `takeover.test.mjs::"B13 Take back takes the computer back…"` |
 | C3 | `ended` / `forbidden` / `permissions` | the reason only | e2e `lifecycle.test.mjs::"after a server restart, Disconnect at the computer…"` |
-| C4 | `unpaired` / `auth` | pair or sign in again | e2e `devices.test.mjs::"a device removed at the computer can no longer control it"` |
+| C4 | `unpaired` / `auth` | pair where the computer can prompt, or sign in again and get approval from a trusted device | e2e `devices.test.mjs::"a device removed at the computer can no longer control it"` |
 | C5 | `keyChanged` / `forged` (the page's own: the computer's identity not confirmed) | "Connection stopped", someone may be posing as it; add again only for `keyChanged` | `connection.test.mjs::"a bad signature on the current epoch ends the session as forged, told to the computer as auth"`; e2e `security.test.mjs` (changed key, forged signature) |
 
 ### Several devices and pages

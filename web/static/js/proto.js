@@ -20,13 +20,14 @@ export const CAPS = Object.freeze({
   CHARS: 'chars',
   CAPTURE: 'capture',
   DESK: 'desk',
+  TERMINAL: 'terminal',
   AI: 'ai',
   RELAY_RTT: 'relay-rtt',
 });
 
 const FORMAT = 's:text|html|image|files';
 // The one list of reasons a session ends or is refused for, on bye and on the control channel's end.
-export const REASONS = Object.freeze(['left', 'taken', 'ended', 'busy', 'failed', 'gone', 'offline', 'auth', 'unpaired', 'forbidden', 'permissions', 'no_desktop', 'pair', 'denied', 'full', 'ai_off', 'idle']);
+export const REASONS = Object.freeze(['left', 'taken', 'ended', 'busy', 'failed', 'gone', 'offline', 'auth', 'unpaired', 'forbidden', 'permissions', 'no_desktop', 'no_terminal', 'pair', 'denied', 'full', 'ai_off', 'idle']);
 const REASON = `s:${REASONS.join('|')}`;
 const HOST = 's:online|away';
 const CBERR = 's:cancelled|gone|denied|big|unsupported|io';
@@ -140,6 +141,18 @@ export const CHANNELS = Object.freeze({
       err: msg(H2B, { id: 's', why: 's:big|locked|io|gone|unsupported|timeout|size|image' }),
     }),
   },
+  terminal: {
+    discriminator: 't',
+    messages: Object.freeze({
+      open: msg(B2H, { rows: 'i', cols: 'i' }),
+      opened: msg(H2B),
+      resize: msg(B2H, { rows: 'i', cols: 'i' }),
+      ack: msg(`${B2H},${H2B}`, { bytes: 'i' }),
+      close: msg(B2H),
+      exit: msg(H2B, { code: 'i' }),
+      error: msg(H2B, { why: 's:open|io|protocol' }),
+    }),
+  },
 });
 
 // Type constants, so code names messages instead of spelling strings.
@@ -159,6 +172,12 @@ export const Control = Object.freeze({
 export const Move = Object.freeze({ TO: 'm', BY: 'mr', CURSOR_POS: 'cp' });
 // Not named File: that is the DOM's.
 export const FileMsg = Object.freeze({ PUT: 'put', READY: 'ready', DONE: 'done', META: 'meta', FIN: 'fin', CANCEL: 'cancel', ERR: 'err' });
+export const TerminalMsg = Object.freeze({
+  OPEN: 'open', OPENED: 'opened', RESIZE: 'resize', ACK: 'ack', CLOSE: 'close', EXIT: 'exit', ERROR: 'error',
+});
+export const TERMINAL_FRAME = 16 * 1024;
+export const TERMINAL_OUTPUT_WINDOW = 128 * 1024;
+export const TERMINAL_INPUT_WINDOW = 64 * 1024;
 
 // Parses a field spec into { kind, of, values, optional }.
 function parseSpec(spec) {

@@ -26,7 +26,7 @@ Every change follows these rules:
 |---|---|
 | Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
-| Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the AI seat, and the in-process workspace for commands, files and tunnels. |
+| Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the desk seat's terminal, and the AI seat with its in-process workspace for commands, files and tunnels. |
 | AI client's machine | `deskway` (cli/): `login`, `mcp` for MCP over stdio, `gateway` for MCP over HTTP, and one proxy per profile that holds the sign-in and a link to each computer in use. |
 
 Each platform has exactly one process model. The network service talks to the agent only
@@ -95,6 +95,8 @@ session/
   desk/            channels.rs: those channels' messages, read once and routed; pace.rs:
                    real time over a congested path, encoding waits while the queue is full;
                    media.rs: the picture's track (payload, mid, keyframes)
+  terminal.rs      the desk seat's data-only role, one raw PTY stream with resize and bounded
+                   input and output credit. The role drops its PTY when the session ends
   ai.rs            the AI role, an AI client's deskway: control and ai channels (MCP in
                    frames, wire::mcp), no media; idle for 10 minutes gives the seat up
 mcp/               an AI session's MCP requests, answered off the session thread: mod.rs
@@ -132,10 +134,13 @@ host.json also arrive there.
 The platform selects the host feature set once at startup. It defines the signaling hello's
 capabilities and AI tool names, which seats can be admitted, and the tool table consulted by the
 MCP gate. Every host offers the base tools. A workspace adds work tools, including loopback
-tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and a desk role.
+tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
-according to the live hello's `desk` capability. A verified desk offer to a Linux host receives `bye` with reason `no_desktop`. The
-AI seat uses the same device proofs and signed AI switch on all hosts.
+according to the live hello's `desk` capability. Linux offers the `terminal` capability and
+supplies a PTY launcher. Verified terminal and picture offers contend for the same desk seat.
+A picture offer to a Linux host receives `no_desktop`. A terminal offer to a host without
+terminal support receives `no_terminal`. The AI seat uses the same device proofs and signed AI
+switch on all hosts.
 
 The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
 Starting or enrolling the host takes the same exclusive `host.lock` for that state directory.
@@ -717,13 +722,17 @@ js/windows.js        each computer in a window of its own, when the device chose
                      <id>; the windows find each other over a BroadcastChannel)
 js/views/            login (with choosing an initial password's replacement), list, detail,
                      devices, menu, account (with installing), members (**Members**), relays
-                     (**Relays**), computer, approvals, pairing, takeover (pressing a picture: the one question, and
+                     (**Relays**), computer, approvals, pairing, takeover (opening a picture or terminal: the one question, and
                      the one mapping from end reasons to what is shown); common.js holds the
                      pieces every page shares
 js/session/          connection.js (the session's lifecycle: peer connection, negotiation,
                      state, deadlines, attaching again, the end), session.js (the session's
-                     parts put together), video, pointer, touch, mouse-pad, keyboard,
-                     onscreen-keyboard, text-box (every input method's text), clipboard
+                     parts put together), desktop.js (picture and controls), terminal-view.js
+                     (emulator and layout), terminal-keys.js (keyboard input for the PTY),
+                     terminal-channel.js (byte stream and credit),
+                     video, pointer, touch, mouse-pad, keyboard, onscreen-keyboard,
+                     keyboard-layout.js (the on-screen US layout), text-box (every input
+                     method's text), clipboard
                      (state) and clipboard-ui, transfer, progress
                      (the progress card), floating (dragging and remembered places), toolbar,
                      displays (also their order and the remembered choice for the detail page),
@@ -736,6 +745,7 @@ manifest.json, icons/  installable; the icons are host/src/icon.rs's drawing (it
 design.css           every design token and shared component (docs/design.md); the host builds
                      the same file into its panel, setup window and in-session bar
 style.css            the client's page and session layout, in those tokens only
+vendor/              the upstream xterm.js modules and stylesheet, loaded on terminal open
 ```
 
 ## Tests

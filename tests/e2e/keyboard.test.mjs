@@ -38,6 +38,23 @@ export const area = {
     await press('KeyV', false); await press('ControlLeft', false);
     await sleep(300);
     h.check('Ctrl+V goes to the computer as Ctrl+V at once, with sharing on: paste keys are ordinary keys', atOnce === JSON.stringify(['ControlLeft+', 'KeyV+']) && await recorded() === JSON.stringify(['ControlLeft+', 'KeyV+', 'KeyV-', 'ControlLeft-']) && await a.eval(`window.__reads === 0`), await recorded());
+    for (const [os, modifiers, code, key, vk] of [
+      ['macos', ['MetaLeft'], 'KeyV', 'v', 86],
+      ['windows', ['ControlLeft', 'ShiftLeft'], 'KeyV', 'V', 86],
+      ['windows', ['ShiftLeft'], 'Insert', 'Insert', 45],
+    ]) {
+      await fresh(os);
+      for (const mod of modifiers) await press(mod, true);
+      await press(code, true, { key, windowsVirtualKeyCode: vk });
+      const down = [...modifiers, code].map((c) => c + '+');
+      const atOnce = await recorded();
+      await press(code, false, { key, windowsVirtualKeyCode: vk });
+      const release = modifiers.toReversed();
+      for (const mod of release) await press(mod, false);
+      const up = [code, ...release].map((c) => c + '-');
+      h.check([...modifiers, code].join('+') + ' sends literal desktop keys without reading the clipboard',
+        atOnce === JSON.stringify(down) && await recorded() === JSON.stringify([...down, ...up]) && await a.eval('window.__reads === 0'), await recorded());
+    }
     await fresh('windows');
     await press('ControlLeft', true); await press('KeyC', true);
     await a.v(`document.activeElement.blur()`);

@@ -1,5 +1,5 @@
 // A computer's page: its name with the way back and its ⋯, its status, and its picture (or its
-// displays, where they sit); pressing a screen takes over, as the line above it says.
+// displays, where they sit), followed by the available actions and AI activity.
 import { $app, h, loading } from '../dom.js';
 import { t } from '../i18n.js';
 import { state, device, setView } from '../state.js';
@@ -9,6 +9,7 @@ import { computerMenu } from './computer.js';
 import { press } from './takeover.js';
 import { auditSection } from './audit.js';
 import { chosenDisplay, rememberDisplay, orderedDisplays } from '../session/displays.js';
+import { CAPS } from '../proto.js';
 
 export function renderDetail() {
   const d = device();
@@ -20,7 +21,7 @@ export function renderDetail() {
   // Pressing the picture takes over. With several displays, each is shown live where it sits,
   // and pressing one takes over that one.
   const preview = noDesktop(d)
-    ? h('p', { class: 'notice' }, t('session.noDesktopText'))
+    ? h('p', { class: 'notice' }, t('session.noDesktop'))
     : d.online
       ? displayLayout(d) || h('button', { class: 'preview clickable', 'aria-label': t('detail.takeOverLabel', { name: d.name }), onclick: () => press(device() || d) }, hint(), thumbFor(d))
       : h('div', { class: 'preview offline' }, h('div', { class: 'thumb-inner' }, t('detail.offline')));
@@ -30,6 +31,10 @@ export function renderDetail() {
     heading(d.name, { back: true, beside: hereTag(d), end: computerMenu(d).el, sub: statusLine(d) }),
     state.socketDown ? staleNote('detail.stale') : null,
     preview,
+    d.online && d.caps?.includes(CAPS.TERMINAL)
+      ? h('div', { class: 'computer-actions' },
+        h('button', { class: 'btn', type: 'button', onclick: () => press(device() || d, false, true) }, t('terminal.label')))
+      : null,
     auditSection(d)));
 }
 
@@ -48,7 +53,6 @@ function displayLayout(d) {
   const W = maxX - minX;
   const H = maxY - minY;
   const chosen = chosenDisplay(d.id);
-  // Positions go through the style object: the page's security policy blocks style attributes.
   const tiles = list.map((x, i) => {
     const thumb = state.screenThumbs[`${d.id}|${x.id}`];
     const tile = h('button', {

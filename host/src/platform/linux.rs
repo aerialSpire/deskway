@@ -94,7 +94,7 @@ pub fn run() -> Result<()> {
     awake?;
     let waiting = Cell::new(false);
     signal::run(signal::Params {
-        cfg, view_only: false, desktop: None,
+        cfg, view_only: false, desktop: None, terminal: Some(programs::open_pty),
         notify: Box::new(move |status| {
             if let (false, Some(code)) = (waiting.replace(status.waiting), status.approval_code) {
                 let _ = writeln!(io::stdout(), "{}", tf("cli.approve_computer", &[("server", status.server), ("code", code)]));
