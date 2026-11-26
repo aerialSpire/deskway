@@ -3,7 +3,7 @@ set -eu
 
 case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
   zh_TW*|zh_HK*|zh_MO*|zh_Hant*|zh-TW*|zh-HK*|zh-MO*|zh-Hant*)
-    usage='用法：install-server.sh --domain NAME [--admin NAME] [--version TAG]（首次安裝需要 --admin）'
+    usage='用法：install-server.sh --domain NAME [--admin NAME] [--version TAG] [--remote-mcp|--no-remote-mcp]（首次安裝需要 --admin）'
     root_help='請在使用 systemd 的 Debian 或 Ubuntu 上以 sudo 執行安裝程式。'
     dns_help='請設定網域的 A 記錄，確認可解析為伺服器的公開 IPv4 位址後重試。'
     release_help='請確認 GitHub 可連線且指定的版本含有伺服器安裝檔，然後重試。'
@@ -26,9 +26,14 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     ready='請開啟'
     first_load='首次載入可能需要幾秒鐘，等待憑證簽發。'
     firewall='請開放防火牆連接埠 TCP 443、TCP 和 UDP 3478，以及 UDP 49160–49359。'
+    mcp_edit_help='無法自動變更此服務的 ExecStart。請依照自架指南手動編輯服務單元（docs/self-hosting.md#remote-mcp）。'
+    mcp_check_help='請修正遠端 MCP 預檢錯誤後重試。'
+    mcp_restored='變更遠端 MCP 設定後服務無法啟動。已還原服務單元並重新啟動服務。'
+    mcp_keys='伺服器會持有已核准的遠端應用程式金鑰，詳見安全性文件（docs/security.md）。'
+    mcp_address='請在網頁用戶端的「新增 AI 用戶端」中查看 MCP 位址。'
     ;;
   zh*)
-    usage='用法：install-server.sh --domain NAME [--admin NAME] [--version TAG]（首次安装需要 --admin）'
+    usage='用法：install-server.sh --domain NAME [--admin NAME] [--version TAG] [--remote-mcp|--no-remote-mcp]（首次安装需要 --admin）'
     root_help='请在使用 systemd 的 Debian 或 Ubuntu 上以 sudo 运行安装程序。'
     dns_help='请设置域名的 A 记录，确认可解析为服务器的公网 IPv4 地址后重试。'
     release_help='请确认 GitHub 可访问且指定的版本含有服务器安装包，然后重试。'
@@ -51,9 +56,14 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     ready='请打开'
     first_load='首次加载可能需要几秒钟，等待证书签发。'
     firewall='请开放防火墙端口 TCP 443、TCP 和 UDP 3478，以及 UDP 49160–49359。'
+    mcp_edit_help='无法自动更改此服务的 ExecStart。请按自建指南手动编辑服务单元（docs/self-hosting.md#remote-mcp）。'
+    mcp_check_help='请修正远程 MCP 预检错误后重试。'
+    mcp_restored='更改远程 MCP 设置后服务无法启动。已恢复服务单元并重启服务。'
+    mcp_keys='服务器将持有已批准的远程应用程序密钥，详见安全文档（docs/security.md）。'
+    mcp_address='请在网页客户端的「添加 AI 客户端」中查看 MCP 地址。'
     ;;
   *)
-    usage='Usage: install-server.sh --domain NAME [--admin NAME] [--version TAG] (--admin is required on first install)'
+    usage='Usage: install-server.sh --domain NAME [--admin NAME] [--version TAG] [--remote-mcp|--no-remote-mcp] (--admin is required on first install)'
     root_help='Run the installer with sudo on Debian or Ubuntu booted with systemd.'
     dns_help="Set the domain's A record to the server's public IPv4 address and retry once it resolves."
     release_help='Check that GitHub is reachable and the selected release has server assets, then retry.'
@@ -76,6 +86,11 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     ready='Open'
     first_load='The first load can take a few seconds while the certificate is issued.'
     firewall='Open firewall ports TCP 443, TCP and UDP 3478, and UDP 49160–49359.'
+    mcp_edit_help='Cannot change ExecStart automatically. Edit the unit by hand as described in the self-hosting guide (docs/self-hosting.md#remote-mcp).'
+    mcp_check_help='Fix the remote MCP preflight error and retry.'
+    mcp_restored='The service failed to start with the new remote MCP setting. The previous unit was restored and the service restarted.'
+    mcp_keys='The server will hold keys for approved remote applications (see the security guide, docs/security.md).'
+    mcp_address='Find the MCP address under "Add an AI client" in the web client.'
     ;;
 esac
 
@@ -92,22 +107,34 @@ run() {
 
 service_failed() {
   journalctl -u deskway.service -n 20 --no-pager >&2 || :
+  if [ -n "$previous_unit" ]; then
+    run "$storage_help" cp -p "$previous_unit" "$unit"
+    run "$restart_help" systemctl daemon-reload
+    run "$restart_help" systemctl restart deskway.service
+    service_active || die "$restart_help"
+    die "$mcp_restored"
+  fi
   die "$1"
 }
 
-check_service() {
+service_active() {
   sleep 3
-  systemctl is-active --quiet deskway.service || service_failed "$1"
+  systemctl is-active --quiet deskway.service
 }
 
 domain=
 admin=
 version=
+remote_mcp=keep
 while [ "$#" -gt 0 ]; do
   option=$1
   shift
   case "$option" in
     --help) printf '%s\n' "$usage"; exit 0 ;;
+    --remote-mcp|--no-remote-mcp)
+      [ "$remote_mcp" = keep ] || die "$usage"
+      remote_mcp=$option
+      ;;
     --domain|--admin|--version)
       case "${1:-}" in ''|--*) die "$usage" ;; esac
       case "$option" in
@@ -131,7 +158,58 @@ binary=/usr/local/bin/deskway-server
 data=/var/lib/deskway
 unit=/etc/systemd/system/deskway.service
 
+# Match the shipped unit's command, allowing the domain and IP chosen at install time.
+exec_start='ExecStart=/usr/local/bin/deskway-server -listen :443 -domain @DOMAIN@ -data /var/lib/deskway/state.json -public-ip @IP@'
+read_exec_start() {
+  awk -v shape="$exec_start" '
+    BEGIN {
+      gsub(/[.]/, "[.]", shape)
+      sub(/@DOMAIN@/, "[a-zA-Z0-9.][a-zA-Z0-9.-]*", shape)
+      sub(/@IP@/, "[0-9.]+", shape)
+      shape = "^" shape "( -remote-mcp)?$"
+    }
+    { line = $0; sub(/^\357\273\277/, "", line) }
+    line ~ /^[[:space:]]*[#;]/ { next }
+    !continued && line ~ /^[[:space:]]*\[/ { service = line ~ /^[[:space:]]*\[Service\][[:space:]]*$/ }
+    line ~ /^[[:space:]]*ExecStart[[:space:]]*(=|\\$)/ {
+      if (continued || !service || $0 !~ shape || ++starts != 1) exit 1
+      print
+    }
+    { continued = line ~ /(^|[^\\])(\\\\)*\\$/ }
+    END { if (starts != 1) exit 1 }
+  ' "$@"
+}
+
+mcp_flag=
+mcp_edit=
+previous_unit=
+if [ "$remote_mcp" != keep ]; then
+  [ "$remote_mcp" != --remote-mcp ] || mcp_flag=' -remote-mcp'
+  mcp_edit="/^ExecStart=/ { s/ -remote-mcp\$//; s/\$/$mcp_flag/; }"
+fi
+
+check_mcp() {
+  run "$mcp_check_help" runuser -u "$1" -- "$binary" remote-mcp-check -data "$data/state.json"
+}
+
+announce_mcp() {
+  if [ "$remote_mcp" = --remote-mcp ]; then
+    printf '%s\n' "$mcp_keys" "$mcp_address"
+  fi
+}
+
 if [ -f "$unit" ]; then
+  if [ "$remote_mcp" != keep ]; then
+    current_start=$(read_exec_start "$unit") || die "$mcp_edit_help"
+    # systemctl cat uses the loaded fragment and drop-in paths.
+    properties=$(systemctl show --property=FragmentPath,NeedDaemonReload,User deskway.service) || die "$mcp_edit_help"
+    printf '%s\n' "$properties" | grep -Fxq "FragmentPath=$unit" || die "$mcp_edit_help"
+    printf '%s\n' "$properties" | grep -Fxq 'NeedDaemonReload=no' || die "$mcp_edit_help"
+    effective=$(systemctl --no-pager cat deskway.service) || die "$mcp_edit_help"
+    effective_start=$(printf '%s\n' "$effective" | read_exec_start) || die "$mcp_edit_help"
+    [ "$effective_start" = "$current_start" ] || die "$mcp_edit_help"
+    service_user=$(printf '%s\n' "$properties" | sed -n 's/^User=//p')
+  fi
   "$binary" -supports-upgrade >/dev/null 2>&1 || die "$legacy_help"
   printf '%s\n' "$upgrade"
   set -- upgrade
@@ -139,11 +217,24 @@ if [ -f "$unit" ]; then
     set -- "$@" -to "$version"
   fi
   run "$upgrade_help" "$binary" "$@"
+  if [ "$remote_mcp" = --remote-mcp ]; then
+    check_mcp "${service_user:-root}"
+  fi
+  if [ "$remote_mcp" != keep ] && [ "$current_start" != "${current_start% -remote-mcp}$mcp_flag" ]; then
+    work=$(mktemp -d) || die "$storage_help"
+    trap 'rm -rf -- "$work"' 0
+    run "$storage_help" cp -p "$unit" "$work/previous.service"
+    sed -e "$mcp_edit" "$work/previous.service" > "$work/deskway.service" || die "$storage_help"
+    previous_unit="$work/previous.service"
+    install -m 644 "$work/deskway.service" "$unit" || service_failed "$storage_help"
+    systemctl daemon-reload || service_failed "$enable_help"
+  fi
   systemctl enable --now deskway.service || service_failed "$enable_help"
   # A running service needs a restart to load the replacement binary.
   printf '%s\n' "$restart"
   systemctl restart deskway.service || service_failed "$restart_help"
-  check_service "$restart_help"
+  service_active || service_failed "$restart_help"
+  announce_mcp
   exit 0
 fi
 
@@ -183,24 +274,32 @@ run "$release_help" curl -q -fLsS --proto '=https' --proto-redir '=https' -o SHA
 awk -v asset="$archive" '$2 == asset || $2 == "*" asset' SHA256SUMS |
   sha256sum --check --strict - || die "$verify_help"
 run "$verify_help" tar -xzf "$archive" "$package/deskway-server" "$package/deskway.service"
+sed -e "s/@DOMAIN@/$domain/g" -e "s/@IP@/$public_ip/g" -e "$mcp_edit" "$package/deskway.service" > deskway.service ||
+  die "$storage_help"
+if [ "$remote_mcp" != keep ]; then
+  read_exec_start deskway.service >/dev/null || die "$mcp_edit_help"
+fi
 
-printf '%s\n' "$install_binary"
-run "$storage_help" install -m 755 "$package/deskway-server" "$binary"
 printf '%s\n' "$install_user"
 if ! getent passwd deskway >/dev/null; then
   run "$storage_help" useradd --system --user-group --home-dir "$data" --shell /usr/sbin/nologin deskway
 fi
 run "$storage_help" install -d -m 700 -o deskway -g deskway "$data"
+printf '%s\n' "$install_binary"
+run "$storage_help" install -m 755 "$package/deskway-server" "$binary"
+if [ "$remote_mcp" = --remote-mcp ]; then
+  check_mcp deskway
+  run "$storage_help" install -d -m 755 -o deskway -g deskway "$data/clients"
+fi
 if [ ! -f "$data/state.json" ]; then
   printf '%s\n' "$create_admin"
   run "$admin_help" runuser -u deskway -- "$binary" admin "$admin" -data "$data/state.json"
 fi
 
 printf '%s\n' "$install_unit"
-sed -e "s/@DOMAIN@/$domain/g" -e "s/@IP@/$public_ip/g" "$package/deskway.service" > deskway.service ||
-  die "$storage_help"
 run "$storage_help" install -m 644 deskway.service "$unit"
 run "$enable_help" systemctl daemon-reload
 systemctl enable --now deskway.service || service_failed "$enable_help"
-check_service "$enable_help"
+service_active || service_failed "$enable_help"
 printf '%s\n' "$ready https://$domain — $first_load" "$firewall"
+announce_mcp

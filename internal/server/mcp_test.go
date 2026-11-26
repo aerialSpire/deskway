@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -42,10 +44,11 @@ func (g *testMCPGateway) forward(w http.ResponseWriter, r *http.Request, profile
 	var message struct {
 		ID     json.RawMessage
 		Method string
+		Params struct{ Name string }
 	}
 	_ = json.NewDecoder(r.Body).Decode(&message)
 	g.calls = append(g.calls, profile)
-	result := json.RawMessage(`{"tools":[]}`)
+	result := json.RawMessage(`{"tools":[{"name":"computers","inputSchema":{"type":"object"}}]}`)
 	switch message.Method {
 	case "initialize":
 		result = json.RawMessage(`{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"test","version":"1"}}`)
@@ -54,6 +57,9 @@ func (g *testMCPGateway) forward(w http.ResponseWriter, r *http.Request, profile
 		return
 	case "tools/call":
 		result = json.RawMessage(`{"content":[{"type":"text","text":"hello from Deskway"}]}`)
+		if message.Params.Name == "computers" {
+			result = json.RawMessage(`{"content":[],"structuredContent":{"result":[{"name":"Test computer"}]}}`)
+		}
 	}
 	writeJSON(w, map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": result})
 }
@@ -249,7 +255,7 @@ func (a mcpTestApprover) open(id string) string {
 func (a mcpTestApprover) approval(c *http.Client, request, action string, proof *proto.Proof) *http.Response {
 	a.t.Helper()
 	b, _ := json.Marshal(map[string]any{"request": request, "action": action, "proof": proof})
-	return a.mcpRequest(c, "POST", mcpApprovalPath, "application/json", string(b), map[string]string{"Origin": testMCPIssuer})
+	return a.mcpRequest(c, "POST", mcpApprovalPath, "application/json", string(b), map[string]string{"Origin": a.s.mcp.issuer})
 }
 
 func (a mcpTestApprover) prepare(request string) mcpPrepared {
@@ -385,6 +391,100 @@ func TestMCPApprovalAndRevocation(t *testing.T) {
 	}
 }
 
+func mcpTestTLS(t *testing.T, f *fixture) (*httptest.Server, string) {
+	t.Helper()
+	server := httptest.NewUnstartedServer(nil)
+	f.s.mcp.issuer = "https://" + server.Listener.Addr().String()
+	f.s.mcp.resource = f.s.mcp.issuer + mcpResourcePath
+	server.Config.Handler = f.s.Handler()
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	cert := filepath.Join(t.TempDir(), "tls.pem")
+	if err := os.WriteFile(cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return server, cert
+}
+
+func TestMCPCheckScript(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required to run the MCP check script")
+	}
+	f, _ := testMCPFixture(t)
+	a := f.mcpApprover("me")
+	server, cert := mcpTestTLS(t, f)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, node, "../../scripts/check-mcp.mjs", server.URL+mcpResourcePath, "--refresh")
+	cmd.Env = append(cmd.Environ(), "NODE_EXTRA_CA_CERTS="+cert)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			cancel()
+			_ = cmd.Wait()
+		}
+	}()
+	browser := &http.Client{Transport: server.Client().Transport, Timeout: 5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	var output strings.Builder
+	lines := bufio.NewScanner(stdout)
+	for lines.Scan() {
+		line := lines.Text()
+		fmt.Fprintln(&output, line)
+		if raw, ok := strings.CutPrefix(line, "Authorization URL: "); ok {
+			auth := mustURL(raw)
+			if auth.Scheme+"://"+auth.Host+auth.Path != server.URL+mcpAuthorizePath {
+				t.Fatal("unexpected authorization endpoint")
+			}
+			r, err := browser.Get(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Body.Close()
+			want(t, "authorization request", r.StatusCode, 303)
+			request := mustURL(r.Header.Get("Location")).Query().Get("mcp")
+			want(t, "approval page", a.status(a.owner, "GET", mcpApprovalPath+"?request="+request, nil), 200)
+			d := a.prepare(request)
+			proof := a.proof(d, max(time.Now().Unix(), d.Endorsed+1))
+			callback := mcpJSON[map[string]string](t, a.approval(a.owner, request, "approve", proof), 200)
+			res, err := browser.Get(callback["redirect"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			want(t, "loopback callback", res.StatusCode, 200)
+		}
+	}
+	if err := lines.Err(); err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
+	waited = true
+	if err != nil {
+		t.Fatalf("%v\n%s%s", err, output.String(), stderr.String())
+	}
+	for _, line := range []string{
+		"PASS MCP initialize and notifications/initialized",
+		`Computers: "Test computer"`,
+		"PASS OAuth refresh token reuse (invalid_grant)",
+		"Deskway MCP check is in My devices. You can remove it there.",
+	} {
+		if !strings.Contains(output.String(), line) {
+			t.Errorf("missing %q in output:\n%s", line, output.String())
+		}
+	}
+}
+
 // Optional because the SDK is an external test runner, rather than a server dependency.
 func TestMCPOfficialSDK(t *testing.T) {
 	dir := os.Getenv("DESKWAY_MCP_SDK")
@@ -393,16 +493,7 @@ func TestMCPOfficialSDK(t *testing.T) {
 	}
 	f, _ := testMCPFixture(t)
 	owner := f.signedIn("me")
-	server := httptest.NewUnstartedServer(nil)
-	f.s.mcp.issuer = "https://" + server.Listener.Addr().String()
-	f.s.mcp.resource = f.s.mcp.issuer + mcpResourcePath
-	server.Config.Handler = f.s.Handler()
-	server.StartTLS()
-	defer server.Close()
-	cert := filepath.Join(t.TempDir(), "tls.pem")
-	if err := os.WriteFile(cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
-		t.Fatal(err)
-	}
+	server, cert := mcpTestTLS(t, f)
 	var cookies []string
 	for _, c := range owner.Jar.Cookies(mustURL(f.srv.URL)) {
 		cookies = append(cookies, c.String())

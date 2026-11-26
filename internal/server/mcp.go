@@ -38,11 +38,19 @@ func (s *Server) StopMCP() {
 	}
 }
 
+// CheckRemoteMCP runs the startup preflight without opening the state file or starting the server.
+func CheckRemoteMCP(dataPath, clients string) error {
+	_, err := releaseClientPrograms(clients).checkRemoteMCP(context.Background(), mcpProfileRoot(dataPath))
+	return err
+}
+
 // mcpProfileRoot holds one directory per remote application.
-func (s *Server) mcpProfileRoot() string {
-	path, _ := filepath.Abs(filepath.Join(filepath.Dir(s.store.path), "mcp"))
+func mcpProfileRoot(dataPath string) string {
+	path, _ := filepath.Abs(filepath.Join(filepath.Dir(dataPath), "mcp"))
 	return path
 }
+
+func (s *Server) mcpProfileRoot() string { return mcpProfileRoot(s.store.path) }
 
 // mcpProfilePath is the directory of profile id, or "" when id is not a profile id: the one
 // place a name from a request or the state file becomes a path.

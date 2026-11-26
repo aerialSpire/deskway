@@ -30,40 +30,48 @@ func removeMCPProfileDir(path string) error {
 	return os.RemoveAll(path)
 }
 
-// EnableRemoteMCP preflights the local AI client before publishing any routes.
-func (s *Server) EnableRemoteMCP(origin string) error {
-	m, err := newRemoteMCP(origin)
-	if err != nil {
-		return err
-	}
+func (p *clientPrograms) checkRemoteMCP(ctx context.Context, root string) (string, error) {
 	arch := runtime.GOARCH
 	if arch == "amd64" {
 		arch = "x64"
 	}
 	name := "deskway-linux-" + arch
 	if arch != "x64" && arch != "arm64" {
-		return errors.New("remote MCP requires the Linux x64 or ARM64 Deskway AI client")
+		return "", errors.New("remote MCP requires the Linux x64 or ARM64 Deskway AI client")
 	}
-	f, err := s.programs.open(name)
+	f, err := p.open(name)
 	if err != nil {
-		return fmt.Errorf("remote MCP: cannot open %s: %w", name, err)
+		return "", fmt.Errorf("remote MCP: cannot open %s: %w", name, err)
 	}
 	if f == nil {
-		return fmt.Errorf("remote MCP: install the executable %s in the server's AI client downloads directory", name)
+		return "", fmt.Errorf("remote MCP: install the executable %s in the server's AI client downloads directory", name)
 	}
 	program, err := filepath.Abs(f.Name())
 	f.Close()
 	if err != nil {
-		return err
+		return "", err
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := exec.CommandContext(ctx, program, "supports-remote-mcp").Run(); err != nil {
-		return fmt.Errorf("remote MCP: cannot run %s with remote enrollment support: %w (use a current executable AI client and its shared libraries; the static server container is unsupported)", program, err)
+		return "", fmt.Errorf("remote MCP: cannot run %s with remote enrollment support: %w (use a current executable AI client and its shared libraries; the static server container is unsupported)", program, err)
+	}
+	if len(gatewaySocket(filepath.Join(root, strings.Repeat("a", 24)))) >= len(syscall.RawSockaddrUnix{}.Path) {
+		return "", errors.New("remote MCP: the data directory path is too long for a private gateway socket")
+	}
+	return program, nil
+}
+
+// EnableRemoteMCP preflights the local AI client before publishing any routes.
+func (s *Server) EnableRemoteMCP(origin string) error {
+	m, err := newRemoteMCP(origin)
+	if err != nil {
+		return err
 	}
 	root := s.mcpProfileRoot()
-	if len(gatewaySocket(filepath.Join(root, strings.Repeat("a", 24)))) >= len(syscall.RawSockaddrUnix{}.Path) {
-		return errors.New("remote MCP: the data directory path is too long for a private gateway socket")
+	program, err := s.programs.checkRemoteMCP(s.ctx, root)
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return fmt.Errorf("remote MCP: create profile directory: %w", err)

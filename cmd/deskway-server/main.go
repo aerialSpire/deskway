@@ -37,6 +37,8 @@ func main() {
 			os.Exit(upgradeCommand(os.Args[2:]))
 		case "upgrade-check":
 			os.Exit(upgradeCheckCommand(os.Args[2:]))
+		case "remote-mcp-check":
+			os.Exit(remoteMCPCheckCommand(os.Args[2:]))
 		case "relay":
 			os.Exit(relayCommand(os.Args[2:]))
 		}
@@ -45,15 +47,14 @@ func main() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Usage: deskway-server [flags]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin NAME [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
+		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server remote-mcp-check [-data FILE] [-clients DIR]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+upgradeUsage)
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+relayUsage)
 		flag.PrintDefaults()
 	}
+	dataPath, clients, fetch := clientOptions(flag.CommandLine)
 	var (
 		listen    = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
-		dataPath  = flag.String("data", "deskway-data/state.json", "state file")
-		clients   = flag.String("clients", "", "folder of the AI client programs to hand out (default: clients beside the state file)")
-		fetch     = flag.Bool("fetch-clients", true, "fetch missing AI client programs from this server's GitHub release")
 		remoteMCP = flag.Bool("remote-mcp", false, "allow applications to connect to this server over MCP with OAuth")
 		mcpOrigin = flag.String("mcp-public-url", "", "public HTTPS origin for remote MCP when the server cannot infer it")
 		domain    = flag.String("domain", "", "domain name; gets a Let's Encrypt certificate automatically (listen on :443)")
@@ -143,10 +144,7 @@ func main() {
 	}
 
 	s := server.New(store, turnCfg, stunURLs, web.Files())
-	if *clients == "" {
-		*clients = filepath.Join(filepath.Dir(*dataPath), "clients")
-	}
-	s.ServeClients(*clients, *fetch)
+	s.ServeClients(clientDirectory(*dataPath, *clients), *fetch)
 	if *remoteMCP {
 		origin := *mcpOrigin
 		if origin == "" && tlsConfig != nil {
@@ -241,6 +239,36 @@ func upgradeCheckCommand(args []string) int {
 	if !ready {
 		return 1
 	}
+	return 0
+}
+
+func clientOptions(flags *flag.FlagSet) (*string, *string, *bool) {
+	dataPath := flags.String("data", "deskway-data/state.json", "state file")
+	clients := flags.String("clients", "", "folder of the AI client programs to hand out (default: clients beside the state file)")
+	fetch := flags.Bool("fetch-clients", true, "fetch missing AI client programs from this server's GitHub release at startup")
+	return dataPath, clients, fetch
+}
+
+func clientDirectory(dataPath, clients string) string {
+	if clients == "" {
+		return filepath.Join(filepath.Dir(dataPath), "clients")
+	}
+	return clients
+}
+
+func remoteMCPCheckCommand(args []string) int {
+	flags := flag.NewFlagSet("remote-mcp-check", flag.ExitOnError)
+	dataPath, clients, _ := clientOptions(flags)
+	flags.Parse(args)
+	if flags.NArg() != 0 {
+		flags.Usage()
+		return 2
+	}
+	if err := server.CheckRemoteMCP(*dataPath, clientDirectory(*dataPath, *clients)); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println("Remote MCP preflight passed.")
 	return 0
 }
 

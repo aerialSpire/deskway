@@ -54,11 +54,15 @@ type clientFileHash struct {
 // ServeClients configures program distribution and starts fetching before serving HTTP.
 // Files placed directly in dir take priority over the release cache.
 func (s *Server) ServeClients(dir string, fetch bool) {
+	s.serveClients(releaseClientPrograms(dir), fetch, clientFetchRetry)
+}
+
+func releaseClientPrograms(dir string) *clientPrograms {
 	p, err := newClientPrograms(dir, clientReleaseStamp)
 	if err != nil {
 		log.Printf("server: AI client release stamp: %v", err)
 	}
-	s.serveClients(p, fetch, clientFetchRetry)
+	return p
 }
 
 func (s *Server) serveClients(p *clientPrograms, fetch bool, retry time.Duration) {

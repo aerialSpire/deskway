@@ -7,7 +7,7 @@
 <p align="center"><b>English</b> · <a href="README.zh-Hans.md">简体中文</a> · <a href="README.zh-Hant.md">繁體中文</a></p>
 
 Deskway is a remote desktop that you host yourself. Open your Windows PC or Mac from the browser
-on a phone, tablet or another computer, and let AI agents such as Claude Code work on the
+on a phone, tablet or another computer, and let AI agents work on the
 computers you approve, including Linux servers. The server, the accounts and the relay all run
 on a machine you control.
 
@@ -47,7 +47,10 @@ computers, so you can hand it tasks like these:
 
 > Every morning at 9, tidy up yesterday's work notes on my MacBook.
 
-You stay in charge. An AI client joins your account only after you compare a six-digit code and
+Applications can also use the server’s HTTPS MCP address when
+[remote MCP is enabled](docs/self-hosting.md#remote-mcp).
+
+You stay in charge. A local AI client joins your account only after you compare a six-digit code and
 approve it, and it can use a computer only after you turn on AI control for that computer. You
 can open the same desktop while the AI is working, for example to click through a confirmation
 dialog it should not answer, and then let it carry on. You can end the AI's session without

@@ -8,7 +8,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Added
 
-- Connect remote applications over MCP on an enabled Deskway server, approve independent sign-ins in your browser, and end all sign-ins for an application in My devices.
+- Enable remote MCP with the server installer, verify it with a standalone check, and connect applications by HTTPS with browser approval and removal in My devices.
 
 - Serve a Deskway AI profile over MCP Streamable HTTP with `deskway gateway`, behind an authenticating HTTPS server.
   Gateway error messages are in English.
