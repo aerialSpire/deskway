@@ -101,7 +101,7 @@ mod tests {
             }
         }
         for t in wire::tools::all().iter().filter(|t| t.batch <= 3) {
-            assert!(full.contains(&t.name.as_str()), "{} has no function", t.name);
+            assert!(full.contains(&t.spec.name.as_str()), "{} has no function", t.spec.name);
         }
     }
 }

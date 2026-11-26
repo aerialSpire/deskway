@@ -40,7 +40,7 @@ pub enum LinkEvent {
     /// A signaling message for this session, from the server.
     Signal(Value),
     /// An MCP request (JSON-RPC text without its id) and where its answer goes.
-    Call { request: Value, reply: Sender<Value> },
+    Call { request: Value, reply: Sender<Value>, deadline: Option<Instant> },
     /// Give the computer up (release, or the proxy quitting).
     Leave,
     /// Listen on this machine's port `local` (any, when 0) for the computer's port `port`,
@@ -123,7 +123,7 @@ struct Link {
     ai: ChannelId,
     joiner: Joiner,
     /// Requests waiting for the session to be Active, and those sent, by the id given here.
-    queued: VecDeque<(Value, Sender<Value>)>,
+    queued: VecDeque<(Value, Sender<Value>, Option<Instant>)>,
     /// The "ai" channel is open: requests can go (it opens after, or before, "control").
     ai_open: bool,
     waiting: HashMap<u64, (Value, Sender<Value>)>,
@@ -170,12 +170,12 @@ impl Link {
     /// Requests held until the link was ready go now.
     fn flush(&mut self, rtc: &mut Rtc) {
         while self.ready() {
-            let Some((req, reply)) = self.queued.pop_front() else { break };
-            self.call(rtc, req, reply);
+            let Some((req, reply, deadline)) = self.queued.pop_front() else { break };
+            self.call(rtc, req, reply, deadline);
         }
     }
 
-    fn call(&mut self, rtc: &mut Rtc, mut req: Value, reply: Sender<Value>) {
+    fn call(&mut self, rtc: &mut Rtc, mut req: Value, reply: Sender<Value>, deadline: Option<Instant>) {
         self.next_id += 1;
         let id = self.next_id;
         let theirs = req.get("id").cloned().unwrap_or(Value::Null);
@@ -186,7 +186,11 @@ impl Link {
             let _ = reply.send(json!({ "jsonrpc": "2.0", "id": theirs, "result": error_result("too_large", &format!("the request is {} bytes; a message is at most {}", text.len(), wire::mcp::MAX_MESSAGE), "Send less at once (fs_write a file in parts, with append).") }));
             return;
         }
-        for f in frames(&text) {
+        let frames = frames(&text);
+        if deadline.is_some_and(|until| Instant::now() >= until) {
+            return;
+        }
+        for f in frames {
             self.outbox.send(rtc, self.ai, f);
         }
         self.waiting.insert(id, (theirs, reply));
@@ -244,7 +248,7 @@ impl Link {
     /// The link is over: every request it still holds gets why as its answer.
     fn refuse_all(&mut self, reason: Option<Reason>) {
         let (code, message, next) = refusal(reason, &self.p.name);
-        let waiting: Vec<(Value, Sender<Value>)> = self.queued.drain(..).map(|(r, tx)| (r["id"].clone(), tx)).chain(self.waiting.drain().map(|(_, v)| v)).collect();
+        let waiting: Vec<(Value, Sender<Value>)> = self.queued.drain(..).map(|(r, tx, _)| (r["id"].clone(), tx)).chain(self.waiting.drain().map(|(_, v)| v)).collect();
         for (id, reply) in waiting {
             let _ = reply.send(json!({ "jsonrpc": "2.0", "id": id, "result": error_result(code, &message, next) }));
         }
@@ -326,7 +330,7 @@ pub fn run(p: Params, rx: Receiver<LinkEvent>, tx: Sender<LinkEvent>) {
     // Requests that came meanwhile, or never reached the computer, get the same answer.
     for e in rx.try_iter() {
         match e {
-            LinkEvent::Call { request, reply } => {
+            LinkEvent::Call { request, reply, .. } => {
                 let _ = reply.send(json!({ "jsonrpc": "2.0", "id": request["id"], "result": error_result(code, &message, next) }));
             }
             LinkEvent::Tunnel { reply, .. } => {
@@ -375,8 +379,8 @@ fn serve(p: Params, rx: &Receiver<LinkEvent>, tx: Sender<LinkEvent>) -> Result<O
     send(&p.out, json!({ "type": "offer", "session": p.session, "device": p.computer, "epoch": 0, "sdp": sdp, "auth": auth }));
     let mut l = Link { p, machine: Machine::new(Instant::now()), epoch: 0, pending: Some((pending, sdp)), control, ai, joiner: Joiner::default(), queued: VecDeque::new(), ai_open: false, waiting: HashMap::new(), outbox: Outbox::default(), own, listeners: Vec::new(), opening: HashMap::new(), pipes: Pipes::default(), next_id: 0, restarted: None, started: Instant::now() };
     for e in early {
-        if let LinkEvent::Call { request, reply } = e {
-            l.queued.push_back((request, reply));
+        if let LinkEvent::Call { request, reply, deadline } = e {
+            l.queued.push_back((request, reply, deadline));
         }
     }
     let over = drive(&mut l, &mut rtc, &mut net, rx);
@@ -476,8 +480,8 @@ fn drive(l: &mut Link, rtc: &mut Rtc, net: &mut Net<LinkEvent>, rx: &Receiver<Li
                     return Ok(reason(l));
                 }
             }
-            Ok(LinkEvent::Call { request, reply }) => {
-                l.queued.push_back((request, reply));
+            Ok(LinkEvent::Call { request, reply, deadline }) => {
+                l.queued.push_back((request, reply, deadline));
                 l.flush(rtc);
             }
             Ok(LinkEvent::Tunnel { port, local, reply }) => l.listen(port, local, reply),

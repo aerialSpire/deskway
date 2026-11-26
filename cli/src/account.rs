@@ -136,7 +136,7 @@ pub fn login(server: &str, user: &str, name: &str, shown: impl Fn(&str)) -> Resu
 /// Signs out here: the server forgets the session; the key stays, so a new sign-in is the same
 /// device (`forget` drops it too).
 pub fn logout(forget: bool) -> Result<()> {
-    crate::mcp::stop_proxy();
+    crate::proxy_client::stop_proxy();
     let mut a = Account::load()?;
     if a.signed_in() {
         let url = format!("{}/api/logout", a.server);

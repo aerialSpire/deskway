@@ -344,6 +344,17 @@ receives the log.
 
 ## AI clients at the computer
 
+`deskway gateway` serves MCP over plain HTTP on loopback. Anyone who can reach the listener
+can act as the approved AI device in that process's Deskway profile. Put an HTTPS server that
+authenticates and authorizes callers in front of the gateway for remote access. The gateway's
+Host and Origin checks protect the loopback listener against DNS rebinding. The computer
+continues to apply its AI switch and workspace rules and records actions under the profile's
+approved device identity. See [Serve MCP over HTTP](ai-clients.md#serve-mcp-over-http).
+
+A local process that can reach the listener can make the HTTP library allocate memory for an
+unread body even if the gateway rejects the request. The fronting server must cap request
+bodies at 2 MiB before forwarding them.
+
 This section describes what an AI client can do once a computer lets it in. How it works is
 described in [architecture.md](architecture.md), "AI control".
 
