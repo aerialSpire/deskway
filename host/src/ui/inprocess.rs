@@ -70,6 +70,13 @@ impl InProcess {
                 return;
             }
         };
+        let (browser, watch) = match platform::workspace_browser(control.clone()) {
+            Ok(workspace) => workspace,
+            Err(e) => {
+                self.settings_error = e.to_string();
+                return;
+            }
+        };
         let (settings, awake) = Settings::start(dir, &cfg, Some(local.clone()), control.clone());
         let settings = Arc::new(settings);
         let login = if cfg.login_item_setup_pending { self.set_login_item(true) } else { Ok(()) };
@@ -100,7 +107,7 @@ impl InProcess {
                     p.ready()
                 }),
             }),
-            browser: None,
+            browser: Some(browser),
             notify: Box::new(move |s| {
                 let _ = proxy.send_event(UiEvent::Status(Some(s)));
             }),
@@ -110,7 +117,10 @@ impl InProcess {
             // A Mac's own workspace asks the person there for administrator rights.
             admin: None,
         };
-        std::thread::Builder::new().name("signal".into()).spawn(move || crate::signal::run(params, requests)).expect("spawn signal thread");
+        std::thread::Builder::new().name("signal".into()).spawn(move || {
+            let _watch = watch;
+            crate::signal::run(params, requests);
+        }).expect("spawn signal thread");
         self.control = Some(control);
         self.settings = Some(settings);
     }

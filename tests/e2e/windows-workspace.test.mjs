@@ -2,8 +2,7 @@
 // The foreground Windows workspace, with an isolated server, controller and host profile.
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join, parse, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { keyboardOf, lit, q, signIn, sleep, t } from './harness.mjs';
@@ -115,7 +114,12 @@ export const area = {
     for (const folder of [home, remote, local, downloads]) mkdirSync(folder, { recursive: true });
     const state = join(dir, 'state.json'), lock = join(dir, 'lock');
     writeFileSync(lock, 'ready');
-    const env = { ...process.env, DESKWAY_HOME: home, DESKWAY_TEST_WORKSPACE_LOCK: lock };
+    const appData = join(home, 'AppData'), roaming = join(appData, 'Roaming'), localData = join(appData, 'Local');
+    for (const folder of [roaming, localData]) mkdirSync(folder, { recursive: true });
+    const env = {
+      ...process.env, APPDATA: roaming, LOCALAPPDATA: localData, USERPROFILE: home, HOME: home,
+      DESKWAY_HOME: home, DESKWAY_TEST_WORKSPACE_LOCK: lock,
+    };
     const exec = (exe, args, env) => command(exe, args, { env, windowsHide: true, timeout: 30000, encoding: 'utf8' });
     const { stdout } = await exec(serverExe, ['admin', user, '-data', state]);
     const initial = stdout.match(/Initial password: (\S+)/)?.[1];
@@ -155,6 +159,8 @@ export const area = {
 
       await enterWorkspace(page, 'terminal.label');
       await page.until(`(${terminal}).includes('PS ')`, 'PowerShell prompt', 15000);
+      await shell(page, "if ((Get-PSReadLineOption).HistorySavePath.StartsWith($env:APPDATA + '\\', [StringComparison]::OrdinalIgnoreCase)) { Write-Output ('history-' + 'isolated') }");
+      await page.until(`(${terminal}).includes('history-isolated')`, 'isolated PowerShell history');
       await shell(page, "Write-Output ('deskway-' + 'ready')");
       await page.until(`(${terminal}).includes('deskway-ready')`, 'command output');
       h.check('PowerShell opens and returns output', true);
@@ -187,7 +193,7 @@ export const area = {
       await click(page, '[data-session-view]', t('files.label'));
       await page.until('!!document.querySelector(".files-path [aria-current]")', 'Files opens');
       h.check('Files opens in the user profile', await page.eval(
-        `[...document.querySelectorAll('.files-path button')].slice(1).map(e => e.textContent).join('\\\\').toLowerCase() === ${lit(homedir().toLowerCase())}`));
+        `[...document.querySelectorAll('.files-path button')].slice(1).map(e => e.textContent).join('\\\\').toLowerCase() === ${lit(realpathSync(home).toLowerCase())}`));
       await click(page, '.files-path button', '/');
       await page.until(`[...document.querySelectorAll('.files-name')].some(e => /^[A-Z]:$/.test(e.textContent))`, 'drive roots');
       h.check('the root lists drives and has no upload or drive mutation', await page.eval(

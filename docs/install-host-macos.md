@@ -1,9 +1,9 @@
 # Install Deskway Host on macOS
 
-Deskway Host runs on the Mac you want to control. It lives in the menu bar and needs two macOS
-permissions: Screen Recording and Accessibility. In the browser, open the Mac’s desktop to
-use its screen, keyboard, clipboard and desktop file transfer. Before you sign in to macOS,
-the login item has yet to start and the Mac appears offline.
+Deskway Host runs on the Mac you want to control and lives in the menu bar. In the browser,
+open the Mac’s desktop to use its screen, keyboard, clipboard and desktop file transfer.
+Desktop control requires Screen Recording and Accessibility. You can also open **Terminal**
+or **Files** on the computer’s page. Before you sign in to macOS, the Mac appears offline.
 
 You need:
 
@@ -109,6 +109,20 @@ cannot change this macOS behavior.
   disconnect button and the border remain visible on the Mac itself.
 
 Settings and the sign-in token are stored in `~/Library/Application Support/Deskway/host.json`.
+
+## Terminal and Files in the browser
+
+**Terminal** opens the login shell in your home folder. It uses `$SHELL -l` or `/bin/zsh -l`
+if `SHELL` is unset. **Files** starts in your home folder and lets you browse, upload and download
+with your macOS account’s rights. Terminal and Files work without Screen Recording or
+Accessibility. If macOS blocks access to a folder, Files shows the denial at that folder.
+The host panel has an optional **Open Full Disk Access settings** button. The shell runs with
+Deskway Host’s privacy permissions, which can differ from the Terminal app’s permissions.
+
+Locking the screen or switching to another macOS user ends the Terminal or Files session. A kept terminal
+continues to run, and you can resume an interrupted transfer from the same page after you return
+and unlock the Mac. Logging out ends the host and its terminal. A view-only host omits Terminal
+and Files.
 
 ## Updating
 

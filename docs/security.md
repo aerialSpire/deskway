@@ -222,7 +222,7 @@ checked by the server, without a device signature. The policy entry is
 Device checks are on by default. The switch is on **My devices**, and the corresponding checkbox
 is in the approve and add dialogs. The server cannot turn checks off on its own, because the
 entry must be signed by a device the computer trusts. With checks off, the account password
-alone reaches a shell on Linux or an unlocked Windows workspace. The picture and the terminal inherit the same
+alone reaches a shell on Linux or an unlocked macOS or Windows workspace. The picture and the terminal inherit the same
 policy. The host treats the server as the authority for an unsigned browser offer under
 that policy.
 
@@ -448,20 +448,25 @@ The following risks remain and are accepted:
 
 ## Starting a session
 
-An approved browser can open Terminal or Files on a Windows or Linux host under the same
+An approved browser can open Terminal or Files on Linux, macOS and Windows under the same
 admission and takeover rules as a picture session. The signed SDP selects the session kind.
-These actions require control rights and are unavailable on a view-only host. On Linux, the
-workspace belongs to the account running Deskway Host. On Windows, it belongs to the ordinary
-worker of the console user. The shell starts in the user's home or profile directory with
-ordinary rights. The shell and its
-programs survive the session that opened them. Any browser admitted to the desk seat can
-return to that shell and receive the host's most recent 256 KiB of output, held only in memory.
+These actions require control rights and are unavailable on a view-only host. On Linux and
+macOS, the workspace belongs to the account running Deskway Host. On Windows, it belongs to
+the ordinary worker of the console user. The shell starts in the user's home or profile directory
+with ordinary rights, regardless of the AI administrator switch. On macOS, Terminal and Files
+work without Screen Recording or Accessibility. The shell runs with the host app's privacy
+permissions, which can differ from those of a terminal app the user opens directly.
+The shell and its programs survive the session that opened them. Any browser admitted to the
+desk seat can return to the shell and receive its most recent 256 KiB of output, kept in memory.
 The shell ends on exit, when an attached browser explicitly closes it, after 24 hours detached,
-when the host stops, or when the Windows sign-in ends or changes users. A Windows lock,
-sign-in screen or secure desktop blocks new data sessions and ends any attached one. This
-closes remote access and allows work in a kept shell to continue. The status comes from the
-console session and input desktop independently of capture. After sign-out or a user switch,
-Deskway clears the old shell, its replay and transfer records.
+when the host stops, or when the Windows sign-in ends or changes users. Locking Windows or
+macOS blocks new data sessions and ends any attached one while a kept shell continues to run.
+This also applies on the Windows secure desktop and when fast user switching takes the Mac
+app's session off the active console. The host reads these states independently of capture.
+The Windows worker checks access before reading attached output and before resuming a new
+PowerShell process. A synchronous ConPTY write already in progress at lock may still deliver
+bytes typed before the lock. A Windows sign-out or user switch clears the old workspace.
+Logging out of macOS stops Deskway Host.
 The host logs when the terminal opens, is left, is returned to or closes, including the
 device and the reason where applicable. These events go to the systemd journal on Linux and
 the Deskway network service log on Windows. Terminal input and output stay out of the logs.
@@ -474,11 +479,16 @@ regular file contents and upload files as the host user. Uploads use a private s
 file, verified with SHA-256, and a no-replace rename unless the person approves replacing a
 regular file. Under the desk-seat guard the host checks the staged path's identity and the
 approved destination's identity, size and modification time without following links.
+macOS publishes with `rename` for an approved replacement and `renamex_np` with `RENAME_EXCL`
+otherwise. APFS and HFS+ resolve the destination's spelling according to the volume's case rules.
+The host uses the stored entry name to recognize aliases of live partials.
 Windows publishes with `MoveFileExW` in the same directory, setting `MOVEFILE_REPLACE_EXISTING`
 only for an approved replacement. This is a single filesystem rename with no copy fallback.
 Data is verified and synced before the move. Windows file sharing and filesystem restrictions
-can cause the rename to fail. Another local process can change an entry between the metadata
-checks and the rename.
+can cause the rename to fail. The staged file's open handle carries delete access and shares
+deletion. Windows can unlink the partial while other compatible handles are still open on
+volumes that support POSIX deletion. Other volumes can mark it for deletion on last close.
+Another local process can change an entry between the metadata checks and the rename.
 This access includes configuration and credentials owned
 by the host account. Files performs filesystem operations without starting a shell or
 running a file. The host output records the device, operation, path and outcome on one
@@ -490,7 +500,7 @@ The host checks transfer ownership at desk admission using the verified browser 
 and the page identity carried by its authenticated resume token, and checks the current seat
 before each transfer filesystem step. A takeover discards the previous device's staged upload.
 An upload may return while its peer session remains live or recovering, or after a connection
-failure or Windows lock while the page's existing resume token is valid (up to eight hours from device proof).
+failure or a Windows or macOS lock while the page's existing resume token is valid (up to eight hours from device proof).
 The host locks that staged file against browse rename, delete and age sweeping during this
 lifetime. It unlinks the partial when the record is dropped. After host restart the sweep uses
 the modification age of remnants.

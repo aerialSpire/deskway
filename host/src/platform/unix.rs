@@ -1,5 +1,6 @@
 //! Terminal and state-directory operations shared by the Unix hosts.
 pub(super) mod programs;
+pub(super) mod file_metadata;
 
 use std::fs::{File, OpenOptions};
 use std::io;

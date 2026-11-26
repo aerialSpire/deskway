@@ -11,10 +11,11 @@ pub struct Conflict {
 
 pub trait Upload: Send {
     fn conflict(&mut self, seated: &dyn Fn() -> bool) -> Result<Option<Conflict>, Error>;
+    fn accept_conflict(&mut self, seated: &dyn Fn() -> bool) -> Result<(), Error>;
     fn prepare(&mut self, seated: &dyn Fn() -> bool) -> Result<u64, Error>;
     fn write(&mut self, bytes: &[u8], seated: &dyn Fn() -> bool) -> Result<(), Error>;
     fn verify(&mut self, sha256: &str, seated: &dyn Fn() -> bool) -> Result<(), Error>;
-    fn publish(&self, approved: bool) -> Result<bool, Error>;
+    fn publish(&mut self) -> Result<bool, Error>;
 }
 
 pub trait Download: Send {

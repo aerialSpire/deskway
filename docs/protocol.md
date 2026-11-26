@@ -153,11 +153,12 @@ browser                     server                        host
   session kinds share desk admission and the account's signed device-check policy.
   Linux refuses a picture with `no_desktop`. Hosts without the terminal capability refuse
   the data-only offer with `no_terminal`. The data-only session negotiates no video and its
-  signaling offer carries zero viewer constraints. Windows and Linux support this session
-  kind for control. The optional `workspace_access` field in host status is forwarded in the
+  signaling offer carries zero viewer constraints. Linux, macOS and Windows support this
+  session kind for control. The optional `workspace_access` field in host status is forwarded in the
   browser's device report. The values `locked`, `no_user_session` and `view_only` are also
-  refusal reasons. A lock can end a data-only session with `locked`. Sign-out ends it with
-  `no_user_session`, and a direct change to a different user ends it with `user_changed`.
+  refusal reasons. Windows and macOS locks can end a data-only session with `locked`.
+  Switching away from the Mac's login session also reports `locked`. On Windows, sign-out
+  ends it with `no_user_session` and a direct change to a different user with `user_changed`.
 
 ## Session lifecycle
 
@@ -330,7 +331,9 @@ answer and the control hello confirm the host and its capabilities, the browser 
 request awaiting a reply. A request or reply is at most 64 KiB.
 
 `list` with no `path` starts at the host user's home. A path is an array of unpadded base64url
-components. The empty array is the root. On Unix the tokens preserve the original bytes.
+components. The empty array is the root. On Unix the root is `/` and the tokens preserve the
+original bytes. macOS resolves existing names and rename collisions using the volume's
+case and normalization rules.
 On Windows the first token of a filesystem path is a drive or UNC share. Windows names use
 UTF-8 where possible, and a 0xff byte followed by UTF-16LE units for names with unpaired
 surrogates. The drive listing has `roots:true` and supports navigation. The host resolves the
@@ -346,7 +349,8 @@ New names are one UTF-8 path component. The browser uses the listed name token t
 file with a non-UTF-8 name. Directory deletion requires an empty directory. Deleting a
 symbolic link or Windows junction removes the link itself. Entries carry Unix `mode`
 and `owner` where available, or an `attributes` list containing any of `read_only`,
-`hidden` and `system`. A filesystem failure stays on the browse channel.
+`hidden` and `system`. A filesystem failure stays on the browse channel. This includes macOS
+privacy denials, which appear as `error{why:"denied"}` at the requested folder.
 When the host's two filesystem workers are occupied, the host replies with `error{why:"busy"}`
 on the browse channel. A worker stays occupied until its call returns.
 
@@ -370,7 +374,9 @@ data, credit or a reply times out after 30 seconds and interrupts the channel at
   and, under the desk-seat guard, checks the staging path still names that file and publishes it
   before replying `done{id,offset}`. The host prompts if a destination appears before the
   no-replace rename. If an approved destination changes in identity, modification time or size,
-  the host sends a new `conflict` with `changed:true` and waits for a fresh answer.
+  the host sends a new `conflict` with `changed:true` and waits for a fresh answer. Interrupting
+  that question keeps the original approval, and a resumed attempt checks the destination
+  and asks again if it still differs.
   Only regular files are eligible for replacement. Browse reports `in_use` when a rename or
   delete targets a live partial upload.
 - For `download{id,path,entry,limit?}`, the host opens one regular file and checks its size

@@ -35,6 +35,8 @@ pub struct DesktopFeatures {
 
 /// A live PTY with nonblocking I/O and cleanup on drop.
 pub trait Pty: Read + Write + Send {
+    /// Read for a detached shell, without granting a browser access.
+    fn drain(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.read(buf) }
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()>;
     /// Apply the size and notify the foreground program even if the size is unchanged.
     fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()>;

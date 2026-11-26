@@ -189,7 +189,7 @@ pub fn pin(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-pub fn pin_directory(path: &Path) -> io::Result<(File, PathBuf)> {
+pub fn pin_directory(path: &Path) -> io::Result<File> {
     let folder = OpenOptions::new().access_mode(FILE_READ_ATTRIBUTES.0)
         .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0 | FILE_FLAG_BACKUP_SEMANTICS.0)
@@ -198,12 +198,16 @@ pub fn pin_directory(path: &Path) -> io::Result<(File, PathBuf)> {
     if !meta.is_dir() || is_link(&meta) {
         return Err(io::ErrorKind::NotADirectory.into());
     }
+    Ok(folder)
+}
+
+pub fn pinned_path(file: &File) -> io::Result<PathBuf> {
     let mut wide = vec![0; 512];
     loop {
-        let len = unsafe { GetFinalPathNameByHandleW(handle(&folder), &mut wide, FILE_NAME_NORMALIZED) } as usize;
+        let len = unsafe { GetFinalPathNameByHandleW(handle(file), &mut wide, FILE_NAME_NORMALIZED) } as usize;
         if len == 0 { return Err(io::Error::last_os_error()); }
         if len < wide.len() {
-            return Ok((folder, PathBuf::from(OsString::from_wide(&wide[..len]))));
+            return Ok(PathBuf::from(OsString::from_wide(&wide[..len])));
         }
         wide.resize(len + 1, 0);
     }
@@ -236,11 +240,26 @@ pub fn create_partial(path: &Path) -> io::Result<File> {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0, bInheritHandle: false.into(),
         };
-        let result = CreateFileW(&path, (FILE_GENERIC_READ | FILE_GENERIC_WRITE).0,
+        let result = CreateFileW(&path, (FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE).0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, Some(&security),
             CREATE_NEW, FILE_ATTRIBUTE_NORMAL, None).map_err(error);
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
         Ok(File::from_raw_handle(result?.0))
+    }
+}
+
+pub fn discard_partial(file: &File, _: &File, _: &OsStr) {
+    let disposition = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_INFO_EX_FLAGS(FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0 | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE.0),
+    };
+    unsafe {
+        if SetFileInformationByHandle(handle(file), FileDispositionInfoEx,
+            (&disposition as *const FILE_DISPOSITION_INFO_EX).cast(), size_of::<FILE_DISPOSITION_INFO_EX>() as u32).is_err() {
+            // A volume without POSIX unlink can still delete through the existing handle.
+            let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+            let _ = SetFileInformationByHandle(handle(file), FileDispositionInfo,
+                (&disposition as *const FILE_DISPOSITION_INFO).cast(), size_of::<FILE_DISPOSITION_INFO>() as u32);
+        }
     }
 }
 

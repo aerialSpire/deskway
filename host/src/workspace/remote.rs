@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -42,28 +43,51 @@ struct Link {
     pipe: Arc<Pipe>,
     next: AtomicU64,
     waiting: Mutex<Option<HashMap<u64, Sender<Answer>>>>,
+    sending: Mutex<()>,
     state: Mutex<WorkspaceState>,
 }
 
 impl Link {
-    fn send(&self, op: RequestOp, reply: Option<Sender<Answer>>) -> Option<()> {
-        let mut guard = self.waiting.lock().unwrap();
-        let waiting = guard.as_mut()?;
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
-        if let Some(reply) = reply {
-            waiting.insert(id, reply);
+    fn new(pipe: Arc<Pipe>) -> Self {
+        Self {
+            pipe, next: AtomicU64::new(0), waiting: Mutex::new(Some(HashMap::new())),
+            sending: Mutex::default(), state: Mutex::new(WorkspaceState::NO_USER),
         }
-        if self.pipe.send_json(&Request { id, op }).is_err() {
-            waiting.remove(&id);
-            return None;
-        }
-        Some(())
     }
 
-    fn request(&self, op: RequestOp) -> Option<Answer> {
+    fn send(&self, op: RequestOp, reply: Option<Sender<Answer>>) -> Option<u64> {
+        // A write belongs to this connection. Reply dispatch and expiry must not wait on it.
+        let _sending = self.sending.lock().unwrap();
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut guard = self.waiting.lock().unwrap();
+            let waiting = guard.as_mut()?;
+            if let Some(reply) = reply {
+                waiting.insert(id, reply);
+            }
+        }
+        if self.pipe.send_json(&Request { id, op }).is_err() {
+            self.remove(id);
+            return None;
+        }
+        Some(id)
+    }
+
+    fn remove(&self, id: u64) -> Option<Sender<Answer>> {
+        self.waiting.lock().unwrap().as_mut()?.remove(&id)
+    }
+
+    fn request(&self, op: RequestOp, timeout: Option<Duration>) -> Option<Answer> {
         let (tx, rx) = channel();
-        self.send(op, Some(tx))?;
-        rx.recv().ok()
+        let id = self.send(op, Some(tx))?;
+        let Some(timeout) = timeout else { return rx.recv().ok(); };
+        match rx.recv_timeout(timeout) {
+            Ok(answer) => Some(answer),
+            Err(_) => {
+                self.remove(id);
+                None
+            }
+        }
     }
 }
 
@@ -103,15 +127,12 @@ impl Remote {
     /// Serves one connected worker until it leaves. The requests it still held fail: their
     /// programs run on, and proc_list finds them when it is back.
     pub fn attach(&self, pipe: Arc<Pipe>) -> Result<()> {
-        let link = Arc::new(Link {
-            pipe: pipe.clone(), next: AtomicU64::new(0),
-            waiting: Mutex::new(Some(HashMap::new())), state: Mutex::new(WorkspaceState::NO_USER),
-        });
+        let link = Arc::new(Link::new(pipe.clone()));
         *self.worker.lock().unwrap() = Some(link.clone());
         let served = loop {
             match pipe.recv_json::<Reply>() {
                 Ok(Reply::Answer { id, answer }) => {
-                    if let Some(tx) = link.waiting.lock().unwrap().as_mut().and_then(|pending| pending.remove(&id)) {
+                    if let Some(tx) = link.remove(id) {
                         let _ = tx.send(answer);
                     }
                 }
@@ -123,7 +144,10 @@ impl Remote {
             }
         };
         *self.worker.lock().unwrap() = None;
-        let pending = link.waiting.lock().unwrap().take().unwrap_or_default();
+        let pending = {
+            let _sending = link.sending.lock().unwrap();
+            link.waiting.lock().unwrap().take().unwrap_or_default()
+        };
         self.state_changed(WorkspaceState::NO_USER);
         for (_, tx) in pending {
             let _ = tx.send(Err(WorkError::new(Code::Failed, "the person's session ended before it answered", "Check computer_info, then proc_list.")));
@@ -133,7 +157,7 @@ impl Remote {
 
     fn request(&self, op: RequestOp) -> Answer {
         let link = self.worker.lock().unwrap().clone().ok_or_else(|| self.absent())?;
-        link.request(op).unwrap_or_else(|| Err(self.absent()))
+        link.request(op, None).unwrap_or_else(|| Err(self.absent()))
     }
 }
 
@@ -154,10 +178,11 @@ impl Workspace for Remote {
 /// The worker's side: answers every request, each on a thread of its own, until the pipe closes.
 pub fn serve(pipe: Arc<Pipe>, ws: Arc<dyn Workspace>, user: bool) -> Result<()> {
     let notices = pipe.clone();
-    let watch = user.then(|| crate::platform::workspace::WorkspaceWatch::start(move |state| {
+    let browser = user.then(|| crate::platform::workspace::browser(None));
+    let watch = browser.as_ref().and_then(|browser| crate::platform::workspace::WorkspaceWatch::start(browser.state.clone(), move |state| {
         let _ = notices.send_json(&Reply::Workspace(state));
-    }).ok()).flatten();
-    let browser = watch.as_ref().map(|_| Arc::new(browser::Worker::new(crate::platform::workspace::browser(None))));
+    }).ok());
+    let browser = browser.filter(|_| watch.is_some()).map(|browser| Arc::new(browser::Worker::new(browser)));
     serve_requests(pipe, ws, browser)
 }
 
@@ -218,6 +243,23 @@ mod tests {
             let decoded: Request = serde_json::from_value(wire.clone()).unwrap();
             assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
         }
+    }
+
+    #[test]
+    fn unanswered_requests_expire_and_release_the_pending_reply() {
+        let name = format!(r"\\.\pipe\deskway-test-ws-timeout-{}", std::process::id());
+        let sddl = format!("D:P(A;;GA;;;{})", ipc::own_sid().unwrap());
+        let pipe = Arc::new(Pipe::create(&name, &sddl).unwrap());
+        let connect = std::thread::spawn(move || Pipe::connect(&name).unwrap());
+        pipe.accept().unwrap();
+        let client = connect.join().unwrap();
+        let link = Link::new(pipe);
+        let timeout = Duration::from_millis(20);
+        assert!(link.request(RequestOp::Browser(browser::Operation::Step {
+            resource: 1, step: browser::Step::Publish,
+        }), Some(timeout)).is_none());
+        assert!(matches!(client.recv_json::<Request>().unwrap().op, RequestOp::Browser(_)));
+        assert!(link.waiting.lock().unwrap().as_ref().unwrap().is_empty());
     }
 
     #[test]

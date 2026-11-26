@@ -100,7 +100,7 @@ pub fn start_terminal(command: Option<&str>, cwd: Option<&str>, cols: u16, rows:
     Ok(Started { program: Box::new(program), output: vec![Box::new(output)] })
 }
 
-fn start_console(line: &str, cwd: Option<&std::ffi::OsStr>, cols: u16, rows: u16, job: Option<&Job>) -> io::Result<(Terminal, File)> {
+fn start_console(line: &str, cwd: Option<&std::ffi::OsStr>, cols: u16, rows: u16, browser: Option<(&Job, &dyn Fn() -> bool)>) -> io::Result<(Terminal, File)> {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::System::Threading::{ResumeThread, CREATE_SUSPENDED};
     let (cols, rows) = (i16::try_from(cols).map_err(io::Error::other)?, i16::try_from(rows).map_err(io::Error::other)?);
@@ -134,16 +134,18 @@ fn start_console(line: &str, cwd: Option<&std::ffi::OsStr>, cols: u16, rows: u16
                 let mut pi = PROCESS_INFORMATION::default();
                 CreateProcessW(None, Some(PWSTR(cmd.as_mut_ptr())), None, None, false, EXTENDED_STARTUPINFO_PRESENT | PROCESS_CREATION_FLAGS(flags), None, dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())), &si.StartupInfo, &mut pi).map(|()| pi)
             };
-            if let Some(job) = job {
+            if let Some((job, allowed)) = browser {
                 let pi = create(CREATE_SUSPENDED.0)?;
-                if let Err(e) = AssignProcessToJobObject(job.0, pi.hProcess) {
-                    let _ = TerminateProcess(pi.hProcess, 1);
-                    let _ = CloseHandle(pi.hProcess);
-                    let _ = CloseHandle(pi.hThread);
-                    return Err(e.into());
-                }
-                if ResumeThread(pi.hThread) == u32::MAX {
-                    let error = io::Error::last_os_error();
+                let resume = AssignProcessToJobObject(job.0, pi.hProcess).map_err(io::Error::from).and_then(|()| {
+                    if !allowed() {
+                        return Err(io::ErrorKind::PermissionDenied.into());
+                    }
+                    if ResumeThread(pi.hThread) == u32::MAX {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+                if let Err(error) = resume {
                     let _ = TerminateProcess(pi.hProcess, 1);
                     let _ = CloseHandle(pi.hProcess);
                     let _ = CloseHandle(pi.hThread);
@@ -260,31 +262,36 @@ impl Drop for Job {
     }
 }
 
-pub fn open_pty(rows: u16, cols: u16) -> io::Result<Box<dyn Pty>> {
-    if super::workspace::current().refusal(false).is_some() {
+pub(super) fn open_pty(rows: u16, cols: u16, isolated: bool, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
+    if !allowed() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let home = std::env::home_dir().ok_or(io::ErrorKind::NotFound)?;
     let pwsh = super::known_folder(super::KnownFolder::ProgramFiles).join("PowerShell").join("7").join("pwsh.exe");
-    let line = if pwsh.is_file() {
+    let mut line = if pwsh.is_file() {
         format!("\"{}\" -NoLogo -NoProfile", pwsh.display())
     } else {
         format!("{} -NoLogo -NoProfile", shell())
     };
-    browser_pty(&line, &home, rows, cols, || super::workspace::current().refusal(false).is_none())
+    if isolated {
+        // PSReadLine asks Windows for the roaming folder, which ignores APPDATA.
+        line.push_str(r" -NoExit -Command Set-PSReadLineOption -HistorySavePath (Join-Path $env:APPDATA 'Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt')");
+    }
+    browser_pty(&line, &home, rows, cols, allowed)
 }
 
-fn browser_pty(line: &str, home: &std::path::Path, rows: u16, cols: u16, input_allowed: impl Fn() -> bool + Send + 'static) -> io::Result<Box<dyn Pty>> {
+fn browser_pty(line: &str, home: &std::path::Path, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
     let job = Job::new()?;
-    let (mut terminal, output) = start_console(line, Some(home.as_os_str()), cols, rows, Some(&job))?;
+    let (mut terminal, output) = start_console(line, Some(home.as_os_str()), cols, rows, Some((&job, &allowed)))?;
     let mut writer = terminal.input.take().expect("new terminal has input");
     let (input, queued) = sync_channel::<Vec<u8>>(1);
-    let pty = BrowserPty { terminal, output: Some(output), input, job, status: None };
+    let allowed = std::sync::Arc::new(allowed);
+    let pty = BrowserPty { terminal, output: Some(output), input, job, status: None, allowed: allowed.clone() };
     // ConPTY requires synchronous pipes. A short queue bounds the writes the registry
     // can acknowledge ahead of the console, and a blocked writer never holds its lock.
     std::thread::Builder::new().name("conpty-input".into()).spawn(move || {
         for bytes in queued {
-            if input_allowed() && writer.write_all(&bytes).is_err() {
+            if allowed() && writer.write_all(&bytes).is_err() {
                 break;
             }
         }
@@ -298,10 +305,18 @@ struct BrowserPty {
     input: SyncSender<Vec<u8>>,
     job: Job,
     status: Option<i32>,
+    allowed: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl Read for BrowserPty {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        if !(self.allowed)() { return Err(io::ErrorKind::WouldBlock.into()); }
+        self.read_output(bytes)
+    }
+}
+
+impl BrowserPty {
+    fn read_output(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         let Some(output) = &mut self.output else { return Ok(0); };
         let mut pending = 0;
         match unsafe { PeekNamedPipe(HANDLE(output.as_raw_handle()), None, 0, None, Some(&mut pending), None) } {
@@ -329,6 +344,8 @@ impl Write for BrowserPty {
 }
 
 impl Pty for BrowserPty {
+    fn drain(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.read_output(buf) }
+
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
         let Some(console) = self.terminal.console else { return Ok(()); };
         let size = COORD {
@@ -373,6 +390,15 @@ impl Drop for BrowserPty {
     }
 }
 
+
+#[cfg(test)]
+#[test]
+fn a_suspended_shell_is_rejected_if_the_console_locks_during_start() {
+    let home = std::env::temp_dir();
+    let line = format!("{} -NoLogo -NoProfile", shell());
+    let error = browser_pty(&line, &home, 24, 80, || false).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+}
 
 #[cfg(test)]
 #[test]

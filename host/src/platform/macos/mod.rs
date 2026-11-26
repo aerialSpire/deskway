@@ -18,6 +18,8 @@ pub use clipboard::Clipboard as NativeClipboard;
 pub use clipboard::{set_text as set_clipboard_text, text as clipboard_text};
 pub use programs::{kill_tree, session_members, start_program, start_terminal};
 pub use displays::DisplayWatch;
+pub(crate) use desk::workspace_browser;
+pub(crate) mod file_metadata;
 pub use power::{PowerNotifications, PowerRequest};
 pub use encoder::Encoder as NativeEncoder;
 pub use files::Files as NativeFiles;

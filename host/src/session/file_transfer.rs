@@ -15,7 +15,7 @@ use wire::file_transfer::{self as frames, Error, Message as Msg, CHUNK, FRAME, W
 use wire::types::Reason;
 
 use super::{credit::Credit, data::WorkerSlot, terminal::registry::Lease, Cx, SessionEvent};
-use crate::{i18n::t, workspace::{Conflict, Download, FileTransfers, Upload}};
+use crate::{i18n::t, workspace::{Download, FileTransfers, Upload}};
 
 const SLOTS: usize = WINDOW / CHUNK + 2;
 const WAIT: Duration = Duration::from_secs(30);
@@ -467,7 +467,7 @@ impl Record {
             |path| path.to_string_lossy(),
         );
         let size = state.size.map_or_else(|| "unknown".into(), |size| size.to_string());
-        let replace = state.approval.is_some();
+        let replace = state.replace;
         eprintln!("{} device={:?} direction={direction} path={path:?} size={size} outcome={outcome} why={why} replace={replace}", t("files.transfer"), self.name);
     }
 }
@@ -493,7 +493,7 @@ struct State {
     path: Option<PathBuf>,
     file: Option<OpenFile>,
     size: Option<u64>,
-    approval: Option<Conflict>,
+    replace: bool,
     staged: bool,
     result: Option<Msg>,
 }
@@ -519,7 +519,7 @@ impl State {
         }
         let size = self.size.unwrap();
         match self.file.as_mut().unwrap() {
-            OpenFile::Upload(file) => upload(id, size, file.as_mut(), &mut self.approval, &mut self.staged, io)?,
+            OpenFile::Upload(file) => upload(id, size, file.as_mut(), &mut self.replace, &mut self.staged, io)?,
             OpenFile::Download(file, digest) => download(id, size, file.as_mut(), digest, io)?,
         }
         self.file = None;
@@ -527,23 +527,24 @@ impl State {
     }
 }
 
-fn approve(id: u32, file: &mut dyn Upload, approval: &mut Option<Conflict>, io: &Pipe) -> Result<(), Error> {
+fn approve(id: u32, file: &mut dyn Upload, replace: &mut bool, io: &Pipe) -> Result<(), Error> {
     let observed = file.conflict(&|| io.seated())?;
     if let Some(conflict) = &observed {
         io.text(Msg::Conflict { id, size: conflict.size, modified: conflict.modified,
-            changed: approval.is_some().then_some(true) })?;
+            changed: replace.then_some(true) })?;
         if !matches!(io.receive()?, Packet::Text(Msg::Replace { .. })) {
             return Err(Error::Protocol);
         }
+        file.accept_conflict(&|| io.seated())?;
+        *replace = true;
     }
-    *approval = observed;
     Ok(())
 }
 
-fn upload(id: u32, size: u64, file: &mut dyn Upload, approval: &mut Option<Conflict>, staged: &mut bool, io: &Pipe) -> Result<(), Error> {
+fn upload(id: u32, size: u64, file: &mut dyn Upload, replace: &mut bool, staged: &mut bool, io: &Pipe) -> Result<(), Error> {
     let seated = || io.seated();
-    if approval.is_none() && !*staged {
-        approve(id, file, approval, io)?;
+    if !*replace && !*staged {
+        approve(id, file, replace, io)?;
     }
     let mut offset = file.prepare(&seated)?;
     *staged = true;
@@ -567,13 +568,11 @@ fn upload(id: u32, size: u64, file: &mut dyn Upload, approval: &mut Option<Confl
         if io.stopped.lock().unwrap().is_some() {
             return Err(Error::Cancelled);
         }
-        match io.lease.while_seated(|| file.publish(approval.is_some())).ok_or(Error::Cancelled)? {
-            Err(Error::Exists) => approve(id, file, approval, io)?,
+        match io.lease.while_seated(|| file.publish()).ok_or(Error::Cancelled)? {
+            Err(Error::Exists) => approve(id, file, replace, io)?,
             Err(why) => return Err(why),
             Ok(replaced) => {
-                if !replaced {
-                    *approval = None;
-                }
+                *replace = replaced;
                 return Ok(());
             }
         }
@@ -713,6 +712,74 @@ mod tests {
         let (wake, _) = mpsc::channel();
         let pipe = Pipe { incoming, outgoing, stopped: Arc::new(Mutex::new(None)), lease, wake, wait };
         (pipe, input, output)
+    }
+
+    #[cfg(browser_workspace)]
+    #[test]
+    fn resuming_after_the_second_conflict_asks_again() {
+        use crate::platform::WorkspaceState;
+        use std::fs;
+
+        for lock in [false, true] {
+            let dir = std::env::temp_dir().join(format!("deskway-conflict-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+            fs::create_dir(&dir).unwrap();
+            let dest = dir.join("file");
+            fs::write(&dest, b"first").unwrap();
+            let state = Arc::new(Mutex::new(WorkspaceState::READY));
+            let access = {
+                let state = state.clone();
+                Arc::new(move || *state.lock().unwrap())
+            };
+            let browser = crate::workspace::local_browser(Arc::new(|_, _| unreachable!()), access.clone());
+            let files = (browser.bind)(0).unwrap().transfers;
+            let mut file = (files.upload)(&dest, 0, &|| true).unwrap();
+            let (updates, _) = mpsc::channel();
+            let registry = Terminals::guarded(Arc::new(|_, _, _| unreachable!()), access, updates);
+            let mut replace = false;
+            let mut staged = false;
+            let wait = Duration::from_secs(5);
+            let finish = || Packet::Text(Msg::Finish {
+                id: 1, offset: 0, sha256: wire::crypto::hex(&wire::crypto::sha256(b"")),
+            });
+            let answer = || Packet::Text(Msg::Replace { id: 1 });
+            let receive = |output: &Receiver<Packet>| output.recv_timeout(wait).unwrap();
+
+            let lease = registry.admit("first".into(), "browser".into(), "device".into());
+            let (io, input, output) = pipe(lease, wait);
+            std::thread::scope(|scope| {
+                let (file, replace, staged) = (file.as_mut(), &mut replace, &mut staged);
+                let worker = scope.spawn(move || upload(1, 0, file, replace, staged, &io));
+                assert!(matches!(receive(&output), Packet::Text(Msg::Conflict { size: 5, changed: None, .. })));
+                input.send(answer()).ok().unwrap();
+                assert!(matches!(receive(&output), Packet::Text(Msg::Ready { .. })));
+                fs::write(&dest, b"second").unwrap();
+                input.send(finish()).ok().unwrap();
+                assert!(matches!(receive(&output), Packet::Text(Msg::Conflict { size: 6, changed: Some(true), .. })));
+                if lock {
+                    state.lock().unwrap().locked = true;
+                    registry.end("first", "locked");
+                }
+                drop(input);
+                assert_eq!(worker.join().unwrap(), Err(Error::Cancelled));
+            });
+
+            state.lock().unwrap().locked = false;
+            let lease = registry.admit("second".into(), "browser".into(), "device".into());
+            let (io, input, output) = pipe(lease, wait);
+            std::thread::scope(|scope| {
+                let (file, replace, staged) = (file.as_mut(), &mut replace, &mut staged);
+                let worker = scope.spawn(move || upload(1, 0, file, replace, staged, &io));
+                assert!(matches!(receive(&output), Packet::Text(Msg::Ready { .. })));
+                input.send(finish()).ok().unwrap();
+                assert!(matches!(receive(&output), Packet::Text(Msg::Conflict { size: 6, changed: Some(true), .. })));
+                assert_eq!(fs::read(&dest).unwrap(), b"second");
+                input.send(answer()).ok().unwrap();
+                assert_eq!(worker.join().unwrap(), Ok(()));
+            });
+            drop(file);
+            assert!(fs::read(dest).unwrap().is_empty());
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

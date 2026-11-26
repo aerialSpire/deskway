@@ -12,7 +12,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::platform::{Desk, WorkspaceState};
-use crate::workspace::{self, Browser};
+use crate::workspace::{self, Browser, BrowserState};
 
 fn session_id() -> Option<u32> {
     static SESSION: OnceLock<Option<u32>> = OnceLock::new();
@@ -75,27 +75,37 @@ fn console_user(id: u32) -> Option<String> {
 
 pub fn current() -> WorkspaceState {
     let Some(id) = session_id() else { return WorkspaceState::NO_USER; };
-    if !ordinary() || id != unsafe { WTSGetActiveConsoleSessionId() } {
+    if !ordinary() {
         return WorkspaceState::NO_USER;
     }
-    static LOGON: OnceLock<Option<u64>> = OnceLock::new();
-    let Some(info) = session_info(id) else {
-        // Fail closed without throwing away a shell for a failed status query.
-        return WorkspaceState { user: LOGON.get().copied().flatten(), locked: true };
-    };
-    if info.UserName[0] == 0 || info.LogonTime <= 0 {
+    let console = unsafe { WTSGetActiveConsoleSessionId() };
+    if console != id && console != u32::MAX {
         return WorkspaceState::NO_USER;
     }
-    let logon = info.LogonTime as u64;
-    if *LOGON.get_or_init(|| {
-        let own = crate::service::ipc::own_sid().ok()?;
-        (console_user(id)? == own).then_some(logon)
-    }) != Some(logon) {
+    static LOGON: OnceLock<u64> = OnceLock::new();
+    let info = session_info(id);
+    if LOGON.get().is_none() {
+        if let Some(info) = info.as_ref().filter(|info| info.UserName[0] != 0 && info.LogonTime > 0) {
+            if crate::service::ipc::own_sid().ok().is_some_and(|own| console_user(id).as_ref() == Some(&own)) {
+                let _ = LOGON.set(info.LogonTime as u64);
+            }
+        }
+    }
+    classify(id, console, LOGON.get().copied(), info.as_ref().map(|info| {
+        let logon = (info.UserName[0] != 0 && info.LogonTime > 0).then_some(info.LogonTime as u64);
+        let unlocked = console == id && info.SessionFlags == WTS_SESSIONSTATE_UNLOCK as i32
+            && super::desktop::input() == Desk::Default;
+        (logon, unlocked)
+    }))
+}
+
+fn classify(id: u32, console: u32, user: Option<u64>, status: Option<(Option<u64>, bool)>) -> WorkspaceState {
+    if (console != id && console != u32::MAX) || user.is_none() {
         return WorkspaceState::NO_USER;
     }
-    WorkspaceState {
-        user: Some(logon),
-        locked: info.SessionFlags != WTS_SESSIONSTATE_UNLOCK as i32 || super::desktop::input() != Desk::Default,
+    match status {
+        Some((logon, _)) if logon != user => WorkspaceState::NO_USER,
+        _ => WorkspaceState { user, locked: console != id || !status.is_some_and(|(_, unlocked)| unlocked) },
     }
 }
 
@@ -106,6 +116,7 @@ pub fn sweep_home() {
 }
 
 pub fn browser(test_lock: Option<PathBuf>) -> Browser {
+    let isolated = test_lock.is_some();
     let state = Arc::new(move || {
         let mut state = current();
         if test_lock.as_ref().is_some_and(|path| std::fs::read_to_string(path).is_ok_and(|s| s.trim() == "locked")) {
@@ -113,26 +124,29 @@ pub fn browser(test_lock: Option<PathBuf>) -> Browser {
         }
         state
     });
-    workspace::local_browser(Arc::new(super::programs::open_pty), state)
+    let current = state.clone();
+    let open = Arc::new(move |rows, cols| {
+        let state = current.clone();
+        let user = state().user;
+        super::programs::open_pty(rows, cols, isolated, move || {
+            let now = state();
+            now.user == user && now.refusal(false).is_none()
+        })
+    });
+    workspace::local_browser(open, state)
 }
 
 thread_local! {
-    static CHANGED: std::cell::RefCell<Option<Box<dyn FnMut(WorkspaceState)>>> = const { std::cell::RefCell::new(None) };
+    static CHANGED: std::cell::RefCell<Option<Box<dyn FnMut(Option<u32>)>>> = const { std::cell::RefCell::new(None) };
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_TIMER || msg == WM_WTSSESSION_CHANGE {
-        let mut state = current();
-        if msg == WM_WTSSESSION_CHANGE && session_id() == Some(lparam.0 as u32) {
-            match wparam.0 as u32 {
-                WTS_SESSION_LOCK => state.locked = true,
-                WTS_SESSION_LOGOFF => state = WorkspaceState::NO_USER,
-                _ => {}
-            }
-        }
+        let event = (msg == WM_WTSSESSION_CHANGE && session_id() == Some(lparam.0 as u32))
+            .then_some(wparam.0 as u32);
         CHANGED.with(|changed| {
             if let Some(changed) = changed.borrow_mut().as_mut() {
-                changed(state);
+                changed(event);
             }
         });
         return LRESULT(0);
@@ -145,7 +159,7 @@ pub struct WorkspaceWatch(u32);
 impl WorkspaceWatch {
     /// WTS covers lock and sign-in transitions. The input desktop is also sampled for secure
     /// prompts, which do not generate a WTS lock event.
-    pub fn start(mut changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
+    pub fn start(state: Arc<BrowserState>, mut changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
         let (ready, thread) = std::sync::mpsc::channel();
         std::thread::Builder::new().name("workspace-watch".into()).spawn(move || unsafe {
             let instance = GetModuleHandleW(None).unwrap_or_default();
@@ -158,12 +172,18 @@ impl WorkspaceWatch {
                 WS_OVERLAPPED, 0, 0, 0, 0, None, None, Some(instance.into()), None) else { return; };
             let registered = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION).is_ok();
             SetTimer(Some(hwnd), 1, 100, None);
-            let mut previous = current();
+            let mut previous = state();
             changed(previous);
-            CHANGED.with(|slot| *slot.borrow_mut() = Some(Box::new(move |state| {
-                if state != previous {
-                    previous = state;
-                    changed(state);
+            CHANGED.with(|slot| *slot.borrow_mut() = Some(Box::new(move |event| {
+                let mut next = state();
+                match event {
+                    Some(WTS_SESSION_LOCK) => next.locked = true,
+                    Some(WTS_SESSION_LOGOFF) => next = WorkspaceState::NO_USER,
+                    _ => {}
+                }
+                if next != previous {
+                    previous = next;
+                    changed(next);
                 }
             })));
             let _ = ready.send(GetCurrentThreadId());
@@ -175,6 +195,24 @@ impl WorkspaceWatch {
             let _ = DestroyWindow(hwnd);
         })?;
         thread.recv().map(Self).map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_detached_console_preserves_only_a_live_sign_in() {
+    let locked = WorkspaceState { user: Some(10), locked: true };
+    for (console, info, expected) in [
+        (1, Some((Some(10), true)), WorkspaceState { user: Some(10), locked: false }),
+        (1, Some((Some(10), false)), locked),
+        (1, None, locked),
+        (u32::MAX, Some((Some(10), true)), locked),
+        (u32::MAX, None, locked),
+        (u32::MAX, Some((None, false)), WorkspaceState::NO_USER),
+        (1, Some((Some(11), true)), WorkspaceState::NO_USER),
+        (2, Some((Some(10), true)), WorkspaceState::NO_USER),
+    ] {
+        assert_eq!(classify(1, console, Some(10), info), expected);
     }
 }
 

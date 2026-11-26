@@ -73,9 +73,11 @@ platform/
   features.rs      the host's feature set selects seats, capabilities and tools
   linux.rs         host commands, operating-system signals, and per-user state directory
   linux/lock.rs    the running host's process id in its lock file, and the signal sent to it
-  linux/file_metadata.rs Linux ownership, permissions, modification time and no-replace rename
+  linux/file_metadata.rs Linux no-replace rename and procfs file handles
   linux/programs.rs process setup and enumeration on Linux
   unix/programs.rs  login shell, process groups and pseudo-terminals on Linux and macOS
+  unix/file_metadata.rs Unix ownership, mode, modification time and partial files
+  macos/file_metadata.rs Darwin file handles, stored names and no-replace rename
   mod.rs           trait Platform + PlatformEvent (and Call, what crosses the agent pipe);
                    Local (in this process); Remote (agent pipe proxy, Windows)
   windows/         capture (DXGI), encoder (MF), input (SendInput), clipboard (owner window,
@@ -143,8 +145,8 @@ capabilities and AI tool names, which seats can be admitted, and the tool table 
 MCP gate. Every host offers the base tools. A workspace adds work tools, including loopback
 tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
-according to the live hello's `desk` capability. Windows and Linux offer `terminal`, `terminal-keep`,
-`browse` and `file-transfer` through the ordinary user's workspace. View-only hosts omit
+according to the live hello's `desk` capability. Linux, macOS and Windows offer `terminal`,
+`terminal-keep`, `browse` and `file-transfer` through the ordinary user's workspace. View-only hosts omit
 those capabilities. The host status reports why a browser workspace is unavailable.
 Verified data-only and picture browser offers contend for the same desk seat. A picture offer to a Linux host receives
 `no_desktop`. A data-only browser offer to a host without terminal support receives `no_terminal`.
@@ -155,14 +157,16 @@ two filesystem workers across the host. Before calling the workspace a worker ch
 seat using the terminal registry's admission state. The workspace resolves the directory on
 the first page, selects each sorted page with bounded memory and applies filesystem changes.
 The browser uses the returned path and cursor for successive pages. The AI listing scans
-until it has up to 2,000 readable entries, with its own `more` field. The workspace checks seat
-ownership before each transfer filesystem step. A transfer holds one worker slot so a second
-slot can service browsing. Its channel and receiver credit limit the amount of transfer data
+until it has up to 2,000 readable entries, with its own `more` field. The browser workspace
+checks access before describing each page entry and before each transfer filesystem step.
+A transfer holds one worker slot so a second slot can service browsing. Its channel and receiver credit limit the amount of transfer data
 competing with terminal and browse traffic. On Windows, file handles and ConPTY live in the
 ordinary user worker. A worker request for PTY bytes or file contents carries up to one frame
-and waits for its reply. ConPTY has a bounded input queue and supplies up to the requested
-output capacity. The foreground host uses the same Windows filesystem and ConPTY code
-in-process.
+and waits up to five seconds for its reply after the pipe send. An unanswered transfer request
+interrupts its channel attempt and releases any held registry guard. ConPTY has a bounded
+input queue and supplies up to the requested output capacity. The Windows foreground host
+uses the same filesystem and ConPTY code in-process. On macOS and Linux the workspace uses
+the shared Unix PTY and filesystem metadata code.
 The host keeps the current transfer record and final reply in memory, keyed to the device and
 the authenticated page's resume chain. A new channel takes over the same record after the prior
 worker returns it. The workspace owns the staged upload, its write position, and the pinned
@@ -175,12 +179,19 @@ The host's terminal registry owns the PTY even with no desk session. Only the ad
 session can attach. It owns its own input queue and credit, while the registry owns the recent
 output. A worker drains the PTY when detached, including when signaling is unavailable.
 The registry reports a detached shell's last device and departure time through host status.
-It drops the shell, jobs and replay when the terminal closes or the host stops. Windows
-WTS session notifications and the input desktop report the console state independently of
-capture. A lock or secure prompt revokes the data seat. The registry keeps draining the PTY
-into replay, and the worker gates input and filesystem calls on the live console state.
-An ended sign-in or a user switch closes the previous user's shell and discards their transfer
-record.
+It drops the shell, jobs and replay when the terminal closes or the host stops. The signaling
+host processes queued workspace transitions before judging offers. A lock revokes the current
+data seat and releases it without auto-lock. The workspace checks the live console state before
+attached output, input and filesystem calls.
+
+- Windows uses WTS session notifications and samples the input desktop for secure prompts.
+  A temporarily detached console has no active console session ID. The worker checks its own
+  WTS logon identity and reports it locked during detachment. Logoff or a switch to another
+  console session ends the old workspace, including its shell, replay and transfer record.
+- macOS samples `CGSessionCopyCurrentDictionary` every 100 ms and checks it at workspace access.
+  `CGSSessionScreenIsLocked` reports the lock and `kCGSSessionOnConsoleKey` reports whether the app's
+  session is on the console. Switching away locks access to that app's workspace. Logging out
+  stops the app and its workspace. These checks are independent of capture.
 
 The Linux host keeps its state in `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway`.
 Starting or enrolling the host takes the same exclusive `host.lock` for that state directory.
@@ -740,7 +751,7 @@ The Mac code guarantees the following:
 | Input (CGEvent) | Coordinates are mapped to the captured display in points; dragged events are generated while a button is held; click state is tracked for double clicks; wheel events use pixel units; key codes come from the shared table; each committed text event carries one Unicode scalar. The host owns the modifier flags it sets on every event. |
 | Capture (ScreenCaptureKit) | NV12 video range, BT.709. The settings window appears in the video, while the indicator and border are excluded. Dirty rects show when nothing has changed. |
 | Clipboard | `changeCount` is checked twice a second. The browser's formats are promised through `NSPasteboardItemDataProvider` and marked `org.nspasteboard.TransientType`. |
-| Permissions | Screen Recording and Accessibility are checked at start-up and shown in the panel. While either is missing, sessions are refused with a clear reason. Programs an AI client starts inherit these permissions (security.md, R5). |
+| Permissions | The panel shows Screen Recording and Accessibility. Desktop control requires both. Terminal and Files use the app's ordinary user rights and macOS privacy permissions. Programs an AI client starts inherit these permissions (security.md, R5). |
 | Lock screen | The host runs in the signed-in user's session, including while it is locked. The remote view shows the lock screen, and macOS verifies the password. Control-Command-Q locks the Mac. |
 | Files | `host.json`, `host-key`, `controllers.json`, `pairing.json` and `ai.json` are stored in `~/Library/Application Support/Deskway`, with mode 0700. |
 

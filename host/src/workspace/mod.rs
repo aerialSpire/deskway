@@ -183,7 +183,11 @@ pub(crate) use files::transfer::sweep_home;
 #[cfg(browser_workspace)]
 pub(crate) fn local_browser(open: crate::platform::OpenPty, state: Arc<BrowserState>) -> Browser {
     let user = BrowserUser { open, browse: Arc::new(files::browse::call), transfers: files::transfer::files() };
-    Browser { state, bind: Arc::new(move |_| Some(user.clone())) }
+    let access = state.clone();
+    Browser { state, bind: Arc::new(move |id| {
+        let now = access();
+        (now.user == Some(id) && now.refusal(false).is_none()).then(|| user.clone())
+    }) }
 }
 
 pub type BrowserState = dyn Fn() -> crate::platform::WorkspaceState + Send + Sync;

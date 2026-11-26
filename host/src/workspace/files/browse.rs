@@ -123,6 +123,7 @@ fn list(path: &Path, cursor: Option<&str>, limit: usize, seated: &dyn Fn() -> bo
     let mut last = None;
     let mut bytes = 0;
     for key in page {
+        if !seated() { return Err(Error::Denied); }
         match describe(path, &key.1, &mut owners) {
             Ok(entry) => {
                 bytes += serde_json::to_vec(&entry).map_err(|_| Error::Io)?.len() + 1;
@@ -137,6 +138,7 @@ fn list(path: &Path, cursor: Option<&str>, limit: usize, seated: &dyn Fn() -> bo
         }
         last = Some(key);
     }
+    if !seated() { return Err(Error::Denied); }
     let path = native::path_parts(path).iter().map(|name| encode(name)).collect();
     Ok(Browse::Listing { path, entries, roots: None, cursor: last.filter(|_| more).as_ref().map(cursor_for) })
 }
@@ -172,13 +174,16 @@ fn request(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Result<Browse, Er
     }
     if path.as_os_str().is_empty() {
         let result = if matches!(op, Browse::List { cursor: None, .. }) {
-            native::roots().map(|drives| Browse::Listing {
-                path: vec![], roots: Some(true), cursor: None,
-                entries: drives.iter().map(|name| FileEntry {
-                    name: encode(name), kind: FileKind::Folder, size: 0, modified: None,
-                    mode: None, owner: None, attributes: None, target: None, opens: None,
-                }).collect(),
-            }).map_err(file_error)
+            native::roots().map_err(file_error).and_then(|drives| {
+                if !seated() { return Err(Error::Denied); }
+                Ok(Browse::Listing {
+                    path: vec![], roots: Some(true), cursor: None,
+                    entries: drives.iter().map(|name| FileEntry {
+                        name: encode(name), kind: FileKind::Folder, size: 0, modified: None,
+                        mode: None, owner: None, attributes: None, target: None, opens: None,
+                    }).collect(),
+                })
+            })
         } else {
             Err(Error::InvalidPath)
         };
@@ -237,6 +242,27 @@ pub fn call(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Browse) {
     (path, result.unwrap_or_else(|why| Browse::Error { why }))
 }
 
+#[cfg(test)]
+#[test]
+fn a_listing_revoked_after_admission_returns_denied() {
+    let dir = std::env::temp_dir().join(format!("deskway-browse-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+    fs::create_dir(&dir).unwrap();
+    for name in ["first", "second"] {
+        fs::write(dir.join(name), []).unwrap();
+    }
+    let path: Vec<_> = native::path_parts(&dir).iter().map(|name| encode(name)).collect();
+    for checks_allowed in [1, 2, 3] {
+        let checked = std::cell::Cell::new(0);
+        let (_, reply) = call(Browse::List { path: Some(path.clone()), cursor: None }, &|| {
+            let n = checked.get();
+            checked.set(n + 1);
+            n < checks_allowed
+        });
+        assert_eq!(reply, Browse::Error { why: Error::Denied });
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::ffi::OsStrExt;
@@ -244,7 +270,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
-    fn names_are_single_linux_components() {
+    fn names_are_single_unix_components() {
         for (name, valid) in [
             ("", false), (".", false), ("..", false), ("/a", false), ("a/b", false), ("a\\b", false),
             ("a\0b", false), (".hidden", true), (" x ", true), ("å\n\u{202e}", true),
@@ -287,7 +313,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("deskway-browse-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
         fs::create_dir(&dir).unwrap();
         let path: Vec<_> = dir.iter().skip(1).map(encode).collect();
-        let raw = OsStr::from_bytes(b"x\xff");
+        let raw = OsStr::from_bytes(b"x \n");
         assert_eq!(call(Browse::Mkdir { path: path.clone(), name: "folder".into() }, &|| true).1, Browse::Changed {});
         fs::write(dir.join("folder/content"), []).unwrap();
         symlink("folder", dir.join(raw)).unwrap();

@@ -147,8 +147,14 @@ On Windows, a locked console or secure desktop ends the data session with the lo
 offers the desktop. The computer page disables Terminal, Files and Return. The browser retains
 unfinished transfers on that page and uses its existing resume token on the next data
 connection after unlocking. The kept shell and its jobs continue to run. Sign-out and fast user
-switching end the previous user's shell and discard their transfer record. When nobody is signed
-in, the page says so and offers the desktop. A view-only host offers desktop viewing.
+switching end the previous user's shell and discard their transfer record. While the console
+is temporarily detached, Deskway reports the retained sign-in as locked. When nobody is signed
+in, the page says so and offers the desktop. Lock and sign-in revocations skip auto-lock.
+
+A Mac applies the same lock and resume rule when the screen locks or fast user switching takes
+the host app's session off the console. Switching back and unlocking lets the browser return.
+Logging out of macOS ends the host and its workspace. Before login the Mac appears offline.
+View-only mode omits Terminal and Files.
 
 The host keeps one browser terminal independently of the desk session. Disconnect, the end
 of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's

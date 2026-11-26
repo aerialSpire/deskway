@@ -310,12 +310,6 @@ impl Host {
         self.workspace_state.refusal(self.view_only)
     }
 
-    fn refresh_workspace(&mut self) {
-        let Some(browser) = &self.browser else { return };
-        let next = (browser.state)();
-        self.workspace_changed(next);
-    }
-
     fn workspace_changed(&mut self, next: WorkspaceState) {
         if self.browser.is_none() { return; }
         let previous = std::mem::replace(&mut self.workspace_state, next);
@@ -326,8 +320,10 @@ impl Host {
         let reason = if changed_user && next.user.is_some() { Some(Reason::UserChanged) }
             else { next.refusal(self.view_only) };
         if let (Some(terminal), Some(reason)) = (&self.terminal, reason) {
-            if self.sessions.of(Seat::Desk).current().is_some_and(|cur| terminal.holds(&cur.id)) {
+            if let Some(id) = self.sessions.of(Seat::Desk).current().filter(|cur| terminal.holds(&cur.id)).map(|cur| cur.id.clone()) {
                 self.end_seat(Seat::Desk, End::plain(reason));
+                self.sessions.of_mut(Seat::Desk).ended(&id);
+                self.replaced.push(id);
             }
         }
         if changed_user {
@@ -473,7 +469,6 @@ impl Host {
     }
 
     fn on_offer(&mut self, m: &Value) {
-        self.refresh_workspace();
         let session = m["session"].as_str().unwrap_or_default().to_string();
         let sdp = m["sdp"].as_str().unwrap_or_default().to_string();
         // The offer of a session holding a seat, again (its answer may not have arrived): the
@@ -489,8 +484,8 @@ impl Host {
         let nonce = m["auth"]["nonce"].as_str().unwrap_or_default().to_string();
         let nonce_ok = self.nonces.take(&session, &nonce, Instant::now());
         let data_only = session::data::data_only(&sdp);
-        let permissions = self.desktop.as_ref().is_some_and(|d| !(d.can_host)());
-        if permissions && !data_only {
+        let lacks_permissions = || self.desktop.as_ref().is_some_and(|d| !(d.can_host)());
+        if !data_only && lacks_permissions() {
             eprintln!("session refused: this computer cannot host one now");
             return self.bye(&session, Reason::Permissions);
         }
@@ -532,7 +527,7 @@ impl Host {
             None
         };
         if seat == Seat::Ai {
-            if permissions {
+            if data_only && lacks_permissions() {
                 return self.bye(&session, Reason::Permissions);
             }
             // An AI client only while a browser of the account allows AI here, and not stopped;
@@ -992,13 +987,23 @@ struct Queues {
 }
 
 impl Queues {
-    /// What can be handled without the server.
-    fn drain_local(&self, host: &mut Host) {
-        host.transfers.expire(Instant::now());
+    fn drain_control(&self, host: &mut Host) {
         while let Ok(c) = self.control.try_recv() {
             host.on_control(c);
         }
-        host.refresh_workspace();
+    }
+
+    fn on_message(&self, host: &mut Host, text: &str) {
+        self.drain_control(host);
+        if !host.quit {
+            host.on_message(text);
+        }
+    }
+
+    /// What can be handled without the server.
+    fn drain_local(&self, host: &mut Host) {
+        host.transfers.expire(Instant::now());
+        self.drain_control(host);
         while let Ok(u) = self.updates.try_recv() {
             host.on_update(u);
         }
@@ -1017,7 +1022,7 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Que
             Ok(m) => {
                 alive.heard(Instant::now());
                 if let WsMessage::Text(t) = m {
-                    host.on_message(t.as_str());
+                    q.on_message(host, t.as_str());
                 }
             }
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
@@ -1195,6 +1200,7 @@ mod tests {
     struct Test {
         host: Host,
         q: Queues,
+        control: Sender<Control>,
         shown: Arc<Mutex<Vec<Status>>>,
         dir: std::path::PathBuf,
         calls: Arc<Calls>,
@@ -1214,7 +1220,7 @@ mod tests {
             let calls = Arc::new(Calls::default());
             let platform: Arc<dyn Platform> = calls.clone();
             let (control, control_rx) = channel();
-            let (settings, _) = Settings::start(dir.clone(), &cfg, features.desktop.map(|_| platform.clone()), control);
+            let (settings, _) = Settings::start(dir.clone(), &cfg, features.desktop.map(|_| platform.clone()), control.clone());
             let (_events_tx, events) = channel();
             let shown = Arc::new(Mutex::new(Vec::new()));
             let to = shown.clone();
@@ -1233,7 +1239,7 @@ mod tests {
                 })),
             }), notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
-            Test { host, q, shown, dir, calls }
+            Test { host, q, control, shown, dir, calls }
         }
 
         /// What went to the server since the last call.
@@ -1242,7 +1248,7 @@ mod tests {
         }
 
         fn offer(&mut self, auth: Value) -> Value {
-            self.host.on_message(&json!({ "type": "offer", "session": "s1", "epoch": 0, "sdp": "v=0", "ice": [], "view": { "w": 1, "h": 1, "maxW": 1, "maxH": 1, "fps": 30 }, "user": "u", "auth": auth }).to_string());
+            self.q.on_message(&mut self.host, &json!({ "type": "offer", "session": "s1", "epoch": 0, "sdp": "v=0", "ice": [], "view": { "w": 1, "h": 1, "maxW": 1, "maxH": 1, "fps": 30 }, "user": "u", "auth": auth }).to_string());
             self.sent().pop().expect("an answer to the offer")
         }
 
@@ -1280,7 +1286,7 @@ mod tests {
             let challenge = wire::crypto::sha256(wire::challenge::connect_v3("H1", session, &nonce, force, sdp).as_bytes());
             let sig: p256::ecdsa::Signature = key.sign(&challenge);
             let auth = json!({ "k": "dk", "nonce": nonce, "cred": cred, "sig": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes()) });
-            self.host.on_message(&json!({ "type": "offer", "session": session, "epoch": 0, "sdp": sdp, "ice": [], "view": { "w": 1, "h": 1, "maxW": 1, "maxH": 1, "fps": 30 }, "user": "u2", "force": force, "auth": auth }).to_string());
+            self.q.on_message(&mut self.host, &json!({ "type": "offer", "session": session, "epoch": 0, "sdp": sdp, "ice": [], "view": { "w": 1, "h": 1, "maxW": 1, "maxH": 1, "fps": 30 }, "user": "u2", "force": force, "auth": auth }).to_string());
             self.sent()
         }
 
@@ -1401,7 +1407,7 @@ mod tests {
             let state = Arc::new(Mutex::new(native));
             let watch = state.clone();
             t.host.browser.as_mut().unwrap().state = Arc::new(move || *watch.lock().unwrap());
-            t.host.refresh_workspace();
+            t.host.workspace_changed(native);
             t.host.send_status();
             let output = t.sent();
             let status = output.iter().rfind(|m| m["type"] == "status").unwrap();
@@ -1417,25 +1423,53 @@ mod tests {
             t.host.on_ended("workspace");
 
             // A data seat ends, while desktop sessions are unaffected by this signal.
+            t.host.auto_lock = true;
             for (why, next) in [
                 (Reason::Locked, WorkspaceState { user: Some(0), locked: true }),
                 (Reason::NoUserSession, WorkspaceState::NO_USER),
                 (Reason::UserChanged, WorkspaceState { user: Some(2), locked: false }),
             ] {
                 *state.lock().unwrap() = WorkspaceState::READY;
-                t.host.refresh_workspace();
+                t.host.workspace_changed(WorkspaceState::READY);
                 let rx = t.seated(Seat::Desk, "desk", PHONE);
                 *state.lock().unwrap() = next;
-                t.host.refresh_workspace();
+                t.host.workspace_changed(next);
                 assert!(rx.try_recv().is_err(), "a desktop session must remain seated");
                 *state.lock().unwrap() = WorkspaceState::READY;
-                t.host.refresh_workspace();
+                t.host.workspace_changed(WorkspaceState::READY);
                 let rx = t.seated(Seat::Desk, "desk", PHONE);
                 t.host.terminal.as_ref().unwrap().admit("desk".into(), "browser".into(), PHONE.into());
                 *state.lock().unwrap() = next;
-                t.host.refresh_workspace();
+                t.host.workspace_changed(next);
                 assert_eq!(reason(&rx), Some(why));
+                t.host.on_ended("desk");
+                assert!(!t.calls.0.lock().unwrap().contains(&Call::Lock {}));
             }
+        }
+    }
+
+    #[test]
+    fn an_offer_after_unlock_applies_queued_revocations_to_the_old_data_seat() {
+        for revoked in [
+            WorkspaceState { user: Some(0), locked: true },
+            WorkspaceState::NO_USER,
+            WorkspaceState { user: Some(2), locked: false },
+        ] {
+            let mut t = Test::with_features("queued-unlock", false, true, Features {
+                desktop: Some(crate::platform::TEST_DESKTOP), terminal: true, ..Features::default()
+            });
+            let phone = t.pair_phone();
+            t.host.auto_lock = true;
+            let rx = t.seated(Seat::Desk, "old", PHONE);
+            t.host.terminal.as_ref().unwrap().admit("old".into(), "browser".into(), PHONE.into());
+            t.control.send(Control::WorkspaceChanged(revoked)).unwrap();
+            t.control.send(Control::WorkspaceChanged(WorkspaceState::READY)).unwrap();
+            t.offer_from(&phone, PHONE, "next", false, TERMINAL_SDP);
+            assert!(reason(&rx).is_some());
+            assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "next");
+            t.host.on_ended("old");
+            assert!(!t.calls.0.lock().unwrap().contains(&Call::Lock {}));
+            assert!(t.host.terminal.as_ref().unwrap().holds("next"));
         }
     }
 

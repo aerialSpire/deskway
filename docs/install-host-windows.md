@@ -67,8 +67,8 @@ download files with your Windows account’s rights.
 
 When Windows is locked or showing a secure prompt, take over the desktop and unlock it to
 use these actions. A terminal you left keeps running while Windows is locked. When the
-Windows user signs out or changes, their terminal ends. A computer set to view only offers
-desktop viewing.
+Windows user signs out or changes, their terminal ends. An interrupted upload can resume from
+the same browser page after unlocking. A computer set to view only offers desktop viewing.
 
 ## Settings in the panel
 

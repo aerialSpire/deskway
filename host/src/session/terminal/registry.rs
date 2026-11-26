@@ -296,7 +296,7 @@ impl State {
     fn tick(&mut self, now: Instant, buf: &mut [u8]) -> bool {
         self.reap_left(now);
         let Some(kept) = &mut self.terminal else { return false };
-        match kept.shell.read(buf) {
+        match kept.shell.read_output(buf, true) {
             Ok(n) => n > 0,
             Err(_) => { self.close(Closed::Io); false }
         }
@@ -351,10 +351,15 @@ impl Shell {
     }
 
     pub(super) fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.read_output(buf, false)
+    }
+
+    fn read_output(&mut self, buf: &mut [u8], detached: bool) -> io::Result<usize> {
         if self.eof {
             return Ok(0);
         }
-        match self.pty.read(buf) {
+        let read = if detached { self.pty.drain(buf) } else { self.pty.read(buf) };
+        match read {
             Ok(n) => {
                 self.eof = n == 0;
                 self.replay.append(&buf[..n]);

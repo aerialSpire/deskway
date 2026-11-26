@@ -9,6 +9,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -19,6 +20,8 @@ use wire::terminal::FRAME;
 use super::{Link, Remote, RequestOp};
 use crate::platform::{Pty, WorkspaceState};
 use crate::workspace::{Answer, Browser, BrowserUser, Code, Conflict, Download, FileTransfers, Upload, WorkError};
+
+const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "browser", rename_all = "snake_case")]
@@ -36,14 +39,15 @@ pub(super) enum Operation {
 #[serde(rename_all = "snake_case")]
 pub(super) enum Step {
     Conflict,
+    AcceptConflict,
     Prepare,
     Write(String),
     Verify(String),
-    Publish(bool),
+    Publish,
     Read(usize),
     Rewind,
     Finish,
-    PtyRead(usize),
+    PtyRead { len: usize, detached: bool },
     PtyWrite(String),
     Resize(u16, u16),
     Redraw(u16, u16),
@@ -118,7 +122,7 @@ impl Link {
             browse: Arc::new(move |request, seated| {
                 if seated() {
                     if let Some((name, reply)) = browse.browser_request::<(Vec<u16>, Browse)>(Operation::Browse { request }) {
-                        return (path(&name), reply);
+                        if seated() { return (path(&name), reply); }
                     }
                 }
                 (PathBuf::new(), Browse::Error { why: BrowseError::Denied })
@@ -141,7 +145,7 @@ impl Link {
     }
 
     fn browser_request<T: DeserializeOwned>(&self, operation: Operation) -> Option<T> {
-        let value = self.request(RequestOp::Browser(operation))?.ok()?;
+        let value = self.request(RequestOp::Browser(operation), Some(REPLY_TIMEOUT))?.ok()?;
         serde_json::from_value(value).ok()
     }
 
@@ -159,6 +163,11 @@ struct ResourceLink {
 impl ResourceLink {
     fn files<T: DeserializeOwned>(&self, step: Step, seated: &dyn Fn() -> bool) -> Result<T, Error> {
         self.link.files(Operation::Step { resource: self.id, step }, seated)
+    }
+
+    fn read_output(&self, buf: &mut [u8], detached: bool) -> io::Result<usize> {
+        let data: String = self.pty(Step::PtyRead { len: buf.len(), detached })?;
+        STANDARD.decode_slice(&data, buf).map_err(io::Error::other)
     }
 
     fn pty<T: DeserializeOwned>(&self, step: Step) -> io::Result<T> {
@@ -179,6 +188,10 @@ impl Upload for ResourceLink {
         self.files(Step::Conflict, seated)
     }
 
+    fn accept_conflict(&mut self, seated: &dyn Fn() -> bool) -> Result<(), Error> {
+        self.files(Step::AcceptConflict, seated)
+    }
+
     fn prepare(&mut self, seated: &dyn Fn() -> bool) -> Result<u64, Error> {
         self.files(Step::Prepare, seated)
     }
@@ -191,8 +204,8 @@ impl Upload for ResourceLink {
         self.files(Step::Verify(digest.into()), seated)
     }
 
-    fn publish(&self, approved: bool) -> Result<bool, Error> {
-        self.files(Step::Publish(approved), &|| true)
+    fn publish(&mut self) -> Result<bool, Error> {
+        self.files(Step::Publish, &|| true)
     }
 }
 
@@ -221,8 +234,7 @@ impl Download for Source {
 
 impl Read for ResourceLink {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let data: String = self.pty(Step::PtyRead(buf.len()))?;
-        STANDARD.decode_slice(&data, buf).map_err(io::Error::other)
+        self.read_output(buf, false)
     }
 }
 
@@ -235,6 +247,7 @@ impl Write for ResourceLink {
 }
 
 impl Pty for ResourceLink {
+    fn drain(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.read_output(buf, true) }
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> { self.pty(Step::Resize(rows, cols)) }
     fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()> { self.pty(Step::Redraw(rows, cols)) }
     fn exit(&mut self) -> io::Result<Option<i32>> { self.pty(Step::Exit) }
@@ -322,11 +335,13 @@ fn invalid() -> WorkError {
 impl Resource {
     fn step(&mut self, step: Step, allowed: &dyn Fn() -> bool) -> Answer {
         match (self, step) {
-            // Output stays in the host's replay while locked. These two steps grant no input.
             (Self::Pty(pty), Step::Exit) => value(pty.exit().map_err(PtyError::from)),
-            (Self::Pty(pty), Step::PtyRead(len)) if len <= FRAME => {
+            (Self::Pty(pty), Step::PtyRead { len, detached }) if len <= FRAME => {
                 let mut bytes = vec![0; len];
-                value(pty.read(&mut bytes).map(|n| STANDARD.encode(&bytes[..n])).map_err(PtyError::from))
+                let read = if detached { pty.drain(&mut bytes) }
+                    else if allowed() { pty.read(&mut bytes) }
+                    else { Err(io::ErrorKind::WouldBlock.into()) };
+                value(read.map(|n| STANDARD.encode(&bytes[..n])).map_err(PtyError::from))
             }
             (Self::Pty(pty), step) => {
                 if !allowed() {
@@ -350,6 +365,7 @@ impl Resource {
                 }
             }
             (Self::Upload(file), Step::Conflict) => value(file.conflict(allowed)),
+            (Self::Upload(file), Step::AcceptConflict) => value(file.accept_conflict(allowed)),
             (Self::Upload(file), Step::Prepare) => value(file.prepare(allowed)),
             (Self::Upload(file), Step::Write(text)) => {
                 let bytes = STANDARD.decode(text).map_err(|_| invalid())?;
@@ -357,7 +373,7 @@ impl Resource {
                 value(file.write(&bytes, allowed))
             }
             (Self::Upload(file), Step::Verify(digest)) => value(file.verify(&digest, allowed)),
-            (Self::Upload(file), Step::Publish(approved)) => value(if allowed() { file.publish(approved) } else { Err(Error::Cancelled) }),
+            (Self::Upload(file), Step::Publish) => value(if allowed() { file.publish() } else { Err(Error::Cancelled) }),
             (Self::Download(file), Step::Rewind) => value(file.rewind(allowed)),
             (Self::Download(file), Step::Read(len)) if len <= CHUNK => {
                 let mut bytes = vec![0; len];
@@ -376,7 +392,6 @@ mod tests {
     use crate::service::ipc::{self, Pipe};
     use std::fs;
     use std::sync::mpsc::channel;
-    use std::time::Duration;
 
     #[test]
     fn browser_requests_keep_resources_on_the_worker_and_enforce_its_lock() {
@@ -436,7 +451,13 @@ mod tests {
         let alias = String::from_utf8(codec.decode(&entries[0].name).unwrap()).unwrap().to_ascii_uppercase();
         let (_, reply) = (user.browse)(Browse::Delete { path: tokens, entry: codec.encode(alias) }, &|| true);
         assert_eq!(reply, Browse::Error { why: BrowseError::InUse });
+        pty.write_all(b"background").unwrap();
         state.lock().unwrap().locked = true;
+        assert_eq!((browser.state)(), WorkspaceState::READY, "the network side has not received the lock");
+        let mut bytes = [0; 10];
+        assert_eq!(pty.read(&mut bytes).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(pty.drain(&mut bytes).unwrap(), bytes.len());
+        assert_eq!(&bytes, b"background");
         assert_eq!(output.write(&chunks[1], &|| true), Err(Error::Cancelled));
         assert_eq!(pty.write(b"unavailable").unwrap_err().kind(), io::ErrorKind::WouldBlock);
         state.lock().unwrap().locked = false;
@@ -445,7 +466,7 @@ mod tests {
             output.write(bytes, &|| true).unwrap();
         }
         output.verify(&wire::crypto::hex(&wire::crypto::sha256(&chunks.concat())), &|| true).unwrap();
-        assert_eq!(output.publish(false), Ok(false));
+        assert_eq!(output.publish(), Ok(false));
         drop(output);
         let mut input = (user.transfers.download)(&path, &|| true).unwrap();
         assert_eq!(input.size(), length as u64);
@@ -459,10 +480,11 @@ mod tests {
         let bytes = b"replacement";
         let mut replacement = (user.transfers.upload)(&path, bytes.len() as u64, &|| true).unwrap();
         assert_eq!(replacement.conflict(&|| true).unwrap().unwrap().size, length as u64);
+        replacement.accept_conflict(&|| true).unwrap();
         assert_eq!(replacement.prepare(&|| true), Ok(0));
         replacement.write(bytes, &|| true).unwrap();
         replacement.verify(&wire::crypto::hex(&wire::crypto::sha256(bytes)), &|| true).unwrap();
-        assert_eq!(replacement.publish(true), Ok(true));
+        assert_eq!(replacement.publish(), Ok(true));
         assert_eq!(fs::read(&path).unwrap(), bytes);
         drop(replacement);
         server.disconnect();
