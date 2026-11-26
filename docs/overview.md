@@ -16,6 +16,8 @@ computers as tools once you approve them.
 
 Video and input go directly between the browser and the computer over WebRTC when the network
 allows. Otherwise they go through the server's TURN relay, which only forwards encrypted traffic.
+When connecting or reconnecting, the browser keeps paths the computer reports while its answer is
+being verified, so it can try them as soon as that answer is applied.
 
 ## Features
 

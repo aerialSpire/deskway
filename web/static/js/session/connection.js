@@ -60,6 +60,8 @@ export class Connection {
     // This epoch's own candidates; they follow its description, also when that is sent again.
     this.candidates = [];
     this.described = false;
+    // This epoch's incoming candidates; null once its answer has been applied.
+    this.pendingRemoteCandidates = [];
     this.nonce = null;
     this.waitNonce = null;
     this.view = null;
@@ -180,6 +182,7 @@ export class Connection {
     this.answered = false;
     this.described = false;
     this.candidates = [];
+    this.pendingRemoteCandidates = [];
     pc.restartIce();
     const offer = await pc.createOffer();
     if (epoch !== this.epoch || this.ended) return;
@@ -208,7 +211,16 @@ export class Connection {
     if (verdict === 'bad') { this.end('forged'); return; }
     if (verdict === 'changed') { this.end('keyChanged'); return; }
     if (verdict === 'first') this.emit('pinned');
-    if (pc.signalingState === 'have-local-offer') await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
+    if (pc.signalingState !== 'have-local-offer') return;
+    await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
+    if (this.ended || m.epoch !== this.epoch) return;
+    const pending = this.pendingRemoteCandidates;
+    this.pendingRemoteCandidates = null;
+    for (const candidate of pending) this.addRemoteCandidate(candidate);
+  }
+
+  addRemoteCandidate(candidate) {
+    this.pc.addIceCandidate(candidate).catch(() => { /* a stale candidate */ });
   }
 
   // ---- what the server and the computer say ----
@@ -232,7 +244,8 @@ export class Connection {
         this.onAnswer(m);
         break;
       case Signal.CANDIDATE:
-        if (this.pc) this.pc.addIceCandidate(m.candidate).catch(() => { /* a stale candidate */ });
+        if (this.pendingRemoteCandidates) this.pendingRemoteCandidates.push(m.candidate);
+        else this.addRemoteCandidate(m.candidate);
         break;
       case Signal.BYE:
         this.onBye(m);

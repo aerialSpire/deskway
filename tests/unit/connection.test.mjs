@@ -22,14 +22,19 @@ class FakePeer {
     this.offers = 0;
     this.restarts = 0;
     this.remote = [];
+    this.remoteCandidates = [];
     this.closed = false;
   }
   createDataChannel(label) { this.channels[label] = new FakeChannel(label); return this.channels[label]; }
   async createOffer() { this.offers += 1; return { type: 'offer', sdp: `sdp${this.offers}` }; }
   async setLocalDescription(o) { this.localDescription = o; this.signalingState = 'have-local-offer'; }
-  async setRemoteDescription(a) { this.remote.push(a.sdp); this.signalingState = 'stable'; }
+  async setRemoteDescription(a) {
+    await this.applyingAnswer;
+    this.remote.push(a.sdp);
+    this.signalingState = 'stable';
+  }
   restartIce() { this.restarts += 1; }
-  async addIceCandidate() {}
+  async addIceCandidate({ candidate }) { this.remoteCandidates.push(candidate); }
   close() { this.closed = true; }
   set(state) { this.connectionState = state; this.onconnectionstatechange(); }
   candidate(c) { this.onicecandidate({ candidate: { toJSON: () => ({ candidate: c }) } }); }
@@ -106,6 +111,10 @@ async function active(opts) {
   return env;
 }
 
+function trickle(env, candidate) {
+  env.signal({ type: 'candidate', candidate: { candidate, sdpMLineIndex: 0 } });
+}
+
 test('the offer is epoch 0 over the nonce, its candidates follow it', async () => {
   const env = setup();
   env.c.start();
@@ -135,6 +144,22 @@ test('an answer for another epoch is ignored; the current one is verified once a
   assert.equal(env.events.pinned, 1, 'the first answer from this computer keeps its key');
 });
 
+test('early candidates are added in order once the answer is applied, and later candidates are added immediately', async () => {
+  const env = await offered();
+  const application = Promise.withResolvers();
+  env.peer.applyingAnswer = application.promise;
+  trickle(env, 'first');
+  env.signal({ type: 'answer', epoch: 0, sdp: 'answer0' });
+  await settle();
+  trickle(env, 'second');
+  assert.deepEqual(env.peer.remoteCandidates, []);
+  application.resolve();
+  await settle();
+  assert.deepEqual(env.peer.remoteCandidates, ['first', 'second']);
+  trickle(env, 'late');
+  assert.deepEqual(env.peer.remoteCandidates, ['first', 'second', 'late']);
+});
+
 test('a bad signature on the current epoch ends the session as forged, told to the computer as auth', async () => {
   const env = await offered({ verdict: 'bad' });
   env.signal({ type: 'answer', epoch: 0, sdp: 'forged', auth: {} });
@@ -161,21 +186,25 @@ test('the channel opening is active, and the connect deadline is gone', async ()
   assert.equal(env.events.ended, null);
 });
 
-test('B3 recovering: a restart per epoch, a newer one replaces the outstanding one, stale answers are ignored', async () => {
+test('B3 recovering: a new restart replaces the outstanding restart and discards its pending candidates', async () => {
   const env = await active();
   env.peer.set('disconnected');
   await settle();
   assert.equal(env.c.state, 'recovering');
   assert.equal(env.events.states.at(-1).cause, 'network');
+  trickle(env, 'superseded');
   env.c.restart();
   await settle();
   assert.deepEqual(env.sent('restart').map((m) => m.epoch), [1, 2]);
   env.signal({ type: 'answer', epoch: 1, sdp: 'answer1', auth: {} });
   await settle();
   assert.deepEqual(env.peer.remote, ['answer0'], 'the superseded epoch is not this negotiation');
+  trickle(env, 'current');
+  assert.deepEqual(env.peer.remoteCandidates, []);
   env.signal({ type: 'answer', epoch: 2, sdp: 'answer2', auth: {} });
   await settle();
   assert.deepEqual(env.peer.remote, ['answer0', 'answer2']);
+  assert.deepEqual(env.peer.remoteCandidates, ['current']);
   env.peer.set('connected');
   assert.equal(env.c.state, 'active');
   env.timers.advance(DEADLINE_MS);
