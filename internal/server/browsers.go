@@ -64,14 +64,15 @@ func (s *Server) sendAccount(user string) {
 
 // dropBrowsers closes every socket of the given browser records, so a removed browser is out
 // at once and not only at its next request.
-func (s *Server) dropBrowsers(ids map[string]bool) {
+func (s *Server) dropBrowsers(ids map[string]bool, profiles []string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for c := range s.clients {
 		if ids[c.browser] {
 			c.cancel()
 		}
 	}
+	s.mu.Unlock()
+	s.retireMCPProfiles(profiles)
 }
 
 // handleApprove answers a waiting browser or computer. A browser approved with the approver's
@@ -136,11 +137,12 @@ func (s *Server) handleBrowserKeys(w http.ResponseWriter, r *http.Request) {
 		IP       string            `json:"ip"`
 		LastSeen int64             `json:"last_seen"`
 		Current  bool              `json:"current"`
+		Remote   bool              `json:"remote_mcp,omitempty"`
 		Key      *proto.BrowserKey `json:"device,omitempty"`
 	}
 	rows := []row{}
 	for _, b := range s.store.ApprovedBrowsers(userOf(r)) {
-		rows = append(rows, row{b.ID, b.Label, b.IP, b.LastSeen, b.ID == current, b.Key})
+		rows = append(rows, row{b.ID, b.Label, b.IP, b.LastSeen, b.ID == current, b.Remote, b.Key})
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, rows)
@@ -157,7 +159,7 @@ func (s *Server) handleBrowserRemove(w http.ResponseWriter, r *http.Request) {
 	// The proof is optional: without one the browser is signed out, and computers keep their
 	// trust in its key until they are told otherwise.
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&body)
-	found, err := s.store.RemoveBrowser(user, id, body.Proof)
+	found, profiles, err := s.store.RemoveBrowser(user, id, body.Proof)
 	if !found {
 		http.Error(w, "no such device", http.StatusNotFound)
 		return
@@ -166,7 +168,7 @@ func (s *Server) handleBrowserRemove(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
-	s.dropBrowsers(map[string]bool{id: true})
+	s.dropBrowsers(map[string]bool{id: true}, profiles)
 	log.Printf("server: %s removed browser %.8s", user, id)
 	s.sendDeviceLog(user)
 	w.WriteHeader(http.StatusNoContent)

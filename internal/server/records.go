@@ -457,6 +457,7 @@ type BrowserInfo struct {
 	IP       string
 	LastSeen int64
 	Key      *proto.BrowserKey
+	Remote   bool
 }
 
 // BrowserRole is the record's role: proto.RoleAI for an AI client, "" for a browser.
@@ -514,9 +515,15 @@ func (s *Store) ApprovedBrowsers(user string) []BrowserInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rows := []BrowserInfo{}
+	remote := make(map[string]bool, len(s.MCPGrants))
+	for _, g := range s.MCPGrants {
+		if g.User == user {
+			remote[g.Browser] = true
+		}
+	}
 	for id, b := range s.Browsers {
 		if b.Owner == user && b.Approved {
-			rows = append(rows, BrowserInfo{id, b.Label, b.IP, b.LastSeen, b.Key})
+			rows = append(rows, BrowserInfo{id, b.Label, b.IP, b.LastSeen, b.Key, remote[id]})
 		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].LastSeen > rows[j].LastSeen })
@@ -755,20 +762,21 @@ func (s *Store) AttachKey(id, signedIn string, k proto.BrowserKey, now int64) (s
 
 // RemoveBrowser removes one of the account's browsers; with a proof from another of its
 // devices, the computers are told to stop trusting its key. False if there is no such browser.
-func (s *Store) RemoveBrowser(user, id string, proof *proto.Proof) (bool, error) {
+func (s *Store) RemoveBrowser(user, id string, proof *proto.Proof) (bool, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.Browsers[id]
 	if b == nil || b.Owner != user {
-		return false, nil
+		return false, nil, nil
 	}
 	delete(s.Browsers, id)
+	profiles := s.mcpRemoveLocked(map[string]bool{id: true})
 	if b.Key != nil && proof.Valid() {
 		e := proof.Entry(proto.OpRemove)
 		e.Cred = b.Key.Cred
 		s.appendLogLocked(user, e)
 	}
-	return true, s.saveLocked()
+	return true, profiles, s.saveLocked()
 }
 
 // RenameBrowser names one of the account's approved devices. With a proof, the log carries the
@@ -802,7 +810,7 @@ func (s *Store) RenameBrowser(user, id, name string, proof *proto.Proof) (bool, 
 }
 
 // RemoveBrowsersExcept removes every browser of the account but one; returns the removed ids.
-func (s *Store) RemoveBrowsersExcept(user, keep string) map[string]bool {
+func (s *Store) RemoveBrowsersExcept(user, keep string) (map[string]bool, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	removed := map[string]bool{}
@@ -812,6 +820,6 @@ func (s *Store) RemoveBrowsersExcept(user, keep string) map[string]bool {
 			removed[id] = true
 		}
 	}
-	_ = s.saveLocked()
-	return removed
+	profiles := s.mcpRemoveLocked(removed)
+	return removed, profiles, s.saveLocked()
 }

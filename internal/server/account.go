@@ -14,7 +14,11 @@ import (
 // me is what a browser is told about its account: the name it signs in with, the display name,
 // and whether it is the admin (who manages the members, members.go).
 func (s *Server) me(user string) map[string]any {
-	return map[string]any{"user": s.store.Name(user), "display": s.store.Display(user), "admin": s.store.IsAdmin(user)}
+	me := map[string]any{"user": s.store.Name(user), "display": s.store.Display(user), "admin": s.store.IsAdmin(user)}
+	if s.mcp != nil {
+		me["remote_mcp"] = s.mcp.resource
+	}
+	return me
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -81,8 +85,12 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("server: %s changed the password from %s", user, clientIP(r))
 	if body.Others {
-		removed := s.store.RemoveBrowsersExcept(user, browserOf(r))
-		s.dropBrowsers(removed)
+		removed, profiles, err := s.store.RemoveBrowsersExcept(user, browserOf(r))
+		s.dropBrowsers(removed, profiles)
+		if err != nil {
+			storeError(w, err)
+			return
+		}
 		log.Printf("server: %s signed out %d other browsers", user, len(removed))
 	}
 	w.WriteHeader(http.StatusNoContent)

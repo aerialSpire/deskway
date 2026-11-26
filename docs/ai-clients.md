@@ -52,6 +52,19 @@ uses `$SHELL -l`. The default shell is `/bin/sh` when `SHELL` is unset.
 To set up the client by hand instead, open **Connect by hand, without the prompt** in the same
 window. It lists the download for each system and the commands described below.
 
+## Connect a remote application
+
+If **Add an AI client** shows an MCP server address, give that HTTPS address to the
+application. It opens Deskway in your browser. Sign in on a trusted browser, check the
+application name and the callback host, then approve or cancel there. You can close the page
+if you decide to stop while signing in. The application can use every computer on your account
+where AI control is allowed.
+
+Each connected application appears once as **Remote application** in **My devices**, even if
+you sign in to the same application on several devices. Remove it there to end all its sign-ins.
+An account can connect up to 32 remote applications. A self-hosted server administrator can
+enable this option as described in [Self-hosting](self-hosting.md#remote-mcp).
+
 ## Manual setup
 
 Download the file for your system from the server (the **Add an AI client** window lists the
@@ -144,7 +157,8 @@ The gateway writes one readiness line to stderr when it begins serving HTTP. The
 `Gateway listening at http://IP:PORT/mcp` for TCP, with the actual bound address and port, or
 `Gateway listening at unix:PATH` for a Unix socket. A startup failure exits nonzero with an
 error on stderr. If `deskway logout` clears the profile sign-in or the owned proxy cannot renew
-it, the gateway releases its links and exits nonzero with an error on stderr. After a forced
+it, the gateway releases its links and reports the error on stderr. It exits with status 3
+when the sign-in is gone. After a forced
 exit, an open AI seat clears when the computer detects the lost link.
 
 The gateway serves MCP `2025-06-18` and `2025-11-25` with the initialization handshake and

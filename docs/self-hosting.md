@@ -330,6 +330,32 @@ Set these flags on the `ExecStart` line of the unit.
 | `-stun` | | Comma-separated STUN URLs to hand out when TURN is off |
 | `-clients` | `clients` beside the state file | Folder of AI client programs |
 | `-fetch-clients` | `true` | Fetch missing AI client programs from the server's GitHub release. Use `-fetch-clients=false` to disable outbound fetching |
+| `-remote-mcp` | off | Let approved remote applications connect over HTTPS at `/mcp` |
+| `-mcp-public-url` | inferred from HTTPS configuration where possible | Public HTTPS origin for remote MCP, for example `https://desk.example.net` |
+
+### Remote MCP
+
+Remote MCP requires a Linux x64 or ARM64 server. Install the matching current Deskway AI
+client program in the AI client downloads directory and give the server user execute
+permission. The program needs its native shared libraries and the system TLS trust store.
+Startup checks that the program is present and runs. The published server container has no
+shared libraries and cannot run it.
+
+Add `-remote-mcp` to the server command. If a reverse proxy terminates HTTPS, or the
+server cannot infer its public origin from its domain or certificate, also set
+`-mcp-public-url https://desk.example.net`. The proxy must forward requests to the OAuth
+and MCP paths and set `X-Forwarded-Proto: https`. The server's AI client must be able to
+reach and verify that HTTPS origin for sign-in and signaling.
+
+The server allows 16 pending authorizations per address and 256 in total, 32 unused client
+registrations per address and 1,024 registrations in total, and 32 grants per account.
+A registration with no live grant expires after 24 hours without use. The MCP endpoint allows
+240 requests per minute per authenticated grant and per address for unauthenticated callers.
+
+The systemd unit already permits executing the client from `/var/lib/deskway`, writing
+private profiles there, and using UDP, TCP, and Unix sockets. With the option enabled,
+the data directory and its backups hold approved AI device keys and must be protected
+accordingly. See [Security](security.md#remote-applications-through-the-deskway-server).
 
 ### Your own certificate
 
@@ -351,6 +377,8 @@ Deskway can run behind it, with the following limitations:
 - Deskway sees every request as coming from the proxy. Approval prompts show the proxy's address
   instead of the device's, and the limit on failed password attempts applies to everyone
   together, so repeated wrong passwords from one person can lock others out for a while.
+- MCP limits based on caller addresses use the proxy's socket address because Deskway does
+  not use forwarded client address headers.
 - With the plain HTTP listener behind the proxy, the relay still uses ports 3478 and 49160–49359
   directly. TURN over TLS on the HTTPS port requires Deskway to terminate TLS.
 

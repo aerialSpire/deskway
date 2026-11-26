@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -160,13 +161,27 @@ func TestTURNAndHTTPSShareTheTLSListener(t *testing.T) {
 		t.Fatalf("unexpected relayed address %s", got)
 	}
 
-	for _, major := range []int{1, 2} {
+	for _, test := range []struct {
+		major int
+		alpn  []string
+	}{{1, nil}, {1, []string{"http/1.1"}}, {2, []string{"h2", "http/1.1"}}} {
+		major := test.major
 		transport := &http.Transport{TLSClientConfig: clientTLS.Clone(), ForceAttemptHTTP2: major == 2}
+		if major == 1 {
+			transport.DialTLSContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+				config := clientTLS.Clone()
+				config.NextProtos = test.alpn
+				return tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, network, addr, config)
+			}
+		}
 		defer transport.CloseIdleConnections()
 		httpClient := &http.Client{Transport: transport, Timeout: 2 * time.Second}
 		resp, err := httpClient.Get("https://" + addr)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if test.alpn == nil && resp.TLS.NegotiatedProtocol != "" {
+			t.Fatal("the no-ALPN request negotiated", resp.TLS.NegotiatedProtocol)
 		}
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()

@@ -72,12 +72,12 @@ func (s *Server) handleMemberReset(w http.ResponseWriter, r *http.Request) {
 // token gone when they connect again, know they were removed.
 func (s *Server) handleMemberRemove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	browsers, computers, err := s.store.RemoveMember(id)
+	browsers, computers, profiles, err := s.store.RemoveMember(id)
 	if err != nil {
 		storeError(w, err)
 		return
 	}
-	s.dropBrowsers(browsers)
+	s.dropBrowsers(browsers, profiles)
 	for c := range computers {
 		s.dropComputer(c)
 	}

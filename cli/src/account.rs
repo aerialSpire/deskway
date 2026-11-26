@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use wire::crypto::{hex, random, sha256};
 use wire::challenge::key_code;
 use wire::types::Role;
 
 use crate::keys::DeviceKey;
-use crate::store::Account;
+use crate::store::{Account, SignInLost};
 
 fn agent() -> Result<ureq::Agent> {
     let tls = native_tls::TlsConnector::new().context("TLS")?;
@@ -89,7 +90,35 @@ pub fn renew(a: &mut Account) -> Result<()> {
     let key = DeviceKey::load_or_create()?;
     match ask(a, &agent()?, &key, true)?.status() {
         204 => a.save_renewal(&saved),
+        401 => Err(SignInLost("signing in again was refused (401): run `deskway login` again").into()),
         s => bail!("signing in again was refused ({s}): run `deskway login` again"),
+    }
+}
+
+fn device(key: &DeviceKey, name: &str) -> Value {
+    json!({ "cred": key.cred, "alg": -7, "key": key.spki(), "name": name, "role": "ai" })
+}
+
+/// Prepares a fresh profile for the server's existing browser endorsement. The
+/// public key and cookie hash identify the pending device; the cookie stays here.
+pub fn prepare(server: &str, user: &str, name: &str) -> Result<Value> {
+    let key = DeviceKey::load_or_create()?;
+    let browser = hex(&random::<32>());
+    let id = hex(&sha256(browser.as_bytes()));
+    Account { server: server.into(), user: user.into(), name: name.into(), browser, ..Account::default() }.save()?;
+    Ok(json!({ "id": id, "device": device(&key, name) }))
+}
+
+/// Completes a prepared profile through the approved AI client's signed login.
+pub fn finish_prepared() -> Result<()> {
+    let mut a = Account::load()?;
+    if a.server.is_empty() || a.user.is_empty() || a.browser.is_empty() {
+        bail!("no prepared sign-in");
+    }
+    let key = DeviceKey::load_or_create()?;
+    match ask(&mut a, &agent()?, &key, true)?.status() {
+        204 => a.save(),
+        status => bail!("the prepared sign-in was refused ({status})"),
     }
 }
 
@@ -117,8 +146,7 @@ pub fn login(server: &str, user: &str, name: &str, shown: impl Fn(&str)) -> Resu
         s => bail!("the server answered {s}"),
     }
     let mine = key_code(Role::Ai, &key.spki());
-    let device = json!({ "cred": key.cred, "alg": -7, "key": key.spki(), "name": name, "role": "ai" });
-    let r = call(&mut a, http.post(&format!("{server}/api/login/device")), Some(device))?;
+    let r = call(&mut a, http.post(&format!("{server}/api/login/device")), Some(device(&key, name)))?;
     let theirs = r.into_json::<Value>().ok().and_then(|v| v["code"].as_str().map(str::to_string)).unwrap_or_default();
     if theirs != mine {
         bail!("the server shows other digits than this device ({theirs} / {mine}): stopped, it may not be your server");

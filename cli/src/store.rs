@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,15 @@ fn write<T: Serialize>(dir: &Path, name: &str, v: &T) -> Result<()> {
 }
 
 const ACCOUNT_FILE: &str = "account.json";
+
+#[derive(Debug)]
+pub struct SignInLost(pub &'static str);
+
+impl std::fmt::Display for SignInLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.0) }
+}
+
+impl std::error::Error for SignInLost {}
 
 fn lock_account(dir: &Path) -> Result<File> {
     // The lock stays on the same file across atomic replacements of the account.
@@ -108,10 +117,10 @@ impl Account {
     /// Checks the signed-in device even when its session cookie has changed.
     pub fn check_sign_in(&self, saved: &Self) -> Result<()> {
         if !saved.signed_in() {
-            bail!("the profile was signed out");
+            return Err(SignInLost("the profile was signed out").into());
         }
         if self.server != saved.server || self.user != saved.user || self.browser != saved.browser {
-            bail!("the profile sign-in changed");
+            return Err(SignInLost("the profile sign-in changed").into());
         }
         Ok(())
     }

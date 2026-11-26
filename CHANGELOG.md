@@ -8,6 +8,8 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Added
 
+- Connect remote applications over MCP on an enabled Deskway server, approve independent sign-ins in your browser, and end all sign-ins for an application in My devices.
+
 - Serve a Deskway AI profile over MCP Streamable HTTP with `deskway gateway`, behind an authenticating HTTPS server.
   Gateway error messages are in English.
 - Open a Linux computer's terminal from the browser, with the same on-screen keyboard and takeover controls as a desktop session.

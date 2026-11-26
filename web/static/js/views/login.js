@@ -12,6 +12,8 @@ import { state, setView, currentSession } from '../state.js';
 import { closeDialogs } from '../dialogs.js';
 import { ownComputer } from '../windows.js';
 import { languagePicker, topbar, heading, codeBox } from './common.js';
+import { mcpRequest } from '../mcp-approval.js';
+import { mcpSignInNotice } from './mcp-approval.js';
 
 const signIn = browserSignIn({
   // Not through api(): a 401 here is the answer asked for.
@@ -33,6 +35,7 @@ export async function start() {
   if (res.status === 428) { showChoose(await res.json()); return; }
   if (!res.ok) { showUnreachable(); return; }
   state.me = await res.json();
+  if (mcpRequest(location)) { setView('mcp-approval'); return; }
   state.devicesLoaded = false;
   socket.connect();
   // A computer's own window shows that computer (windows.js).
@@ -82,7 +85,7 @@ export function showLogin() {
     h('label', {}, t('login.user'), user),
     h('label', {}, t('login.password'), pass)),
   error,
-  submit);
+  submit, mcpSignInNotice());
   // A new language redraws the page, keeping the account name already typed.
   const redraw = () => {
     const typed = user.value;
@@ -158,6 +161,7 @@ function showWaiting(serverCode, userName, password) {
     onclick: () => { setup.hidden = false; toggle.hidden = true; input.focus(); },
   }, t('wait.noOther'));
   $app.replaceChildren(h('div', { class: 'page single' }, topbar(), heading(t('wait.title')), h('div', { class: 'form' },
+    mcpSignInNotice(),
     step,
     error,
     toggle,

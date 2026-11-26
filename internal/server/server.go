@@ -40,6 +40,7 @@ type Server struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	programs *clientPrograms
+	mcp      *remoteMCP
 	sessions *Sessions
 
 	mu       sync.Mutex
@@ -130,6 +131,7 @@ func New(store *Store, turn TURNConfig, stun []string, web fs.FS) *Server {
 // Call it after the HTTP server stops accepting connections.
 func (s *Server) Shutdown() {
 	s.cancel()
+	s.StopMCP()
 	s.mu.Lock()
 	var all []*conn
 	for _, c := range s.hosts {
@@ -188,6 +190,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/host/leave", s.handleLeave)
 	mux.HandleFunc("GET /ws/client", s.requireClient(s.handleClientWS))
 	mux.HandleFunc("GET /ws/host", s.handleHostWS)
+	if s.mcp != nil {
+		s.registerMCP(mux)
+	}
 	mux.Handle("GET /", http.FileServerFS(s.web))
 	return securityHeaders(mux)
 }

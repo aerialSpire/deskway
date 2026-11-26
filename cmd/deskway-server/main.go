@@ -54,6 +54,8 @@ func main() {
 		dataPath  = flag.String("data", "deskway-data/state.json", "state file")
 		clients   = flag.String("clients", "", "folder of the AI client programs to hand out (default: clients beside the state file)")
 		fetch     = flag.Bool("fetch-clients", true, "fetch missing AI client programs from this server's GitHub release")
+		remoteMCP = flag.Bool("remote-mcp", false, "allow applications to connect to this server over MCP with OAuth")
+		mcpOrigin = flag.String("mcp-public-url", "", "public HTTPS origin for remote MCP when the server cannot infer it")
 		domain    = flag.String("domain", "", "domain name; gets a Let's Encrypt certificate automatically (listen on :443)")
 		tlsCert   = flag.String("tls-cert", "", "TLS certificate file")
 		tlsKey    = flag.String("tls-key", "", "TLS key file")
@@ -145,6 +147,25 @@ func main() {
 		*clients = filepath.Join(filepath.Dir(*dataPath), "clients")
 	}
 	s.ServeClients(*clients, *fetch)
+	if *remoteMCP {
+		origin := *mcpOrigin
+		if origin == "" && tlsConfig != nil {
+			host := *domain
+			if host == "" {
+				host, _ = turnTLSHost(tlsConfig.Certificates[0], *turnHost)
+			}
+			_, port, _ := net.SplitHostPort(*listen)
+			if host != "" && port != "" && port != "0" {
+				if port != "443" && port != "https" {
+					host = net.JoinHostPort(host, port)
+				}
+				origin = "https://" + host
+			}
+		}
+		if err := s.EnableRemoteMCP(origin); err != nil {
+			log.Fatal(err)
+		}
+	}
 	srv := &http.Server{
 		Addr:              *listen,
 		TLSConfig:         tlsConfig,
@@ -158,6 +179,7 @@ func main() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
+		s.StopMCP()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)

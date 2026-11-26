@@ -13,6 +13,7 @@ import { renderAccount } from './views/account.js';
 import { renderMembers } from './views/members.js';
 import { renderRelays } from './views/relays.js';
 import { renderAiClient } from './views/ai-client.js';
+import { renderMcpApproval } from './views/mcp-approval.js';
 import { showNextApproval } from './views/approvals.js';
 import { onPairReply, offerQrPair, takePairLink } from './views/pairing.js';
 import { openSession, startOwnWindow } from './views/takeover.js';
@@ -31,6 +32,7 @@ registerPage('account', renderAccount);
 registerPage('members', renderMembers);
 registerPage('relays', renderRelays);
 registerPage('aiclient', renderAiClient);
+registerPage('mcp-approval', renderMcpApproval);
 onUnauthorized(showLogin);
 onMustChoose(showChoose);
 // A request to approve waits while another dialog is open.
