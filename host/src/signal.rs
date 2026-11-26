@@ -25,7 +25,7 @@ use crate::auth::{AiState, Trust};
 use crate::config::Config;
 use crate::display::DisplayInfo;
 use crate::mcp::{Facts, SharedFacts};
-use crate::platform::{Desk, DeskParams, DesktopFeatures, Features, Platform, PlatformEvent, Replies};
+use crate::platform::{BrowserSession, Desk, DeskParams, DesktopFeatures, Features, OpenPty, Platform, PlatformEvent, Replies};
 use wire::control::Control as Message;
 use wire::signal::Signal as Wire;
 use wire::types::{self as types, Reason};
@@ -246,6 +246,7 @@ pub struct Params {
     pub cfg: Config,
     pub view_only: bool,
     pub desktop: Option<DesktopParams>,
+    pub terminal: Option<OpenPty>,
     pub notify: Notifier,
     /// Where the controlling browser's clipboard switch is saved.
     pub settings: Arc<Settings>,
@@ -268,6 +269,7 @@ struct Host {
     problem: Option<String>,
     quit: bool,
     desktop: Option<Desktop>,
+    terminal: Option<OpenPty>,
     out_tx: Sender<String>,
     updates_tx: Sender<SessionUpdate>,
     /// The sessions on the two seats (their handles feed the session threads).
@@ -299,7 +301,7 @@ struct Host {
 
 impl Host {
     fn features(&self) -> Features {
-        Features { desktop: self.desktop.as_ref().map(|d| d.features), work: self.workspace.is_some(), view_only: self.view_only }
+        Features { desktop: self.desktop.as_ref().map(|d| d.features), terminal: self.terminal, work: self.workspace.is_some(), view_only: self.view_only }
     }
 
     fn hello(&self) -> Wire {
@@ -436,7 +438,9 @@ impl Host {
         // The nonce issued for this session is used up by this offer, whatever its fate.
         let nonce = m["auth"]["nonce"].as_str().unwrap_or_default().to_string();
         let nonce_ok = self.nonces.take(&session, &nonce, Instant::now());
-        if self.desktop.as_ref().is_some_and(|d| !(d.can_host)()) {
+        let terminal_sdp = session::terminal::data_only(&sdp);
+        let permissions = self.desktop.as_ref().is_some_and(|d| !(d.can_host)());
+        if permissions && !terminal_sdp {
             eprintln!("session refused: this computer cannot host one now");
             return self.bye(&session, Reason::Permissions);
         }
@@ -455,10 +459,18 @@ impl Host {
             }
         };
         let seat = Seat::of(verified.role);
-        if seat == Seat::Desk && features.desktop.is_none() {
-            return self.bye(&session, Reason::NoDesktop);
-        }
+        let browser = if seat == Seat::Desk {
+            match features.browser_session(terminal_sdp) {
+                Ok(mode) => Some(mode),
+                Err(reason) => return self.bye(&session, reason),
+            }
+        } else {
+            None
+        };
         if seat == Seat::Ai {
+            if permissions {
+                return self.bye(&session, Reason::Permissions);
+            }
             // An AI client only while a browser of the account allows AI here, and not stopped;
             // never taking over, and never with media.
             if !matches!(trust.ai_state(), AiState::On { .. }) {
@@ -489,9 +501,15 @@ impl Host {
         // Issued after a takeover revoked the previous controller's tokens: the same device
         // taking over from itself keeps this one. An AI client signs without asking anyone, so
         // it gets no resume token.
-        let greeting = match seat {
-            Seat::Desk => vec![Message::Hello { version: wire::PROTOCOL_VERSION, caps: features.desk_caps() }, trust.issue_resume(&verified)],
-            Seat::Ai => vec![session::ai::hello()],
+        let greeting = match browser {
+            Some(mode) => {
+                let caps = match mode {
+                    BrowserSession::Desktop(_) => features.desk_caps(),
+                    BrowserSession::Terminal(_) => vec![wire::caps::TERMINAL.into()],
+                };
+                vec![Message::Hello { version: wire::PROTOCOL_VERSION, caps }, trust.issue_resume(&verified)]
+            }
+            None => vec![session::ai::hello()],
         };
         let sign = trust.answer_signer(&session);
         let stun: Vec<String> = m["ice"]
@@ -504,10 +522,10 @@ impl Host {
             .map(String::from)
             .collect();
         let params = session::Params { session: session.clone(), sdp: sdp.clone(), stun, turn: peer::turn::servers(&m["ice"]), out: self.out_tx.clone(), updates: self.updates_tx.clone(), sign, greeting };
-        let tx = match seat {
-            Seat::Desk => {
+        let tx = match browser {
+            Some(BrowserSession::Desktop(features)) => {
                 let desktop = self.desktop.as_ref().expect("a desk seat was admitted");
-                let tx = (desktop.features.spawn)(params, DeskParams {
+                let tx = (features.spawn)(params, DeskParams {
                     session: session.clone(),
                     offer: sdp,
                     view: serde_json::from_value(m["view"].clone()).ok(),
@@ -520,7 +538,11 @@ impl Host {
                 self.note = None;
                 tx
             }
-            Seat::Ai => {
+            Some(BrowserSession::Terminal(open)) => {
+                let name = name.clone();
+                session::spawn(params, |_| session::terminal::Terminal::new(name, open))
+            }
+            None => {
                 let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };
                 let tunnels = crate::tools::tunnel::Allowed::default();
                 let platform = self.desktop.as_ref().map(|d| d.platform.clone());
@@ -539,7 +561,9 @@ impl Host {
                 session::spawn(params, move |own| session::ai::Ai::new(id, platform, crate::mcp::spawn(features, gate, ctx, own.clone()), session::ai::IDLE, tunnels, own))
             }
         };
-        eprintln!("session started by {name} ({seat:?} seat)");
+        if !matches!(browser, Some(BrowserSession::Terminal(_))) {
+            eprintln!("session started by {name} ({seat:?} seat)");
+        }
         let user = m["user"].as_str().unwrap_or_default().to_string();
         // Holding the seat, still connecting: the status names it so from now on.
         self.sessions.of_mut(seat).start(Entry { id: session, name, user, controller: verified.controller.clone(), since: crate::auth::unix_now(), handle: tx });
@@ -933,17 +957,21 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Que
             tungstenite::Error::Io(ref io) if io.kind() == ErrorKind::WouldBlock => Ok(()),
             e => Err(e),
         })?;
-        if host.quit && Seat::BOTH.iter().all(|s| host.sessions.of(*s).current().is_none()) {
+        if host.quit && !host.has_sessions() {
             return Ok(());
         }
     }
 }
 
 impl Host {
+    fn has_sessions(&self) -> bool {
+        !self.replaced.is_empty() || Seat::BOTH.iter().any(|s| self.sessions.of(*s).current().is_some())
+    }
+
     /// The host as it starts: offline, nobody in control, with the trust store of `cfg`'s
     /// folder (None refuses every offer).
     fn new(p: Params, trust: Option<Trust>, control: Receiver<Control>) -> (Host, Queues) {
-        let Params { cfg, view_only, desktop, notify, settings, workspace, admin } = p;
+        let Params { cfg, view_only, desktop, terminal, notify, settings, workspace, admin } = p;
         let (out_tx, out) = channel();
         let (updates_tx, updates) = channel();
         let (share_tx, share) = channel();
@@ -963,6 +991,7 @@ impl Host {
             problem: None,
             quit: false,
             desktop,
+            terminal,
             out_tx,
             updates_tx,
             sessions: Seats::default(),
@@ -1032,7 +1061,7 @@ pub fn run(p: Params, control: Receiver<Control>) {
             match q.control.recv_timeout(left.min(Duration::from_millis(200))) {
                 Ok(c) => host.on_control(c),
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => host.quit = true,
+                Err(RecvTimeoutError::Disconnected) => host.on_control(Control::Quit),
             }
             q.drain_local(&mut host);
             // Displays and notes still count offline; thumbnails have nowhere to go.
@@ -1043,6 +1072,11 @@ pub fn run(p: Params, control: Receiver<Control>) {
         if !host.waiting {
             delay = (delay * 2).min(Duration::from_secs(30));
         }
+    }
+    // Without signaling, still wait for session-owned resources to be released before exit.
+    while host.has_sessions() {
+        let Ok(update) = q.updates.recv() else { break };
+        host.on_update(update);
     }
 }
 
@@ -1096,7 +1130,7 @@ mod tests {
             let trust = trust.then(|| Trust::open(dir.clone(), &cfg.id, &cfg.server).unwrap());
             let desktop = features.desktop.map(|features| DesktopParams { features, platform, events, can_host: Box::new(move || can_host) });
             let workspace = features.work.then(|| Arc::new(crate::workspace::Local::default()) as Arc<dyn crate::workspace::Workspace>);
-            let p = Params { cfg, view_only: features.view_only, desktop, notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
+            let p = Params { cfg, view_only: features.view_only, desktop, terminal: features.terminal, notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
             Test { host, q, shown, dir, calls }
         }
@@ -1189,6 +1223,11 @@ mod tests {
 
     const PHONE: &str = "UEhPTkU";
 
+    const TERMINAL_SDP: &str = concat!(
+        "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\n",
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sctp-port:5000\r\n",
+    );
+
     fn ended(rx: &Receiver<SessionEvent>) -> Option<End> {
         match rx.try_recv() {
             Ok(SessionEvent::End(end)) => Some(end),
@@ -1218,8 +1257,8 @@ mod tests {
     fn hello_and_desk_admission_follow_the_feature_set() {
         let desktop = crate::platform::TEST_DESKTOP;
         for (case, features, refusal) in [
-            ("desktop", Features { desktop: Some(desktop), work: true, view_only: false }, None),
-            ("view-only", Features { desktop: Some(desktop), work: true, view_only: true }, None),
+            ("desktop", Features { desktop: Some(desktop), work: true, ..Features::default() }, None),
+            ("view-only", Features { desktop: Some(desktop), work: true, view_only: true, ..Features::default() }, None),
             ("base", Features::default(), Some("no_desktop")),
             ("headless", Features { work: true, ..Features::default() }, Some("no_desktop")),
         ] {
@@ -1242,6 +1281,55 @@ mod tests {
                 assert!(t.host.sessions.of(Seat::Desk).current().is_none());
             } else {
                 assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "desk");
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_offers_use_the_desk_seat_and_the_signed_device_policy() {
+        fn open_unexpected(_: u16, _: u16) -> std::io::Result<Box<dyn crate::platform::Pty>> {
+            panic!("admission alone must not start a shell");
+        }
+        use base64::Engine;
+        use p256::ecdsa::signature::Signer;
+        assert!(session::terminal::data_only(TERMINAL_SDP));
+        for (case, features, cap) in [
+            ("terminal-desktop", Features { desktop: Some(crate::platform::TEST_DESKTOP), ..Features::default() }, false),
+            ("terminal-headless", Features { work: true, ..Features::default() }, false),
+            ("terminal-linux", Features { terminal: Some(open_unexpected), work: true, ..Features::default() }, true),
+        ] {
+            let mut t = Test::with_features(case, true, true, features);
+            let Wire::Hello { caps, .. } = t.host.hello() else { panic!("expected hello") };
+            assert_eq!(caps.iter().any(|c| c == wire::caps::TERMINAL), cap);
+            let phone = t.pair_phone();
+            let off: p256::ecdsa::Signature = phone.sign(&wire::crypto::sha256(wire::challenge::policy_v1(false, 5).as_bytes()));
+            let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(off.to_bytes());
+            for (id, sdp) in [("unsigned-picture", "v=0"), ("unsigned-terminal", TERMINAL_SDP)] {
+                t.host.on_message(&json!({ "type": "offer", "session": id, "sdp": sdp }).to_string());
+                assert_eq!(t.sent()[0]["reason"], "unpaired");
+            }
+            t.host.on_message(&json!({
+                "type": "devlog", "auth": [{ "op": "policy", "keys": false, "ts": 5, "by": PHONE, "sig": sig }],
+            }).to_string());
+            t.sent();
+            if cap {
+                assert_eq!(t.signed_offer(&phone, "picture", false)[0]["reason"], "no_desktop");
+                let rx = t.seated(Seat::Desk, "desk", PHONE);
+                let offer = t.offer_from(&phone, PHONE, "terminal", false, TERMINAL_SDP);
+                assert_eq!(offer[0]["reason"], "busy");
+                t.offer_from(&phone, PHONE, "terminal", true, TERMINAL_SDP);
+                assert_eq!(reason(&rx), Some(Reason::Taken));
+                assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "terminal");
+                t.host.on_ended("terminal");
+            } else {
+                let offer = t.offer_from(&phone, PHONE, "terminal", false, TERMINAL_SDP);
+                assert_eq!(offer[0]["reason"], "no_terminal");
+            }
+            t.host.on_message(&json!({ "type": "offer", "session": "password", "sdp": TERMINAL_SDP }).to_string());
+            if cap {
+                assert_eq!(t.host.sessions.of(Seat::Desk).current().unwrap().id, "password");
+            } else {
+                assert_eq!(t.sent().last().unwrap()["reason"], "no_terminal");
             }
         }
     }

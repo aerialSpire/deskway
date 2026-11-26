@@ -1,5 +1,5 @@
-// Keys from a physical keyboard on the stage. Keys travel as positions (`KeyboardEvent.code`),
-// exactly as pressed: nothing is remapped, and no key (paste keys included) means anything here.
+// Keys from a physical keyboard on the stage. Desktop keys travel as positions
+// including paste shortcuts. A terminal can leave keys to the browser.
 // Toggle keys and modifiers are synchronized with the computer (`sync`): after the session
 // starts and whenever the page comes back to the front, from the first event that carries
 // modifier state, and when an event exposes a missed modifier release.
@@ -14,7 +14,7 @@
 //
 // Public surface: pressed (physical keys held here), press(code, down), release(),
 // needSync(), noteEvent(e), macCommand (keys let go under Command get no keyup), box, bind(),
-// destroy().
+// destroy(). The sink sends input and supplies the input method and key label policies.
 import { h } from '../dom.js';
 import { CONTROLLER_MAC, store } from '../env.js';
 import { t } from '../i18n.js';
@@ -26,8 +26,9 @@ import { bindTextBox } from './text-box.js';
 const imeTakes = (e) => e.isComposing || (e.keyCode === 229 && !e.ctrlKey && !e.altKey && !e.metaKey);
 
 export class Keyboard {
-  constructor(s) {
+  constructor(s, sink) {
     this.s = s;
+    this.sink = sink;
     this.pressed = new Set();
     this.onscreen = new Set();
     this.physicalMods = eventModifiers();
@@ -51,10 +52,11 @@ export class Keyboard {
       }
       s.osk.noteHardwareKeyboard();
       if (document.activeElement === stage) this.focusBox();
+      if (this.sink.nativeKey?.(e)) return;
       this.hintSystemKeys(e);
       e.preventDefault();
       this.noteEvent(e);
-      this.changeKey(e.code, true, this.pressed, this.onscreen);
+      this.changeKey(e.code, true, this.pressed, this.onscreen, e);
     });
     stage.addEventListener('keyup', (e) => {
       if (!e.code) return;
@@ -125,7 +127,7 @@ export class Keyboard {
   // Not open yet: the next event with modifier state synchronizes instead.
   sendSync(e) {
     const m = syncMessage(e, this.onscreen);
-    if (!this.s.send(m)) {
+    if (!this.sink.send(m)) {
       this.syncPending = true;
       return;
     }
@@ -160,10 +162,10 @@ export class Keyboard {
     this.changeKey(code, down, this.onscreen, this.pressed);
   }
 
-  changeKey(code, down, own, other) {
+  changeKey(code, down, own, other, event) {
     if (down) own.add(code);
     else own.delete(code);
-    if (!other.has(code)) this.s.send({ t: Control.KEY, c: code, d: down });
+    if (!other.has(code)) this.sink.send({ t: Control.KEY, c: code, d: down }, event);
   }
 
   // The page lost the keyboard: the physical keys go up there, and so do modifiers a sync had
@@ -173,7 +175,7 @@ export class Keyboard {
     for (const code of this.pressed) this.changeKey(code, false, this.pressed, this.onscreen);
     for (const [name, codes] of Object.entries(MODIFIERS)) {
       if (!this.syncedMods[name] || codes.some((c) => this.onscreen.has(c))) continue;
-      for (const code of codes) this.s.send({ t: Control.KEY, c: code, d: false });
+      for (const code of codes) this.sink.send({ t: Control.KEY, c: code, d: false });
     }
     this.syncedMods = eventModifiers();
     this.physicalMods = eventModifiers();

@@ -20,6 +20,7 @@ use super::control::{CaptureState, Control, Owner};
 use super::file::File;
 use super::moves::Move;
 use super::signal::Signal;
+use super::terminal::Terminal;
 use super::types::*;
 
 // ---- samples from the definition ----
@@ -127,6 +128,17 @@ fn move_matches_the_definition() {
 #[test]
 fn file_matches_the_definition() {
     check_channel::<File>("file", File::TYPES, File::kind);
+}
+
+#[test]
+fn terminal_matches_the_definition() {
+    use super::terminal::{TerminalError, FRAME, INPUT_WINDOW, OUTPUT_WINDOW};
+    check_channel::<Terminal>("terminal", Terminal::TYPES, Terminal::kind);
+    let def = def();
+    assert_eq!(def["channels"]["terminal"]["max_bytes"], FRAME);
+    assert_eq!(def["channels"]["terminal"]["output_window_bytes"], OUTPUT_WINDOW);
+    assert_eq!(def["channels"]["terminal"]["input_window_bytes"], INPUT_WINDOW);
+    assert_eq!(TerminalError::VALUES, values(field(&def, "terminal", "error", "why")));
 }
 
 // ---- shared types and value sets ----

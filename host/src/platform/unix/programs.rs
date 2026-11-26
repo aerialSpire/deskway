@@ -55,37 +55,56 @@ fn open_pty(size: libc::winsize) -> io::Result<(File, OwnedFd)> {
         return Err(io::Error::last_os_error());
     }
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
-    if unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCSWINSZ as _, &size as *const libc::winsize) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    set_size(slave.as_raw_fd(), size)?;
     Ok((master, slave))
 }
 
-pub fn terminal(mut c: Command, cols: u16, rows: u16) -> io::Result<Started> {
-    let size = libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
-    let (master, slave) = open_pty(size)?;
-    c.stdin(Stdio::from(slave.try_clone()?)).stdout(Stdio::from(slave.try_clone()?)).stderr(Stdio::from(slave)).env("TERM", "xterm-256color");
-    // A session of its own with the terminal as its controlling one. Interactive shells
-    // allocate separate process groups for their foreground and background jobs.
-    unsafe {
-        c.pre_exec(|| {
-            if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-    let output = master.try_clone()?;
-    let child = c.spawn()?;
-    // The terminal's other end stays only with the program.
-    drop(c);
-    Ok(Started { program: Box::new(Terminal { child, master }), output: vec![Box::new(output)] })
+fn size(cols: u16, rows: u16) -> libc::winsize {
+    libc::winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 }
 }
 
-/// A program in a terminal, and the terminal's end that types into it.
-struct Terminal {
-    child: Child,
-    master: File,
+fn set_size(fd: libc::c_int, size: libc::winsize) -> io::Result<()> {
+    if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &size as *const libc::winsize) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+pub fn terminal(c: Command, cols: u16, rows: u16) -> io::Result<Started> {
+    Terminal::start(c, cols, rows, |master| master.try_clone()).map(|(program, output)| {
+        Started { program: Box::new(program), output: vec![Box::new(output)] }
+    })
+}
+
+/// A program in a terminal and its master descriptor.
+pub struct Terminal {
+    pub child: Child,
+    pub master: File,
+}
+
+impl Terminal {
+    pub fn start<T>(mut c: Command, cols: u16, rows: u16, configure: impl FnOnce(&File) -> io::Result<T>) -> io::Result<(Self, T)> {
+        let (master, slave) = open_pty(size(cols, rows))?;
+        let output = configure(&master)?;
+        c.stdin(Stdio::from(slave.try_clone()?)).stdout(Stdio::from(slave.try_clone()?)).stderr(Stdio::from(slave)).env("TERM", "xterm-256color");
+        // A session of its own with the terminal as its controlling one. Interactive shells
+        // allocate separate process groups for their foreground and background jobs.
+        unsafe {
+            c.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = c.spawn()?;
+        Ok((Self { child, master }, output))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
+        set_size(self.master.as_raw_fd(), size(cols, rows))
+    }
 }
 
 impl Program for Terminal {
@@ -111,15 +130,20 @@ impl Program for Terminal {
 /// tool call while its ID is in use here.
 fn kill_session(id: libc::pid_t) -> io::Result<()> {
     // End the shell and its own group first so it cannot start more work during the scan.
-    signal(-id)?;
+    let mut error = signal(-id).err();
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let jobs = crate::platform::session_members(id)?;
         if jobs.is_empty() {
-            return Ok(());
+            break;
         }
         for pid in jobs {
-            signal(pid)?;
+            if let Err(e) = signal(pid) {
+                error.get_or_insert(e);
+            }
+        }
+        if error.is_some() {
+            break;
         }
         // A job could have forked while the process list was being collected.
         if Instant::now() >= deadline {
@@ -127,6 +151,7 @@ fn kill_session(id: libc::pid_t) -> io::Result<()> {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    error.map_or(Ok(()), Err)
 }
 
 fn signal(pid: libc::pid_t) -> io::Result<()> {

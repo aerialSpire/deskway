@@ -44,7 +44,7 @@ if (channel) {
 const separate = () => store.get('deskway.windows') === '1';
 
 // Pressing computer `d`: its own window, when this device has them and this is not it.
-export function openWindow(d) {
+export function openWindow(d, terminal) {
   if (!separate() || d.id === ownComputer) return false;
   const mine = opened.get(d.id);
   if (mine && !mine.closed) {
@@ -54,7 +54,7 @@ export function openWindow(d) {
   if (channel && open.has(d.id)) {
     // Opened by another window: asked to come to the front. No answer, it is gone: opened anew
     // (still within the press, for the browser).
-    const timer = setTimeout(() => { waiting.delete(d.id); open.delete(d.id); openNew(d); }, ANSWER_MS);
+    const timer = setTimeout(() => { waiting.delete(d.id); open.delete(d.id); openNew(d, terminal); }, ANSWER_MS);
     waiting.set(d.id, () => {
       clearTimeout(timer);
       waiting.delete(d.id);
@@ -64,13 +64,14 @@ export function openWindow(d) {
     channel.postMessage({ t: 'front', id: d.id });
     return true;
   }
-  return openNew(d);
+  return openNew(d, terminal);
 }
 
 // False when the browser refused the window: the computer is then controlled here.
-function openNew(d) {
+function openNew(d, terminal) {
   const url = new URL(location.pathname, location.origin);
   url.searchParams.set('computer', d.id);
+  if (terminal) url.searchParams.set('terminal', '1');
   const w = window.open(url.href, `deskway-${d.id}`);
   if (w) opened.set(d.id, w);
   return !!w;

@@ -17,6 +17,7 @@
     { "name": "chars", "who": "host", "since": 2, "meaning": "The host resolves characters with modifiers through its own layout (kc)." },
     { "name": "capture", "who": "host", "since": 2, "meaning": "The host reports when nothing can be captured (capture)." },
     { "name": "desk", "who": "host", "since": 2, "meaning": "The host reports which input desktop is active (desk): lock screen, secure prompts." },
+    { "name": "terminal", "who": "host", "since": 4, "meaning": "The host offers a data-only browser terminal on its desk seat." },
     { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
     { "name": "relay-rtt", "who": "host", "since": 4, "meaning": "The host accepts relay-list on its signaling socket and reports UDP round-trip times." }
   ],
@@ -429,7 +430,7 @@
           "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), for attach, and for pairing.",
           "fields": {
             "session": { "type": "string", "optional": false, "meaning": "session id" },
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" },
             "controller": { "type": "Controller", "optional": true, "meaning": "busy: who holds the computer, as for the device list" }
@@ -626,7 +627,7 @@
           "meaning": "An end or refusal through the server: before the control channel opened, while it cannot carry it (recovering), and pairing refusals.",
           "fields": {
             "session": { "type": "string", "optional": false, "meaning": "session id" },
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with the control channel's end" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is the same device" },
             "holder": { "type": "Holder", "optional": true, "meaning": "busy: the session holding the computer" }
@@ -663,7 +664,7 @@
       ]
     },
     "control": {
-      "transport": "WebRTC data channel \"input\" (reliable, ordered; the host treats any label except file and move as this one), JSON text",
+      "transport": "Reliable, ordered WebRTC data channel input for the picture or control for the terminal; JSON text",
       "discriminator": "t",
       "messages": [
         {
@@ -686,7 +687,7 @@
           "type": "end", "status": "current", "since": 1, "directions": ["browser->host", "host->browser"],
           "meaning": "Ends the session, both ways. A closed control channel ends it too.",
           "fields": {
-            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with bye (left: the browser left; taken: another session took over; ended: ended at the computer; unpaired: this device was removed; failed: could not be established or recovered in time; ai_off: AI clients may not control this computer now, never allowed or stopped there; no_desktop: this host has no desk seat; idle: an AI session unused for 10 minutes)" },
+            "reason": { "type": "string", "enum": ["left", "taken", "ended", "busy", "failed", "gone", "offline", "auth", "unpaired", "forbidden", "permissions", "no_desktop", "no_terminal", "pair", "denied", "full", "ai_off", "idle"], "optional": false, "meaning": "why: the one reason list, shared with bye (left: the browser left; taken: another session took over; ended: ended at the computer; unpaired: this device was removed; failed: could not be established or recovered in time; ai_off: AI clients may not control this computer now, never allowed or stopped there; no_desktop: this host has no desktop; no_terminal: this host offers no terminal; idle: an AI session unused for 10 minutes)" },
             "by": { "type": "string", "optional": true, "meaning": "taken: the taker's device name" },
             "same": { "type": "boolean", "optional": true, "meaning": "taken: the taker is this same device (another page of this browser)" }
           }
@@ -977,6 +978,22 @@
             "why": { "type": "string", "enum": ["big", "locked", "io", "gone", "unsupported", "timeout", "size", "image"], "optional": false, "meaning": "big: over the limits; locked: the computer is locked; io; gone: nothing to send; unsupported: no transfers here; timeout: stalled 30 s; size: more bytes than announced; image: not a usable image" }
           }
         }
+      ]
+    },
+    "terminal": {
+      "transport": "WebRTC data channel terminal: reliable and ordered. Text messages contain JSON. Binary messages carry raw PTY input from the browser or raw PTY output from the host.",
+      "discriminator": "t",
+      "max_bytes": 16384,
+      "output_window_bytes": 131072,
+      "input_window_bytes": 65536,
+      "messages": [
+        {"type": "open", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Starts this session's one shell at the requested size.", "fields": {"rows": {"type": "integer", "optional": false, "meaning": "rows (1–65535)"}, "cols": {"type": "integer", "optional": false, "meaning": "columns (1–65535)"}}},
+        {"type": "opened", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "The shell started and can take input. Follows open and precedes output.", "fields": {}},
+        {"type": "resize", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Changes the shell's terminal size.", "fields": {"rows": {"type": "integer", "optional": false, "meaning": "rows (1–65535)"}, "cols": {"type": "integer", "optional": false, "meaning": "columns (1–65535)"}}},
+        {"type": "ack", "status": "current", "since": 4, "directions": ["browser->host", "host->browser"], "meaning": "Returns credit after the receiver consumes bytes: output processed by the emulator or input written to the PTY.", "fields": {"bytes": {"type": "integer", "optional": false, "meaning": "newly consumed bytes, between 1 and the remaining unacknowledged byte count"}}},
+        {"type": "close", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Ends the shell and its jobs.", "fields": {}},
+        {"type": "exit", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "The shell ended. All output precedes this message.", "fields": {"code": {"type": "integer", "optional": false, "meaning": "process exit code, or negative signal number"}}},
+        {"type": "error", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "The terminal failed and has closed.", "fields": {"why": {"type": "string", "enum": ["open", "io", "protocol"], "optional": false, "meaning": "open: could not start the shell; io: PTY I/O failed; protocol: invalid terminal message"}}}
       ]
     },
     "ipc": {

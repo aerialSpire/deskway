@@ -1,8 +1,9 @@
 //! The capabilities, seats and AI tools offered by this host.
+use std::io::{self, Read, Write};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use wire::types::View;
+use wire::types::{Reason, View};
 
 use super::Platform;
 use crate::session::{self, SessionEvent};
@@ -32,20 +33,46 @@ pub struct DesktopFeatures {
     pub ai_awake: fn(bool),
 }
 
+/// A live PTY with nonblocking I/O. Its owner ends the shell and its jobs by dropping it.
+pub trait Pty: Read + Write + Send {
+    fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()>;
+    fn exit(&mut self) -> io::Result<Option<i32>>;
+}
+
+pub type OpenPty = fn(u16, u16) -> io::Result<Box<dyn Pty>>;
+
+#[derive(Clone, Copy)]
+pub enum BrowserSession {
+    Desktop(DesktopFeatures),
+    Terminal(OpenPty),
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Features {
     pub desktop: Option<DesktopFeatures>,
+    pub terminal: Option<OpenPty>,
     pub work: bool,
     pub view_only: bool,
 }
 
 impl Features {
+    pub fn browser_session(self, data_only: bool) -> Result<BrowserSession, Reason> {
+        if data_only {
+            self.terminal.map(BrowserSession::Terminal).ok_or(Reason::NoTerminal)
+        } else {
+            self.desktop.map(BrowserSession::Desktop).ok_or(Reason::NoDesktop)
+        }
+    }
+
     pub fn desk_caps(self) -> Vec<String> {
         self.desktop.map_or_else(Vec::new, |desk| (desk.caps)(self.view_only))
     }
 
     pub fn signaling_caps(self) -> Vec<String> {
         let mut caps = self.desk_caps();
+        if self.terminal.is_some() {
+            caps.push(wire::caps::TERMINAL.into());
+        }
         caps.push(wire::caps::RELAY_RTT.into());
         caps
     }
@@ -88,7 +115,7 @@ mod tests {
         let network = ["tunnel"];
         let apps = ["windows", "window_act", "app_list", "app_open", "app_quit", "ui_tree", "ui_act"];
         let full = [&base[..], &screen, &work, &clipboard, &network, &apps].concat();
-        let desktop_host = DESKTOP.map(|desktop| (Features { desktop: Some(desktop), work: true, view_only: false }, full.clone()));
+        let desktop_host = DESKTOP.map(|desktop| (Features { desktop: Some(desktop), work: true, ..Features::default() }, full.clone()));
         let cases = [
             (Features::default(), base.to_vec()),
             (Features { work: true, ..Features::default() }, [&base[..], &work, &network].concat()),

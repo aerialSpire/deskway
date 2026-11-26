@@ -17,6 +17,7 @@ pub mod file;
 pub mod mcp;
 pub mod moves;
 pub mod signal;
+pub mod terminal;
 pub mod tools;
 pub mod types;
 
@@ -44,11 +45,12 @@ pub mod caps {
     pub const CHARS: &str = "chars";
     pub const CAPTURE: &str = "capture";
     pub const DESK: &str = "desk";
+    pub const TERMINAL: &str = "terminal";
     /// It takes AI clients (docs/architecture.md, "AI control").
     pub const AI: &str = "ai";
     pub const RELAY_RTT: &str = "relay-rtt";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, AI, RELAY_RTT];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, AI, RELAY_RTT];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of

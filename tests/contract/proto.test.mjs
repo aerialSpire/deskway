@@ -9,7 +9,7 @@ import * as proto from '../../web/static/js/proto.js';
 
 const def = JSON.parse(fs.readFileSync(fileURLToPath(new URL('../../proto/messages.json', import.meta.url)), 'utf8'));
 // The channels the browser speaks; signaling.host and ipc are the host's and the server's.
-const BROWSER_CHANNELS = ['signaling.browser', 'control', 'move', 'file'];
+const BROWSER_CHANNELS = ['signaling.browser', 'control', 'move', 'file', 'terminal'];
 const SHORT = { string: 's', integer: 'i', number: 'n', boolean: 'b', object: 'o', any: 'a' };
 
 // The definition's field, written as a proto.js spec.
@@ -71,10 +71,13 @@ test('channels, messages, directions and fields', () => {
 });
 
 test('type constants', () => {
-  const constants = { 'signaling.browser': proto.Signal, control: proto.Control, move: proto.Move, file: proto.FileMsg };
+  const constants = { 'signaling.browser': proto.Signal, control: proto.Control, move: proto.Move, file: proto.FileMsg, terminal: proto.TerminalMsg };
   for (const [name, c] of Object.entries(constants)) {
     assert.deepEqual(Object.values(c).sort(), def.channels[name].messages.map((m) => m.type).sort(), `${name} constants`);
   }
+  assert.equal(proto.TERMINAL_FRAME, def.channels.terminal.max_bytes);
+  assert.equal(proto.TERMINAL_OUTPUT_WINDOW, def.channels.terminal.output_window_bytes);
+  assert.equal(proto.TERMINAL_INPUT_WINDOW, def.channels.terminal.input_window_bytes);
 });
 
 test('the validator accepts what the definition allows and refuses the rest', () => {

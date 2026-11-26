@@ -1,8 +1,24 @@
 # Install Deskway Host on Linux
 
-A Linux computer in Deskway is a workspace for approved AI clients. They can run commands,
-work with files and open tunnels. The host has no screen, so there is nothing to see in the web
-client's desktop view. You approve the computer and manage its AI access in the browser.
+When the Linux computer is online, choose **Terminal** below the desktop notice on its page.
+A browser this computer trusts can use the host user's login shell, starting in that user's
+home directory. Type with a physical keyboard or choose **Keyboard** for Deskway's on-screen
+keyboard. Select **Input method** on that keyboard to use your device's input method.
+Paste into the terminal with your browser's Paste command or from the input-method box.
+When a shell or terminal application enables bracketed paste, it receives a multiline paste
+as one paste. On a Mac controller, Option can type characters from the local keyboard layout.
+Disconnecting or losing the session ends the shell and its jobs. Choose **Terminal** again
+to start a fresh shell. If another tab still holds the terminal, Deskway asks before taking over.
+The host records session start, end and PTY errors in its output, which systemd sends to the journal.
+The service runs headless.
+
+To use another browser, sign in there and approve its six-digit request from a browser the
+Linux computer already trusts. If you used the super password, choose **Sign out** for
+**This device** in **My devices**, then sign in again with the account password to request
+approval. See [Adding a device](security.md#adding-a-device).
+
+Approved AI clients can also run commands, work with files and open tunnels. You approve
+the computer and manage its AI access in the browser.
 
 ## What you need
 
@@ -13,8 +29,8 @@ client's desktop view. You approve the computer and manage its AI access in the 
 - A Deskway server address, the account's name and password, and a browser already signed in
   and approved for that account. See [Self-hosting](self-hosting.md) to run your own server.
 - Administrator access to install the service and a dedicated ordinary user with a home
-  directory to run it. An approved AI client can do what this user can do. Use an unprivileged
-  account and grant it sudo rights only if you intend AI clients to have those rights.
+  directory to run it. An approved browser or AI client can do what this user can do. Use
+  an unprivileged account and grant it sudo rights only if you intend to allow that access.
 
 ## 1. Download and verify
 

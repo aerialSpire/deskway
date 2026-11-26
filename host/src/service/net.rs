@@ -96,7 +96,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     };
     let workspace = Some(workspace);
     let desktop = Some(signal::DesktopParams { features: crate::platform::DESKTOP, platform, events: platform_events, can_host: Box::new(|| true) });
-    let params = signal::Params { cfg, view_only, desktop, notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
+    let params = signal::Params { cfg, view_only, desktop, terminal: None, notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
     signal::run(params, control_rx);
     Ok(())
 }

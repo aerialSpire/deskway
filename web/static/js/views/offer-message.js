@@ -1,0 +1,46 @@
+// What the desk seat's offer refusals and takeover show, independent of the dialog layer.
+export function takeoverMessage(c, terminal, t) {
+  if (c.device && c.connecting) return { action: 'replace' };
+  if (c.device) return { action: 'takeover', title: t('force.deviceTitle'), text: t('force.deviceText'), go: t('force.deviceGo') };
+  return {
+    action: 'takeover',
+    title: t(c.connecting ? 'force.accountConnecting' : 'force.account', { name: c.name }),
+    text: t(terminal ? 'terminal.takeoverText' : 'force.accountText'),
+    go: t('force.accountGo'),
+  };
+}
+
+export function offerMessage({ reason, by, same, controller, established, cause, via }, { terminal, headless, t, time }) {
+  const endedText = (desktop) => t(terminal ? 'terminal.ended' : desktop);
+  switch (reason) {
+    case 'failed':
+    case 'gone':
+      if (!established) return { action: 'retry', title: t('session.notConnected'), text: t('session.notConnectedText') };
+      if (cause === 'host') return { action: 'reconnect', title: t('session.offlineTitle'), text: endedText('session.offlineText') };
+      return { action: 'reconnect', title: t('session.failedTitle'), text: endedText('session.failedText') };
+    case 'offline':
+      return { action: 'reconnect', title: t('session.offlineTitle'), text: t(terminal ? 'terminal.offline' : 'session.offlineText') };
+    case 'ended':
+      // A server bye after establishment means the restarted computer no longer names the session.
+      if (via === 'bye' && established) return { action: 'reconnect', title: t('session.restartedTitle'), text: endedText('session.restartedText') };
+      return { title: t('session.endedTitle'), text: endedText('session.endedText') };
+    case 'busy': return takeoverMessage(controller, terminal, t);
+    case 'taken':
+      return {
+        action: 'takeBack',
+        title: same ? t('session.takenHereTitle') : t('session.takenTitle', { name: by || t('session.someone') }),
+        text: t(terminal ? 'terminal.taken' : 'session.takenText', { time: time() }),
+      };
+    case 'unpaired':
+      if (!headless) return { action: 'pair' };
+      return {
+        action: 'devices',
+        title: t('notAdded.untrustedTitle'),
+        text: t('notAdded.browserApproval', { devices: t('devices.title'), current: t('devices.tagThis'), signOut: t('devices.signOut') }),
+      };
+    case 'auth':
+      return { action: headless ? 'devices' : 'addAgain', title: t('session.authTitle'), text: t('session.authText') };
+    case 'no_terminal': return { title: t('terminal.unavailable') };
+    case 'permissions': return { title: t('session.permissionsTitle'), text: t('session.permissionsText') };
+  }
+}

@@ -2,7 +2,7 @@
 // with the device key, reconnecting with the resume token, switching displays, the pointer,
 // the "Keyboard" button, full screen and the toolbar there, and the video's numbers.
 // Leaves the session open on `h.a`.
-import { sleep, SCREENS, click, t, q, fixed } from './harness.mjs';
+import { sleep, SCREENS, click, t, q, fixed, lit } from './harness.mjs';
 import { MIN_VERSION } from '../../web/static/js/proto.js';
 
 // The video's size follows what the page shows and decodes (`view`): a phone gets no more than
@@ -67,6 +67,8 @@ export const area = {
     await a.until(`!!document.querySelector('.card')`, 'computer list');
     await a.eval(`document.querySelector('.card-open').click()`);
     await a.until(SCREENS, 'detail page');
+    h.check('Windows offers no terminal entry',
+      await a.eval(`![...document.querySelectorAll('[data-page="detail"] button')].some((b) => b.textContent === ${lit(t('terminal.label'))})`));
     h.check('card opens detail, not a session', await a.eval(`!document.querySelector('.session')`));
     // This test computer has two displays: the detail page draws them.
     await a.until(`document.querySelectorAll('.display-tile').length === 2`, 'display layout on the detail page', 15000);

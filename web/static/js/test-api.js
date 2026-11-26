@@ -16,7 +16,7 @@ const byId = (id) => state.devices.find((d) => d.id === id);
 const handles = new WeakMap();
 
 function sessionHandle(s) {
-  const v = s.video.el;
+  const v = s.video?.el;
   const c = s.connection;
   const real = { channel: null, send: null };
   const recording = [];
@@ -94,7 +94,7 @@ function sessionHandle(s) {
       get routeDot() { return s.toolbar.routeDot; },
       get cursor() { return s.pointer.img; },
       get stack() { return s.stack; },
-      get lockNote() { return s.lockNote; },
+      get lockNote() { return s.content.lockNote; },
       get displayBtn() { return s.displays.button; },
       get kbdBtn() { return s.osk.button; },
       get clipBtn() { return s.clip.ui.button; },

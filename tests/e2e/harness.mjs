@@ -140,27 +140,25 @@ export class Page {
 
   // Clicks the first `sel` whose text contains `text` (`exact`: is `text`). False when none.
   clickText(sel, text, { exact = false } = {}) {
-    const match = exact ? `e.textContent === ${JSON.stringify(text)}` : `e.textContent.includes(${JSON.stringify(text)})`;
-    return this.eval(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => ${match}); if (!b) return false; b.click(); return true; })()`);
+    const match = exact ? `e.textContent === ${lit(text)}` : `e.textContent.includes(${lit(text)})`;
+    return this.eval(`(() => { const b = [...document.querySelectorAll(${lit(sel)})].find((e) => ${match}); if (!b) return false; b.click(); return true; })()`);
   }
 
   metrics(width, height, mobile = false, scale = mobile ? 3 : 1) {
     return this.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile });
   }
 
-  // Layout screenshots hide all remote pixels, so no real screen content reaches the file:
-  // the video, the list thumbnails and every per-display preview. Any new picture of the remote
-  // screen must be added here before it can appear in a screenshot.
+  // Layout screenshots hide remote content: video, thumbnails, display previews and terminal.
   async shot(name, width, height) {
     // A tab in the background never finishes a screenshot.
     if (await this.eval('document.hidden')) await this.send('Page.bringToFront');
     await this.metrics(width, height, false, 1);
-    // Set directly on the elements: the page's CSP blocks injected style sheets.
-    const hidden = await this.eval(`(() => { const all = [...document.querySelectorAll('video, img[data-thumb], img[data-screen-thumb]')]; all.forEach((e) => { e.style.visibility = 'hidden'; }); return all.every((e) => getComputedStyle(e).visibility === 'hidden'); })()`);
+    const remote = 'video, img[data-thumb], img[data-screen-thumb], .terminal-surface';
+    const hidden = await this.eval(`(() => { const all = [...document.querySelectorAll(${lit(remote)})]; all.forEach((e) => { e.style.visibility = 'hidden'; }); return all.every((e) => getComputedStyle(e).visibility === 'hidden'); })()`);
     if (!hidden) throw new Error('could not hide remote pixels; refusing to take a screenshot');
     await sleep(200);
     const r = await this.send('Page.captureScreenshot', { format: 'png' });
-    await this.eval(`document.querySelectorAll('video, img[data-thumb], img[data-screen-thumb]').forEach((e) => { e.style.visibility = ''; })`);
+    await this.eval(`document.querySelectorAll(${lit(remote)}).forEach((e) => { e.style.visibility = ''; })`);
     if (this.h.opts.outDir) writeFileSync(join(this.h.opts.outDir, `${name}.png`), Buffer.from(r.result.data, 'base64'));
   }
 
@@ -226,11 +224,11 @@ const MODS = { ControlLeft: 2, ControlRight: 2, MetaLeft: 4, AltLeft: 1, ShiftLe
 const VK = { ControlLeft: 17, ControlRight: 17, MetaLeft: 91, ShiftLeft: 16, KeyA: 65, KeyC: 67, KeyV: 86, AltLeft: 18, Tab: 9 };
 export function keyboardOf(p) {
   const held = new Set();
-  const press = async (code, down) => {
+  const press = async (code, down, { key, windowsVirtualKeyCode = VK[code] } = {}) => {
     if (down) held.add(code); else held.delete(code);
     const modifiers = [...held].reduce((m, c) => m | (MODS[c] || 0), 0);
-    const key = { ControlLeft: 'Control', ControlRight: 'Control', MetaLeft: 'Meta', AltLeft: 'Alt', ShiftLeft: 'Shift', Tab: 'Tab' }[code] || code.slice(-1).toLowerCase();
-    await p.send('Input.dispatchKeyEvent', { type: down ? 'rawKeyDown' : 'keyUp', code, key, modifiers, windowsVirtualKeyCode: VK[code], location: code.endsWith('Right') ? 2 : code.endsWith('Left') ? 1 : 0 });
+    key ??= { ControlLeft: 'Control', ControlRight: 'Control', MetaLeft: 'Meta', AltLeft: 'Alt', ShiftLeft: 'Shift', Tab: 'Tab' }[code] || code.slice(-1).toLowerCase();
+    await p.send('Input.dispatchKeyEvent', { type: down ? 'rawKeyDown' : 'keyUp', code, key, modifiers, windowsVirtualKeyCode, location: code.endsWith('Right') ? 2 : code.endsWith('Left') ? 1 : 0 });
   };
   return { press, held };
 }
@@ -274,7 +272,7 @@ const PAIR_CODE = new RegExp(`(?:${LANGS.map((l) => escapeRe(HOST_TEXTS[l]['cli.
 // The sign-in page of `p`: the account name and password typed, then "Sign in".
 export const signIn = (p, { user, password }) => p.eval(`(() => {
   const [u, pw] = document.querySelectorAll('.login input');
-  u.value = ${JSON.stringify(user)}; pw.value = ${JSON.stringify(password)};
+  u.value = ${lit(user)}; pw.value = ${lit(password)};
   document.querySelector('.login button').click();
 })()`);
 
@@ -284,7 +282,7 @@ export async function nameThisDevice(p, name) {
   await p.until(`!!document.querySelector('.name-step input')`, 'the new device asks for its name');
   return p.eval(`(() => {
     const input = document.querySelector('.name-step input');
-    ${name ? `input.value = ${JSON.stringify(name)};` : ''}
+    ${name ? `input.value = ${lit(name)};` : ''}
     const given = input.value;
     document.querySelector('.name-step button').click();
     return given;
@@ -295,7 +293,7 @@ export async function nameThisDevice(p, name) {
 // then `superPassword` is typed and sent.
 export async function superIn(p, superPassword) {
   if (await p.eval(`document.querySelector('.setup').hidden`)) await p.clickText('button', t('wait.noOther'));
-  await p.eval(`(() => { document.querySelector('.setup input').value = ${JSON.stringify(superPassword)}; document.querySelector('.setup button').click(); })()`);
+  await p.eval(`(() => { document.querySelector('.setup input').value = ${lit(superPassword)}; document.querySelector('.setup button').click(); })()`);
 }
 
 // ---- test doubles in the page, for the session open on `p` ----
@@ -496,6 +494,7 @@ export class Harness {
     await sleep(300);
     const listed = await (await fetch(`${this.devtools}/json/list`)).json();
     const p = await Page.open(listed.find((x) => x.id === targetId), this);
+    p.targetId = targetId;
     p.context = browserContextId;
     this.pages.push(p);
     await p.send('Page.addScriptToEvaluateOnNewDocument', { source: startScript(lang) });

@@ -10,7 +10,7 @@
 //                                                  channel failing): the computer is told
 //   connection.state, connection.cause             connecting | active | recovering | ended;
 //                                                  why it is not active: network | host | server
-//   connection.channels                            { input, move, file }, once created
+//   connection.channels                            control as input, and the channels for its view
 //   connection.on(event, fn)                       'state' { state, cause }, 'channels',
 //                                                  'track' (the RTCTrackEvent), 'pinned' (first
 //                                                  answer from this computer: its key is kept),
@@ -41,10 +41,11 @@ const DROPS_TOKEN = new Set(['taken', 'ended', 'unpaired', 'auth', 'keyChanged',
 const OWN_REASONS = { keyChanged: 'auth', forged: 'auth' };
 
 export class Connection {
-  constructor({ id, device, force = false, deps }) {
+  constructor({ id, device, force = false, terminal = false, deps }) {
     this.id = id;
     this.device = device;
     this.force = !!force;
+    this.terminal = terminal;
     this.deps = deps;
     this.state = 'connecting';
     this.handlers = {};
@@ -108,10 +109,10 @@ export class Connection {
     if (this.ended) return;
     const pc = new this.deps.Peer({ iceServers: ice });
     this.pc = pc;
-    const input = pc.createDataChannel('input');
-    const move = pc.createDataChannel('move', { ordered: false, maxRetransmits: 0 });
-    const file = pc.createDataChannel('file');
-    this.channels = { input, move, file };
+    const input = pc.createDataChannel(this.terminal ? 'control' : 'input');
+    this.channels = this.terminal
+      ? { input, terminal: pc.createDataChannel('terminal') }
+      : { input, move: pc.createDataChannel('move', { ordered: false, maxRetransmits: 0 }), file: pc.createDataChannel('file') };
     this.emit('channels', this.channels);
     input.addEventListener('open', () => this.onChannelOpen());
     input.addEventListener('message', (e) => this.onControl(e.data));

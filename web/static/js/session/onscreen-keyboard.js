@@ -14,30 +14,18 @@
 // release(), layout(), setLayout(m) (the computer's key labels; until then, the labels of a US
 // keyboard).
 import { h, ICONS, keepEvents } from '../dom.js';
-import { store, buzz, orientation } from '../env.js';
+import { store, buzz } from '../env.js';
 import { t } from '../i18n.js';
 import { Control } from '../proto.js';
 import { layoutLabel } from './input-messages.js';
+import { KEYBOARD_ROWS } from './keyboard-layout.js';
 import { bindTextBox, resetBox, typeKey } from './text-box.js';
 import { draggable, savedPlace, savePlace } from './floating.js';
 import { keyboardArea } from './ime-viewport.js';
 
-// [label, code, label with Shift, width]. Laid out like a laptop's. A null label is a word,
-// looked up when the keyboard is drawn (`kb.key.<code>`).
-const letters = (row) => [...row].map((c) => [c, `Key${c}`]);
-const KEYBOARD_ROWS = [
-  [['Esc', 'Escape'], ...Array.from({ length: 12 }, (_, i) => [`F${i + 1}`, `F${i + 1}`]), ['Del', 'Delete']],
-  [['`', 'Backquote', '~'], ...[...'1234567890'].map((d, i) => [d, `Digit${d}`, '!@#$%^&*()'[i]]), ['-', 'Minus', '_'], ['=', 'Equal', '+'], ['⌫', 'Backspace', null, 1.8]],
-  [['Tab', 'Tab', null, 1.5], ...letters('QWERTYUIOP'), ['[', 'BracketLeft', '{'], [']', 'BracketRight', '}'], ['\\', 'Backslash', '|', 1.3]],
-  [['Caps', 'CapsLock', null, 1.8], ...letters('ASDFGHJKL'), [';', 'Semicolon', ':'], ["'", 'Quote', '"'], ['Enter', 'Enter', null, 2]],
-  [['Shift', 'ShiftLeft', null, 2.3], ...letters('ZXCVBNM'), [',', 'Comma', '<'], ['.', 'Period', '>'], ['/', 'Slash', '?'], ['Shift', 'ShiftRight', null, 1.5], ['↑', 'ArrowUp']],
-  [['Ctrl', 'ControlLeft', null, 1.3], ['Win', 'MetaLeft', null, 1.1], ['Alt', 'AltLeft', null, 1.1], [null, 'Space', null, 4.5], ['Alt', 'AltRight', null, 1.1], ['Ctrl', 'ControlRight', null, 1.1], ['←', 'ArrowLeft'], ['↓', 'ArrowDown'], ['→', 'ArrowRight']],
-];
 const MOD_KEYS = new Set(['ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight', 'MetaLeft']);
 // Keys whose spoken name is a word (`kb.key.<code>`); the others are called by their label.
 const KEY_NAMES = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace', 'Delete', 'PageUp', 'PageDown', 'Space', 'CapsLock', 'ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight']);
-// On a Mac: [label, name], the name a word for the Option keys (`kb.key.mac<code>`).
-const MAC_KEY_LABELS = { MetaLeft: ['⌘', 'Command'], AltLeft: ['⌥', null], AltRight: ['⌥', null] };
 
 export class OnscreenKeyboard {
   constructor(s) {
@@ -85,7 +73,7 @@ export class OnscreenKeyboard {
     if (on) {
       this.ime = true;
       this.imeStart = visibleArea();
-      this.s.video.beginIme();
+      this.s.content.beginIme?.();
       this.typer.focus({ preventScroll: true });
     } else {
       this.stopIme();
@@ -117,14 +105,13 @@ export class OnscreenKeyboard {
     this.typer.addEventListener('blur', () => this.setIme(false));
 
     this.keys = new Map(); // code -> elements showing it
+    const { keyLabels } = this.s.keyboard.sink;
     const key = ([baseLabel, code, shifted, wide]) => {
       const defaultLabel = baseLabel ?? t(`kb.key.${code}`);
-      const mac = this.s.device.os === 'macos' && MAC_KEY_LABELS[code];
-      const [label, name] = mac
-        ? [mac[0], mac[1] ?? t(`kb.key.mac${code}`)]
-        : [defaultLabel, KEY_NAMES.has(code) ? t(`kb.key.${code}`) : defaultLabel];
+      const override = keyLabels?.[code];
+      const [label, name] = override || [defaultLabel, KEY_NAMES.has(code) ? t(`kb.key.${code}`) : defaultLabel];
       const el = h('button', { class: `kb-key${MOD_KEYS.has(code) ? ' mod' : ''}`, type: 'button', 'data-code': code, 'aria-label': name, tabindex: '-1' });
-      el.defaults = { label, shifted, named: KEY_NAMES.has(code) || !!mac };
+      el.defaults = { label, shifted, named: KEY_NAMES.has(code) || !!override };
       this.paint(el);
       if (wide) el.style.flexGrow = String(wide);
       if (!this.keys.has(code)) this.keys.set(code, []);
@@ -239,7 +226,7 @@ export class OnscreenKeyboard {
       // Held long, it repeats, as a real keyboard does (Backspace, arrows, letters).
       const timer = code === 'CapsLock' ? null : setTimeout(function repeat() {
         if (!this.fingers.has(finger)) return;
-        this.s.send({ t: Control.KEY, c: code, d: true });
+        this.s.keyboard.sink.send({ t: Control.KEY, c: code, d: true });
         this.fingers.get(finger).timer = setTimeout(repeat.bind(this), 60);
       }.bind(this), 500);
       this.fingers.set(finger, { code, el, mod: false, applied, timer });
@@ -320,14 +307,13 @@ export class OnscreenKeyboard {
       const fraction = Number.isFinite(saved?.y) ? saved.y : 1;
       pad.style.top = `${v.y + fraction * room}px`;
       if (area) {
-        this.s.video.placeIme(area, v.y + room);
+        this.s.content.placeIme(area, v.y + room);
         return;
       }
     }
 
-    const upright = orientation() === 'portrait';
-    this.s.root.style.paddingBottom = pad && upright ? `${pad.offsetHeight + 8}px` : '';
-    if (!this.ime) this.s.video.endIme();
+    this.s.content.placeKeypad(pad);
+    if (!this.ime) this.s.content.endIme?.();
   }
 
   // The modifiers tapped once have been used by a key or a character: they let go.
@@ -340,13 +326,13 @@ export class OnscreenKeyboard {
   // those that type no text, and combinations.
   bindTyperKeys(ta) {
     ta.addEventListener('keydown', (e) => {
-      if (e.isComposing || e.keyCode === 229) return;
+      if (e.isComposing || e.keyCode === 229 || this.s.keyboard.sink.nativeKey?.(e)) return;
       const special = ['Enter', 'Backspace', 'Tab', 'Escape', 'Delete', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'];
       const extra = [e.ctrlKey && 'ControlLeft', e.altKey && 'AltLeft', e.metaKey && 'MetaLeft'].filter(Boolean);
       if (special.includes(e.key) || (extra.length && e.code)) {
         e.preventDefault();
         if (e.shiftKey && extra.length) extra.push('ShiftLeft');
-        typeKey(this.s, special.includes(e.key) ? (e.key === 'Enter' ? 'Enter' : e.code || e.key) : e.code, extra);
+        typeKey(this.s, special.includes(e.key) ? (e.key === 'Enter' ? 'Enter' : e.code || e.key) : e.code, extra, e);
         resetBox(ta);
       }
     });

@@ -13,9 +13,10 @@ which defines every signed or MACed string. The Go
 |---|---|---|---|
 | `signaling.browser` | browser and server | WebSocket `/ws/client` (login cookie) | `type` |
 | `signaling.host` | host and server | WebSocket `/ws/host?id=` (device token) | `type` |
-| `control` | browser and host | data channel `input`: reliable, ordered | `t` |
+| `control` | browser and host | reliable, ordered data channel `input` for a picture, `control` for a terminal | `t` |
 | `move` | browser and host | data channel `move`: unordered, no retransmits | `t` |
 | `file` | browser and host | data channel `file`: reliable; text = messages, binary = bytes of the one transfer active in that direction | `t` |
+| `terminal` | browser and host | data channel `terminal`: reliable, ordered. Text carries messages and binary carries raw PTY bytes | `t` |
 | `ai` | AI client and host | data channel `ai`: reliable, ordered; MCP JSON-RPC in fragments (AI sessions) | JSON-RPC |
 | `tunnel:<port>` | AI client and host | data channel: reliable, ordered; the bytes of one TCP connection to a loopback port (AI sessions) | none |
 | `ipc` | Windows network service and agent | named pipe; length-prefixed bincode frames of `platform::Call` (service to agent) and `PlatformEvent` (agent to service), after an HMAC handshake; video frames and transfer bytes are raw frames | `t` |
@@ -58,6 +59,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `chars` | characters with modifiers are not sent as `kc` |
   | `capture` | no "no display" state |
   | `desk` | no lock-screen note |
+  | `terminal` | no browser terminal |
   | `ai` | no AI seat: AI clients cannot use the computer |
   | `relay-rtt` | the host's signaling socket does not receive `relay-list` |
 - A newer peer sends a new message or field only when the other side's version or capabilities
@@ -139,6 +141,12 @@ browser                     server                        host
   `force`. A forced offer takes over: the old session ends with `taken`, with `by` set to the
   taker's device name and `same` set when the taker is the same device. Reconnecting never takes
   over on its own.
+- A browser offer with a single enabled application media section selects the terminal. The
+  SDP hash in the existing proof binds this selection. The terminal and picture share desk
+  admission, including the account's signed device-check policy. Linux refuses a picture with
+  `no_desktop`. Hosts without the terminal capability refuse a terminal with `no_terminal`.
+  The terminal uses `control` and `terminal` channels and negotiates no video. Its signaling
+  offer carries zero viewer constraints.
 
 ## Session lifecycle
 
@@ -161,7 +169,8 @@ section lists its messages.
   `failed`.
 - **Reasons** form a single list, used by both `bye` and the control channel's `end`: `left`,
   `taken`, `ended`, `busy`, `failed`, `gone`, `offline`, `auth`, `unpaired`, `forbidden`,
-  `permissions`, `pair`, `denied`, `full`, `ai_off`, `idle` (the last two apply to AI sessions).
+  `permissions`, `no_desktop`, `no_terminal`, `pair`, `denied`, `full`, `ai_off`, `idle`
+  (the last two apply to AI sessions).
 - **End.** Every end goes through the server (`bye{reason}`), in both directions and in every
   state, and is also sent on the control channel (`end{reason}`) while that channel is open.
   Whichever arrives first ends the session. A deadline, a failed peer connection and a closed
@@ -301,6 +310,30 @@ Get it here (host owns): browser -> cbreq{gen:7, format:"image"|"files", id, i?}
   (or `err{id, why}`). Either side may send `cancel{id}`. Files are saved to Downloads/Deskway
   and put on the clipboard; an image is only put on the clipboard. The end of a download is
   `fin`, because the name `end` is already used for the control channel's session end.
+
+## Browser terminal
+
+The browser offers a terminal only when the live signaling hello reports `terminal`, verifies
+the answer as usual, and waits for the control hello to confirm the capability. These additions
+are gated by that capability within protocol 4.
+
+After `open{rows, cols}`, the host starts the login shell and sends `opened` before any
+binary output. Binary messages carry raw bytes in both directions. `resize{rows, cols}`
+changes the PTY size. `close`, losing the terminal channel, or ending the desk session
+ends the shell and its jobs. An ICE restart within the existing recovery window keeps the
+shell. The host sends `exit{code}` after the final output, using a negative number for a
+signal. The browser shows the result after processing the preceding output. The shell
+can be opened once per session. A terminal failure carries `error{why}`.
+
+Messages are at most 16 KiB so one message cannot monopolize the SCTP association. The
+host pauses PTY reads when the channel buffers 64 KiB and resumes below 16 KiB. This leaves
+room for control messages while avoiding constant stop and start. It also caps output
+at 128 KiB awaiting `ack{bytes}`, which the browser sends after xterm.js processes the
+bytes. That second limit keeps rendering bounded even when delivery is fast. Input can
+continue while output is paused. The browser starts with 64 KiB of input credit, enough
+for four full frames while bounding the host's pending input. It queues the remainder
+of a paste and sends it in order as the host returns credit with `ack{bytes}` after writing
+those bytes to the PTY.
 
 ## AI sessions
 
