@@ -20,19 +20,21 @@ transfer while its source is available.
 Uploads have no Deskway size limit. If the name belongs to a regular file, choose **Skip** or
 **Replace** after comparing the two files' sizes and dates. A choice can apply to the remaining
 name conflicts in that batch. When replacing a file, the original stays intact until the upload
-is complete and verified. Folders and symbolic links are refused.
+is complete and verified. If the original changes, Files asks again. Use **Choose** on the
+transfer row to reopen the question. Folders and symbolic links are refused.
 
 Where the browser offers a save picker with writable file access, it streams to the selected
-file without a Deskway size limit. Cancelling before commit aborts the writable stream and
-discards the staged data. A file newly created by the picker may remain empty.
-Other browsers use an in-memory download with a 64 MiB per-file limit. This bounds both
-the Blob handed to the browser and the temporary copy needed to build it.
+file without a Deskway size limit. Cancel is available until the browser starts closing the
+file. A file newly created by the picker may remain empty if the transfer is cancelled.
+Other browsers keep up to 64 MiB per download in memory. After verification, select **Save**
+on the transfer row to hand the file to the browser. Dismissing the row or leaving the session
+releases the download from memory.
 
 The host stages uploads beside the destination, using reserved names
-`.deskway-upload-<32 lowercase hex digits>.partial`. It removes abandoned partial files
-older than one hour at startup in the host user's home and when any folder is listed, once
-the owning session can no longer return. Reloading the page leaves its partial for that sweep.
-Sweeping other folders at browse time avoids walking arbitrary filesystems at startup.
+`.deskway-upload-<32 lowercase hex digits>.partial`. Files lists live partials and refuses to
+rename or delete them. The host removes them on cancellation or when the owning session can no
+longer resume. Partials left by a host that stopped unexpectedly are swept after one hour, at
+startup in the host user's home and when any folder is listed.
 The journal records the device, direction, path, file size, outcome and any replacement once per transfer.
 
 Choose **Terminal** to start or return to the shell.

@@ -146,6 +146,21 @@ fn list(path: &Path, cursor: Option<&str>, limit: usize, seated: &dyn Fn() -> bo
     Ok(Browse::Listing { path, entries, cursor: last.filter(|_| more).as_ref().map(cursor_for) })
 }
 
+fn lock_partial(path: &Path) -> Result<Option<fs::File>, Error> {
+    if !path.file_name().is_some_and(super::transfer::partial_name) {
+        return Ok(None);
+    }
+    let pinned = native::pin(path).map_err(file_error)?;
+    if !pinned.metadata().map_err(file_error)?.is_file() {
+        return Ok(None);
+    }
+    let file = fs::File::open(native::pinned_path(&pinned)).map_err(file_error)?;
+    native::lock_exclusive(&file).map_err(|err| {
+        if err.kind() == io::ErrorKind::WouldBlock { Error::InUse } else { file_error(err) }
+    })?;
+    Ok(Some(file))
+}
+
 fn request(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Result<Browse, Error>) {
     let path = match &op {
         Browse::List { path, .. } => directory(path.as_deref()),
@@ -180,7 +195,10 @@ fn request(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Result<Browse, Er
         Browse::Rename { entry, name, .. } => match component(&entry) {
             Ok(entry) => {
                 let from = path.join(entry);
-                let result = new_name(&name).and_then(|name| native::rename_new(&from, &path.join(name)).map_err(file_error));
+                let result = new_name(&name).and_then(|name| {
+                    let _partial = lock_partial(&from)?;
+                    native::rename_new(&from, &path.join(name)).map_err(file_error)
+                });
                 (from, result.map(|()| Browse::Changed {}))
             }
             Err(why) => (path, Err(why)),
@@ -188,8 +206,8 @@ fn request(op: Browse, seated: &dyn Fn() -> bool) -> (PathBuf, Result<Browse, Er
         Browse::Delete { entry, .. } => match component(&entry) {
             Ok(entry) => {
                 let path = path.join(entry);
-                let result = super::remove(&path, false).map(|()| Browse::Changed {}).map_err(file_error);
-                (path, result)
+                let result = lock_partial(&path).and_then(|_partial| super::remove(&path, false).map_err(file_error));
+                (path, result.map(|()| Browse::Changed {}))
             }
             Err(why) => (path, Err(why)),
         },
@@ -269,6 +287,29 @@ mod tests {
         fs::remove_file(dir.join("folder/content")).unwrap();
         assert_eq!(delete("folder"), Browse::Changed {});
         fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn browse_lists_live_partials_and_refuses_to_rename_or_delete_them() {
+        let dir = std::env::temp_dir().join(format!("deskway-browse-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+        fs::create_dir(&dir).unwrap();
+        let path: Vec<_> = dir.iter().skip(1).map(encode).collect();
+        let name = format!(".deskway-upload-{}.partial", "a".repeat(32));
+        let entry = encode(OsStr::new(&name));
+        for op in [
+            Browse::Rename { path: path.clone(), entry: entry.clone(), name: "renamed".into() },
+            Browse::Delete { path: path.clone(), entry: entry.clone() },
+        ] {
+            let file = fs::File::create(dir.join(&name)).unwrap();
+            native::lock_exclusive(&file).unwrap();
+            let Browse::Listing { entries, .. } = list(&dir, None, 16, &|| true).unwrap() else { panic!("expected listing") };
+            assert!(entries.iter().any(|item| item.name == entry));
+            assert_eq!(call(op.clone(), &|| true).1, Browse::Error { why: Error::InUse });
+            drop(file);
+            assert_eq!(call(op, &|| true).1, Browse::Changed {});
+            assert!(!dir.join(&name).exists());
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

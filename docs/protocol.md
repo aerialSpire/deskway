@@ -144,8 +144,10 @@ browser                     server                        host
   replaces it. Anyone else, or any established session, gets `bye{reason:"busy", holder}` (the
   server turns the holder into the browser's `controller`), unless the offer is signed with
   `force`. A forced offer takes over: the old session ends with `taken`, with `by` set to the
-  taker's device name and `same` set when the taker is the same device. Reconnecting never takes
-  over on its own.
+  taker's device name and `same` set when the taker is the same device. The browser device
+  that owns a session with transfers may use the same page's authenticated resume token to
+  replace its own still-registered session without signing `force`. The old session ends
+  with `failed`.
 - A browser offer with a single enabled application media section selects the data-only
   browser session. The SDP hash in the existing proof binds this selection. Both browser
   session kinds share desk admission and the account's signed device-check policy.
@@ -348,23 +350,30 @@ frame starts with that ID and a 64-bit offset from the start, both unsigned
 big-endian, and carries up to 16,372 bytes. The complete frame is at most 16 KiB. A receiver
 grants four payloads of credit initially and returns credit through the absolute offset in
 `ack` after consuming data. A sender waits for credit before reading any further. The host
-services the terminal and browse channels before queuing another transfer frame.
+services the terminal and browse channels before queuing another transfer frame. Waiting for
+data, credit or a reply times out after 30 seconds and interrupts the channel attempt.
 
 - For `upload{id,path,name,size}`, the host validates the destination and stages the file before
   sending `ready{id,size,offset}`, which grants initial credit at the staged offset. An existing
   regular file instead prompts with `conflict{id,size,modified}` (Unix seconds). The browser
   answers `replace{id}` or `cancel{id}`. The host acknowledges writes and the browser sends
   `finish{id,offset,sha256}` after all bytes are acknowledged. The host hashes the staged file
-  and commits before replying `done{id,offset}`. If a destination appears before the
-  no-replace rename, the host sends the same conflict prompt and keeps the verified staged file
-  pending a decision. Only regular files are eligible for replacement.
+  and, under the desk-seat guard, checks the staging path still names that file and publishes it
+  before replying `done{id,offset}`. The host prompts if a destination appears before the
+  no-replace rename. If an approved destination changes in identity, modification time or size,
+  the host sends a new `conflict` with `changed:true` and waits for a fresh answer.
+  Only regular files are eligible for replacement. Browse reports `in_use` when a rename or
+  delete targets a live partial upload.
 - For `download{id,path,entry,limit?}`, the host opens one regular file and checks its size
   against the optional byte limit. It replies `ready{id,size,offset:0}`. The browser grants initial
   credit with `start{id,offset}` at its written offset and acknowledges bytes as it consumes them.
-  The host checks the original size and modification time and hashes the open file, rereading the
-  prefix on resume. After the last acknowledgment it sends `finish{id,offset,sha256}`. The browser
-  compares the digest with its incremental hash before saving, sends `done{id,offset}`, and
-  receives the host's echo. Digests are lowercase SHA-256 hex in both directions.
+  The host checks the original size and modification time, hashes the open file to EOF, and
+  checks the count against the advertised size. It rereads the written prefix on resume.
+  After the last acknowledgment it sends `finish{id,offset,sha256}`. The browser compares the
+  digest with its incremental hash, closes a streaming destination or retains the verified bytes
+  in memory for Save, then sends `done{id,offset}` and receives the host's echo. After `finish`,
+  a resume at EOF reuses the digest. A browser that has finished locally can reply to `ready`
+  with `done` at EOF. Digests are lowercase SHA-256 hex in both directions.
 - An authenticated page reopens the channel on recovery and sends `resume{id}`. It may resend the
   initial request if it has received no offer response. The host repeats any terminal result
   still pending on that ID. The start offset of a new attempt is zero.

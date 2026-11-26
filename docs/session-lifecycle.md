@@ -97,6 +97,9 @@ exist are closed.
   including one of the same device), the new session is refused with `busy` and a description of
   the holder, unless the offer was signed with `force`. A forced offer takes over, and the old
   session ends with `taken`.
+- A browser device that owns a session with transfers may be admitted again with the same
+  page's authenticated resume token. Its own still-registered session ends with `failed`
+  and the offer can omit signed `force`.
 
 ## Who controls, as the browser sees it
 
@@ -134,9 +137,11 @@ The Files and Terminal views share one transfer list. Changing views keeps the l
 transfers running. During ICE recovery the active transfer is marked interrupted and the queue
 waits. On return the page opens a fresh transfer channel and continues at the receiver's offset.
 If the established connection ends with `failed` or `gone` with unfinished transfers, the page also
-makes one ordinary non-forced admission attempt with its resume token and retains the session
-view while it connects. Takeover or leaving the view ends unfinished transfers and clears the
-list. A page reload starts a new view and abandons the original partial upload to the host sweep.
+makes one non-forced admission attempt with its resume token and retains the session view.
+The new connection reattaches a terminal opened in that page at its last dimensions, including
+while Files is visible. Takeover or leaving the view ends unfinished transfers and clears the
+list. The host unlinks a partial upload when its record is dropped, including when its resume
+window expires.
 
 The host keeps one browser terminal independently of the desk session. Disconnect, the end
 of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's

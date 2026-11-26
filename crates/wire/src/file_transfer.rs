@@ -37,7 +37,11 @@ wire_enum! {
             "limit" limit: Option<u64>,
         },
         "resume" => Resume { "id" id: u32 },
-        "conflict" => Conflict { "id" id: u32, "size" size: u64, "modified" modified: i64 },
+        "conflict" => Conflict {
+            "id" id: u32, "size" size: u64, "modified" modified: i64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "changed" changed: Option<bool>,
+        },
         "replace" => Replace { "id" id: u32 },
         "ready" => Ready { "id" id: u32, "size" size: u64, "offset" offset: u64 },
         "start" => Start { "id" id: u32, "offset" offset: u64 },

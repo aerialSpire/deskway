@@ -466,7 +466,10 @@ can read them, and can create folders, rename entries and remove files, links or
 directories wherever this account can make those changes. A trusted browser can download
 regular file contents and upload files as the host user. Uploads use a private staged
 file, verified with SHA-256, and a no-replace rename unless the person approves replacing a
-regular file. The host checks the destination without following links immediately before a plain atomic replacement rename, which fails over a directory and can replace a link itself without touching its target if another process of the host user swaps the entry during that interval.
+regular file. Under the desk-seat guard the host checks the staged path's identity and the
+approved destination's identity, size and modification time without following links. The
+replacement rename is atomic. Another local process can change an entry between these metadata
+checks and the rename.
 This access includes configuration and credentials owned
 by the host account. Files performs filesystem operations without starting a shell or
 running a file. The host output records the device, operation, path and outcome on one
@@ -479,8 +482,9 @@ and the page identity carried by its authenticated resume token, and checks the 
 before each transfer filesystem step. A takeover discards the previous device's staged upload.
 An upload may return while its peer session remains live or recovering, or after a connection
 failure while the page's existing resume token is valid (up to eight hours from device proof).
-The host pins that staged file against the age sweep during this lifetime. A leave abandons it
-to the sweep. Host restart forgets ownership and the sweep uses the file's modification age.
+The host locks that staged file against browse rename, delete and age sweeping during this
+lifetime. It unlinks the partial when the record is dropped. After host restart the sweep uses
+the modification age of remnants.
 
 Before sending its offer, the browser asks the host for a nonce (`challenge`). The host answers
 with 16 random bytes (`nonce`), valid for one offer on that session and for 60 seconds. Every

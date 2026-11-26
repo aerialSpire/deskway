@@ -126,8 +126,12 @@ impl Lease {
     }
 
     pub(in crate::session) fn holds_seat(&self) -> bool {
+        self.while_seated(|| ()).is_some()
+    }
+
+    pub(in crate::session) fn while_seated<T>(&self, run: impl FnOnce() -> T) -> Option<T> {
         let state = self.shared.state.lock().unwrap();
-        !state.stopping && state.seat.as_deref() == Some(self.id.as_str())
+        (!state.stopping && state.seat.as_deref() == Some(self.id.as_str())).then(run)
     }
 
     pub(super) fn attach(&self, rows: u16, cols: u16) -> io::Result<Option<(Option<Replay>, bool)>> {
@@ -403,6 +407,17 @@ mod tests {
             .unwrap().unwrap();
         assert!(!returned);
         (state, process)
+    }
+
+    #[test]
+    fn publishing_holds_the_same_guard_as_revocation() {
+        let (updates, _) = std::sync::mpsc::channel();
+        let registry = Registry::new(|_, _| unreachable!(), updates);
+        let lease = registry.admit("first".into(), "browser".into(), "device".into());
+        assert_eq!(lease.while_seated(|| registry.shared.state.try_lock().is_err()), Some(true));
+        registry.end("first", "taken");
+        registry.admit("next".into(), "browser".into(), "device".into());
+        assert_eq!(lease.while_seated(|| panic!("lost the seat")), None::<()>);
     }
 
     #[test]

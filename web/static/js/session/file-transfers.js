@@ -154,7 +154,12 @@ export class FileTransfers {
     }
     if (validate(CAPS.FILE_TRANSFER, m)) { this.stop(job, 'protocol'); return; }
     if (m.id !== job.id) return;
-    if (m.t === Msg.ERROR) { this.end(job, job.problem || m.why); return; }
+    if (m.t === Msg.ERROR) {
+      if (job.saving) {
+        void job.saving.then(() => this.end(job), () => this.end(job, 'local_io'));
+      } else this.end(job, job.problem || m.why);
+      return;
+    }
     if (m.t === Msg.DONE && m.offset === job.size && (job.request.file ? job.digest : job.saved)) {
       this.end(job);
       return;
@@ -191,27 +196,38 @@ export class FileTransfers {
       job.phase = 'sending';
       this.render();
       void this.pump(job);
-    } else void this.openTarget(job);
+    } else if (job.saving) void this.finishTarget(job);
+    else void this.openTarget(job);
   }
 
   conflict(job, metadata) {
     job.phase = 'conflict';
-    const batch = job.request.batch;
-    const answer = (choice, remember) => {
-      if (this.current !== job || job.phase !== 'conflict') return;
-      if (remember) batch.choice = choice;
-      if (choice === 'replace') {
-        job.phase = job.digest ? 'finishing' : 'offered';
-        this.send(job, Msg.REPLACE);
-        this.render();
-      } else this.stop(job);
-    };
-    if (batch.choice) answer(batch.choice);
+    job.conflict = metadata;
+    const choice = job.request.batch.choice;
+    if (choice && !metadata.changed) this.answerConflict(job, choice);
     else {
-      const many = this.jobs.some((other) => other.phase === 'waiting' && other.request.batch === batch);
-      this.list.conflict(job, metadata, many, answer);
+      this.askConflict(job);
       this.render();
     }
+  }
+
+  askConflict(job) {
+    if (this.current !== job || job.phase !== 'conflict') return;
+    const batch = job.request.batch;
+    const many = this.jobs.some((other) => other.phase === 'waiting' && other.request.batch === batch);
+    this.list.conflict(job, job.conflict, many, (choice, remember) => {
+      if (this.current !== job || job.phase !== 'conflict') return;
+      if (remember) batch.choice = choice;
+      this.answerConflict(job, choice);
+    });
+  }
+
+  answerConflict(job, choice) {
+    if (choice === 'replace') {
+      job.phase = job.digest ? 'finishing' : 'offered';
+      this.send(job, Msg.REPLACE);
+      this.render();
+    } else this.stop(job);
   }
 
   async openTarget(job) {
@@ -259,19 +275,25 @@ export class FileTransfers {
     }).catch(() => this.stop(job, 'local_io'));
   }
 
-  async commitTarget(job) {
+  commitTarget(job) {
+    job.saving = job.writer.then((writer) => writer.close()).then((save) => {
+      job.save = save;
+      job.saved = true;
+    });
+    return this.finishTarget(job);
+  }
+
+  async finishTarget(job) {
     const channel = this.channel;
     job.phase = 'committing';
     this.render();
     try {
-      job.saving ??= Promise.resolve(job.writer).then((writer) => writer.close());
       await job.saving;
-      job.saved = true;
       if (!this.attempt(job, channel) || job.phase !== 'committing') return;
       job.phase = 'committed';
       this.send(job, Msg.DONE, { offset: job.done });
     } catch {
-      this.stop(job, 'local_io');
+      if (this.attempt(job, channel) && job.phase === 'committing') this.stop(job, 'local_io');
     }
   }
 
@@ -283,6 +305,7 @@ export class FileTransfers {
   render() { this.list.render(this.jobs, this.current); }
 
   stop(job, problem = 'cancelled') {
+    if (problem === 'cancelled' && job.saving) return;
     if (job.phase === 'waiting') {
       job.phase = 'ended';
       job.problem = problem;
@@ -312,6 +335,7 @@ export class FileTransfers {
   }
 
   end(job, why) {
+    if (this.current !== job) return;
     this.list.closeConflict();
     job.phase = 'ended';
     job.problem = why;

@@ -12,7 +12,7 @@ use wire::file_transfer::Error;
 
 use super::browse::{component, directory, new_name};
 use crate::platform::file_metadata as native;
-use crate::workspace::{Download, FileTransfers, Upload};
+use crate::workspace::{Conflict, Download, FileTransfers, Upload};
 
 const PREFIX: &str = ".deskway-upload-";
 const SUFFIX: &str = ".partial";
@@ -113,12 +113,17 @@ pub(crate) fn sweep_home() {
 struct Partial {
     file: File,
     path: PathBuf,
-    keep: bool,
+}
+
+impl Partial {
+    fn at_path(&self) -> io::Result<bool> {
+        Ok(native::same_file(&self.file.metadata()?, &fs::symlink_metadata(&self.path)?))
+    }
 }
 
 impl Drop for Partial {
     fn drop(&mut self) {
-        if !self.keep {
+        if self.at_path().unwrap_or(false) {
             let _ = fs::remove_file(&self.path);
         }
     }
@@ -129,6 +134,17 @@ struct Staged {
     destination: PathBuf,
     folder: File,
     size: u64,
+}
+
+impl Staged {
+    fn destination(&self) -> Result<Option<fs::Metadata>, Error> {
+        match fs::symlink_metadata(&self.destination) {
+            Ok(meta) if meta.is_file() => Ok(Some(meta)),
+            Ok(_) => Err(Error::NotRegular),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(io_error(e)),
+        }
+    }
 }
 
 fn upload(path: &Path, size: u64, seated: &dyn Fn() -> bool) -> Result<Box<dyn Upload>, Error> {
@@ -143,14 +159,9 @@ fn upload(path: &Path, size: u64, seated: &dyn Fn() -> bool) -> Result<Box<dyn U
 }
 
 impl Upload for Staged {
-    fn conflict(&self, seated: &dyn Fn() -> bool) -> Result<Option<(u64, i64)>, Error> {
+    fn conflict(&self, seated: &dyn Fn() -> bool) -> Result<Option<Conflict>, Error> {
         check(seated)?;
-        match fs::symlink_metadata(&self.destination) {
-            Ok(meta) if meta.is_file() => Ok(Some((meta.len(), native::modified(&meta)))),
-            Ok(_) => Err(Error::NotRegular),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(io_error(e)),
-        }
+        Ok(self.destination()?.map(|metadata| Conflict { modified: native::modified(&metadata), metadata }))
     }
 
     fn prepare(&mut self, seated: &dyn Fn() -> bool) -> Result<u64, Error> {
@@ -169,7 +180,7 @@ impl Upload for Staged {
             .mode(0o600)
             .open(&path)
             .map_err(io_error)?;
-        let partial = Partial { file, path, keep: false };
+        let partial = Partial { file, path };
         check(seated)?;
         native::lock_exclusive(&partial.file).map_err(io_error)?;
         self.partial = Some(partial);
@@ -181,8 +192,8 @@ impl Upload for Staged {
         self.partial.as_mut().ok_or(Error::Protocol)?.file.write_all(bytes).map_err(io_error)
     }
 
-    fn commit(&mut self, sha256: &str, replace: bool, seated: &dyn Fn() -> bool) -> Result<bool, Error> {
-        let partial = self.partial.as_mut().ok_or(Error::Protocol)?;
+    fn verify(&self, sha256: &str, seated: &dyn Fn() -> bool) -> Result<(), Error> {
+        let partial = self.partial.as_ref().ok_or(Error::Protocol)?;
         check(seated)?;
         if partial.file.metadata().map_err(io_error)?.len() != self.size {
             return Err(Error::Size);
@@ -203,23 +214,34 @@ impl Upload for Staged {
             return Err(Error::Integrity);
         }
         check(seated)?;
-        partial.file.sync_all().map_err(io_error)?;
-        let replacing = replace && self.conflict(seated)?.is_some();
-        let partial = self.partial.as_mut().unwrap();
-        check(seated)?;
+        partial.file.sync_all().map_err(io_error)
+    }
+
+    fn publish(&self, approval: Option<&Conflict>) -> Result<bool, Error> {
+        let partial = self.partial.as_ref().ok_or(Error::Protocol)?;
+        if !partial.at_path().unwrap_or(false) {
+            return Err(Error::Integrity);
+        }
+        let replacing = if let Some(approval) = approval {
+            if let Some(current) = self.destination()? {
+                let approved = &approval.metadata;
+                if !native::same_file(&current, approved) || current.len() != approved.len()
+                    || current.modified().map_err(io_error)? != approved.modified().map_err(io_error)? {
+                    return Err(Error::Exists);
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         if replacing {
             fs::rename(&partial.path, &self.destination)
         } else {
             native::rename_new(&partial.path, &self.destination)
         }.map_err(io_error)?;
-        partial.keep = true;
         Ok(replacing)
-    }
-
-    fn abandon(&mut self) {
-        if let Some(partial) = &mut self.partial {
-            partial.keep = true;
-        }
     }
 }
 struct Reading {
@@ -270,6 +292,16 @@ impl Download for Reading {
         self.verify(seated)
     }
 
+    fn finish(&mut self, seated: &dyn Fn() -> bool) -> Result<(), Error> {
+        check(seated)?;
+        if self.file.read(&mut [0]).map_err(io_error)? != 0 {
+            return Err(Error::Changed);
+        }
+        self.verify(seated)
+    }
+}
+
+impl Reading {
     fn verify(&self, seated: &dyn Fn() -> bool) -> Result<(), Error> {
         check(seated)?;
         let meta = self.file.metadata().map_err(io_error)?;
@@ -337,7 +369,8 @@ mod tests {
             }
             staged.write(b"ew", &|| true).unwrap();
             assert!(!dest.exists());
-            assert_eq!(staged.commit(&digest(data), false, &|| seated), expected);
+            let result = staged.verify(&digest(data), &|| seated).and_then(|()| staged.publish(None));
+            assert_eq!(result, expected);
             drop(staged);
             assert_eq!(fs::read(&dest).ok().as_deref(), expected.ok().map(|_| b"new".as_slice()));
             assert!(!dir.names().iter().any(|name| partial_name(name)));
@@ -345,49 +378,82 @@ mod tests {
     }
 
     #[test]
-    fn replacement_checks_the_kind_and_preserves_the_destination_until_commit() {
-        for (kind, late) in [("regular", false), ("regular", true), ("directory", false), ("link", false)] {
+    fn replacement_requires_approval_for_the_current_file() {
+        for change in ["none", "late", "identity", "size", "mtime", "directory", "link"] {
             let dir = Folder::new();
             let dest = dir.0.join("file");
-            let put_destination = || match kind {
-                "regular" => fs::write(&dest, b"old").unwrap(),
-                "directory" => fs::create_dir(&dest).unwrap(),
-                _ => symlink("missing", &dest).unwrap(),
-            };
-            if !late {
-                put_destination();
+            if change != "late" {
+                fs::write(&dest, b"old").unwrap();
             }
             let mut staged = upload(&dest, 3, &|| true).ok().unwrap();
-            let found = staged.conflict(&|| true);
-            if kind != "regular" {
-                assert_eq!(found, Err(Error::NotRegular));
-            } else if late {
-                assert_eq!(found, Ok(None));
-            } else {
-                assert_eq!(found.unwrap().unwrap().0, 3);
-            }
+            let mut approval = staged.conflict(&|| true).unwrap();
+            let mtime = approval.as_ref().map(|old| old.metadata.modified().unwrap());
             staged.prepare(&|| true).unwrap();
             staged.write(b"new", &|| true).unwrap();
-            if late {
-                put_destination();
-                assert_eq!(staged.commit(&digest(b"new"), false, &|| true), Err(Error::Exists));
-                assert_eq!(staged.conflict(&|| true).unwrap().unwrap().0, 3);
+            match change {
+                "identity" | "directory" | "link" => {
+                    fs::rename(&dest, dir.0.join("old")).unwrap();
+                    match change {
+                        "identity" => {
+                            fs::write(&dest, b"alt").unwrap();
+                            File::open(&dest).unwrap().set_modified(mtime.unwrap()).unwrap();
+                        }
+                        "directory" => fs::create_dir(&dest).unwrap(),
+                        _ => symlink("missing", &dest).unwrap(),
+                    }
+                }
+                "size" | "mtime" => {
+                    fs::write(&dest, if change == "size" { b"long".as_slice() } else { b"alt" }).unwrap();
+                    let old = mtime.unwrap();
+                    File::open(&dest).unwrap().set_modified(if change == "size" { old } else { old + Duration::from_secs(1) }).unwrap();
+                }
+                "late" => fs::write(&dest, b"alt").unwrap(),
+                _ => {}
             }
-            if kind == "regular" {
-                assert_eq!(fs::read(&dest).unwrap(), b"old");
-                assert_eq!(staged.commit(&digest(b"bad"), true, &|| true), Err(Error::Integrity));
-                assert_eq!(fs::read(&dest).unwrap(), b"old");
-                assert_eq!(staged.commit(&digest(b"new"), true, &|| true), Ok(true));
-                assert_eq!(fs::read(&dest).unwrap(), b"new");
+            staged.verify(&digest(b"new"), &|| true).unwrap();
+            let result = staged.publish(approval.as_ref());
+            if matches!(change, "directory" | "link") {
+                assert_eq!(result, Err(Error::NotRegular));
+                assert_eq!(staged.conflict(&|| true).err(), Some(Error::NotRegular));
+                continue;
+            }
+            if change == "none" {
+                assert_eq!(result, Ok(true));
             } else {
-                assert_eq!(staged.commit(&digest(b"new"), true, &|| true), Err(Error::NotRegular));
-                let meta = fs::symlink_metadata(&dest).unwrap();
-                assert_eq!(meta.is_dir(), kind == "directory");
-                assert_eq!(meta.is_symlink(), kind == "link");
-                assert!(!dir.0.join("missing").exists());
+                assert_eq!(result, Err(Error::Exists), "{change}");
+                assert_eq!(fs::read(&dest).unwrap(), if change == "size" { b"long".as_slice() } else { b"alt" });
+                approval = staged.conflict(&|| true).unwrap();
+                assert_eq!(staged.publish(approval.as_ref()), Ok(true), "{change}");
             }
+            assert_eq!(fs::read(&dest).unwrap(), b"new");
             drop(staged);
-            assert_eq!(dir.names(), [OsString::from("file")]);
+            assert!(!dir.names().iter().any(|name| partial_name(name)));
+        }
+    }
+
+    #[test]
+    fn publishing_requires_the_staging_path_to_still_name_the_verified_file() {
+        for replacement in ["missing", "file", "link"] {
+            let dir = Folder::new();
+            let dest = dir.0.join("file");
+            fs::write(&dest, b"old").unwrap();
+            let mut staged = upload(&dest, 3, &|| true).unwrap();
+            let approval = staged.conflict(&|| true).unwrap();
+            staged.prepare(&|| true).unwrap();
+            staged.write(b"new", &|| true).unwrap();
+            staged.verify(&digest(b"new"), &|| true).unwrap();
+            let path = dir.0.join(dir.names().into_iter().find(|name| partial_name(name)).unwrap());
+            let moved = dir.0.join("moved");
+            fs::rename(&path, &moved).unwrap();
+            match replacement {
+                "file" => fs::write(&path, b"bad").unwrap(),
+                "link" => symlink(&moved, &path).unwrap(),
+                _ => {}
+            }
+            assert_eq!(staged.publish(approval.as_ref()), Err(Error::Integrity));
+            drop(staged);
+            assert_eq!(fs::read(dest).unwrap(), b"old");
+            assert_eq!(fs::symlink_metadata(path).is_ok(), replacement != "missing");
         }
     }
 
@@ -399,7 +465,7 @@ mod tests {
         fs::write(&path, []).unwrap();
         let mut staged = Staged {
             partial: Some(Partial {
-                file: OpenOptions::new().write(true).open("/dev/full").unwrap(), path, keep: false,
+                file: File::open(&path).unwrap(), path,
             }),
             destination,
             folder: File::open(&dir.0).unwrap(),
@@ -445,24 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn an_abandoned_upload_unlocks_for_the_age_sweep() {
-        let dir = Folder::new();
-        let mut staged = upload(&dir.0.join("file"), 2, &|| true).ok().unwrap();
-        staged.prepare(&|| true).unwrap();
-        staged.write(b"a", &|| true).unwrap();
-        let name = dir.names().pop().unwrap();
-        let path = dir.0.join(&name);
-        let now = fs::metadata(&path).unwrap().modified().unwrap() + MAX_AGE + Duration::from_secs(1);
-        sweep_entry(&dir.0, &name, now, &|| true);
-        assert!(path.exists(), "a retained upload remains locked");
-        staged.abandon();
-        drop(staged);
-        assert!(path.exists(), "abandonment leaves the staged file for the sweep");
-        sweep_entry(&dir.0, &name, now, &|| true);
-        assert!(!path.exists());
-    }
-
-    #[test]
     fn download_keeps_its_open_file_and_detects_size_or_mtime_changes() {
         for change in ["rename", "size", "mtime"] {
             let dir = Folder::new();
@@ -493,12 +541,25 @@ mod tests {
                     .unwrap(),
             }
             if change == "rename" {
-                assert_eq!(reading.verify(&|| true), Ok(()));
+                reading.read(&mut byte, &|| true).unwrap();
+                assert_eq!(&byte, b"c");
+                assert_eq!(reading.finish(&|| true), Ok(()));
             } else {
-                assert_eq!(reading.verify(&|| true), Err(Error::Changed));
                 assert_eq!(reading.rewind(&|| true), Err(Error::Changed));
                 assert_eq!(reading.read(&mut byte, &|| true), Err(Error::Changed));
             }
+        }
+    }
+
+    #[test]
+    fn a_zero_size_download_must_reach_eof() {
+        let dir = Folder::new();
+        let empty = dir.0.join("empty");
+        fs::write(&empty, []).unwrap();
+        for (path, expected) in [(&empty, Ok(())), (&PathBuf::from("/proc/meminfo"), Err(Error::Changed))] {
+            let mut reading = download(path, &|| true).unwrap();
+            assert_eq!(reading.size(), 0);
+            assert_eq!(reading.finish(&|| true), expected);
         }
     }
 

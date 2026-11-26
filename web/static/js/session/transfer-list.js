@@ -40,8 +40,8 @@ export class TransferList {
     }
     this.toggle.setAttribute('aria-expanded', String(this.expanded));
     this.toggle.replaceChildren(t('files.transfer.list', { n: jobs.length }), svg(ICONS.chevron));
-    const failure = jobs.findLast((job) => job.phase === 'ended' && job.problem && job.problem !== 'cancelled');
-    const visible = new Set(this.expanded ? jobs : [current || failure].filter(Boolean));
+    const outcome = jobs.findLast((job) => job.phase === 'ended' && (job.save || (job.problem && job.problem !== 'cancelled')));
+    const visible = new Set(this.expanded ? jobs : [current || outcome].filter(Boolean));
     for (const [job, row] of this.rows) {
       if (!visible.has(job)) {
         row.remove();
@@ -64,6 +64,8 @@ export class TransferList {
         actions: [action('common.cancel', this.transfers.stop)] };
     }
     if (job.phase === 'ended') {
+      if (job.save) return { label: name, detail: t('files.transfer.readyToSave', { size: sizeText(job.size) }),
+        tone: 'ok', actions: [{ text: t('common.save'), run: job.save }], close: dismiss };
       if (!job.problem) return { label: name, detail: t('files.transfer.verified', { size: sizeText(job.size) }), tone: 'ok', close: dismiss };
       const cancelled = job.problem === 'cancelled';
       const key = errors[job.problem] ? 'files.transfer.' + errors[job.problem]
@@ -72,12 +74,13 @@ export class TransferList {
       return { label: t('files.transfer.failure', { name, reason }), tone: cancelled ? null : 'bad',
         actions: [action('files.transfer.tryAgain', this.transfers.retry)], close: dismiss };
     }
-    const close = ['committing', 'committed', 'stopping'].includes(job.phase) || job.problem ? null
+    const close = job.saving || job.phase === 'stopping' || job.problem ? null
       : { label: t('common.cancel'), run: () => this.transfers.stop(job) };
     const detail = job.problem === 'cancelled' ? t('files.transfer.cancelled')
       : job.phase === 'interrupted' ? t('files.transfer.interrupted')
       : job.phase === 'conflict' ? t('files.transfer.decision') : this.detail(job);
-    return { label, detail, pct: percent(job.done, job.size), close };
+    const actions = job.phase === 'conflict' ? [action('files.transfer.choose', this.transfers.askConflict)] : [];
+    return { label, detail, pct: percent(job.done, job.size), actions, close };
   }
 
   detail(job) {

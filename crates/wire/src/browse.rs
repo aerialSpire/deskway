@@ -23,6 +23,7 @@ wire_values! {
         "invalid_name" => InvalidName,
         "invalid_path" => InvalidPath,
         "busy" => Busy,
+        "in_use" => InUse,
         "io" => Io,
     }
 }

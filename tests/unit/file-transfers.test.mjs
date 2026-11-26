@@ -113,6 +113,28 @@ test('batch collision answers apply only to later conflicts in the same batch', 
   }
 });
 
+test('a changed destination requires a fresh choice and the row can reopen its question', async () => {
+  const f = fixture();
+  let question;
+  f.transfers.list.conflict = (job, metadata, many, answer) => { question = { metadata, answer }; };
+  f.transfers.upload([], [file('a'), file('b')]);
+  f.message({ t: 'conflict', size: 10, modified: 123 });
+  question.answer('replace', true);
+  f.ready();
+  await turn();
+  assert.equal(f.sent.at(-1).t, 'finish');
+  f.message({ t: 'conflict', size: 20, modified: 124, changed: true });
+  assert.equal(f.sent.at(-1).t, 'finish');
+  assert.equal(question.metadata.size, 20);
+  question = null;
+  const card = f.card(f.transfers.current);
+  assert.equal(card.detail, 'files.transfer.decision');
+  card.actions[0].run();
+  assert.equal(question.metadata.modified, 124);
+  question.answer('skip');
+  assert.equal(f.sent.at(-1).t, 'cancel');
+});
+
 test('upload keeps its credit limit and hashes correctly when the receiver is ahead of or behind the last acknowledgment', async () => {
   for (const resume of [0, 2 * chunk]) {
     const f = fixture();
@@ -185,7 +207,7 @@ test('a download resumes at the written offset and compares the digest before sa
     const calls = [];
     await target(f, 2 * chunk, {
       write: (data) => { calls.push(data[0]); return paused; },
-      close: () => calls.push('close'),
+      close: () => { calls.push('close'); },
       abort: () => calls.push('abort'),
     });
     const { id } = f.transfers.current;
@@ -216,6 +238,45 @@ test('a download resumes at the written offset and compares the digest before sa
       f.message({ t: 'error', why: 'integrity' });
     }
     assert.equal(f.card(f.transfers.jobs[0]).tone, match ? 'ok' : 'bad');
+  }
+});
+
+test('a closing download stays non-cancellable across reconnect and reports the close result', async () => {
+  for (const [success, hostExpired] of [[true, false], [false, false], [true, true], [false, true]]) {
+    const f = fixture();
+    let resolveClose, rejectClose;
+    const closing = new Promise((resolve, reject) => { resolveClose = resolve; rejectClose = reject; });
+    let closes = 0;
+    await target(f, 0, {
+      close: () => { closes++; return closing; },
+      abort: () => assert.fail('closing writer cannot be aborted'),
+    });
+    const job = f.transfers.current;
+    const cancel = f.card(job).close;
+    f.message({ t: 'finish', offset: 0, sha256: digest('') });
+    assert.equal(f.card(job).close, null);
+    f.recover();
+    assert.equal(f.card(job).close, null);
+    f.connect();
+    await turn();
+    assert.equal(f.card(job).close, null);
+    if (hostExpired) f.message({ t: 'error', why: 'expired' });
+    else f.ready(0);
+    cancel.run();
+    assert.equal(f.sent.at(-1).t, 'resume');
+    if (success) resolveClose();
+    else rejectClose(new Error());
+    await turn();
+    assert.equal(closes, 1);
+    if (!hostExpired && success) {
+      assert.deepEqual(f.sent.at(-1), { t: 'done', id: job.id, offset: 0 });
+      f.message({ t: 'done', offset: 0 });
+    } else if (!hostExpired) {
+      assert.deepEqual(f.sent.at(-1), { t: 'error', id: job.id, why: 'io' });
+      f.message({ t: 'error', why: 'io' });
+    }
+    await turn();
+    assert.equal(f.card(job).tone, success ? 'ok' : 'bad');
   }
 });
 
@@ -258,12 +319,29 @@ test('the browser selects a streamed writer or a 64 MiB Blob fallback', async ()
   const fallback = await chooseDownload('log.txt', {});
   assert.equal(fallback.limit, DOWNLOAD_LIMIT);
   assert.equal(fallback.open(DOWNLOAD_LIMIT + 1), null);
-  let result;
-  const memory = fallback.open(DOWNLOAD_LIMIT, (blob, name) => { result = { blob, name }; });
-  memory.write(new Uint8Array([97]));
-  memory.close();
-  assert.equal(result.name, 'log.txt');
-  assert.equal(await result.blob.text(), 'a');
+});
+
+test('a verified in-memory download asks for a Save click after sending done', async () => {
+  const f = fixture();
+  const fallback = await chooseDownload('name', {});
+  const saved = [];
+  await target(f, 1, fallback.open(1, (blob, name) => saved.push([blob, name])));
+  const job = f.transfers.current;
+  f.transfers.receive(frame(job.id, 0, 1, 97));
+  await turn();
+  f.message({ t: 'finish', offset: 1, sha256: digest('a') });
+  await turn();
+  assert.equal(f.sent.at(-1).t, 'done');
+  assert.deepEqual(saved, []);
+  f.message({ t: 'done', offset: 1 });
+  const card = f.card(job);
+  assert.match(card.detail, /files.transfer.readyToSave/);
+  assert.equal(card.actions[0].text, 'common.save');
+  card.actions[0].run();
+  assert.equal(await saved[0][0].text(), 'a');
+  assert.equal(saved[0][1], 'name');
+  card.close.run();
+  assert.deepEqual(f.transfers.jobs, []);
 });
 
 test('the download offer tells the host the Blob limit and a refusal starts no data', async () => {

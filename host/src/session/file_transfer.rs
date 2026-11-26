@@ -15,9 +15,10 @@ use wire::file_transfer::{self as frames, Error, Message as Msg, CHUNK, FRAME, W
 use wire::types::Reason;
 
 use super::{credit::Credit, data::WorkerSlot, terminal::registry::Lease, Cx, SessionEvent};
-use crate::{i18n::t, workspace::{Download, FileTransfers, Upload}};
+use crate::{i18n::t, workspace::{Conflict, Download, FileTransfers, Upload}};
 
 const SLOTS: usize = WINDOW / CHUNK + 2;
+const WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub(crate) struct Registry(Option<Arc<Mutex<Page>>>);
@@ -48,8 +49,7 @@ impl Registry {
                 current.attached = true;
                 return page.clone();
             }
-            let same_device = current.device == device && !device.is_empty();
-            current.release(same_device);
+            current.record = None;
         }
         let page = Arc::new(Mutex::new(Page {
             device: device.into(), owner: owner.into(), session: session.into(), expires,
@@ -63,7 +63,7 @@ impl Registry {
         if let Some(page) = &self.0 {
             let mut page = page.lock().unwrap();
             if !page.attached && now >= page.expires {
-                page.release(true);
+                page.record = None;
             }
         }
     }
@@ -72,7 +72,7 @@ impl Registry {
         if let Some(page) = &self.0 {
             let mut page = page.lock().unwrap();
             if !page.device.is_empty() && !trusted(&page.device) {
-                page.release(true);
+                page.record = None;
             }
         }
     }
@@ -81,7 +81,7 @@ impl Registry {
 impl Drop for Registry {
     fn drop(&mut self) {
         if let Some(page) = &self.0 {
-            page.lock().unwrap().release(true);
+            page.lock().unwrap().record = None;
         }
     }
 }
@@ -89,12 +89,6 @@ impl Drop for Registry {
 impl Page {
     fn owns(&self, device: &str, owner: &str) -> bool {
         self.device == device && self.owner == owner
-    }
-
-    fn release(&mut self, abandon: bool) {
-        if let Some(record) = self.record.take() {
-            record.abandoned.store(abandon, Ordering::Relaxed);
-        }
     }
 }
 
@@ -112,7 +106,7 @@ pub(super) struct Transfers {
 struct Job {
     input: Option<SyncSender<Packet>>,
     output: Receiver<Packet>,
-    stopped: Arc<Mutex<Option<Error>>>,
+    stopped: Arc<Mutex<Option<Stop>>>,
     id: u32,
     upload: bool,
     receiving: bool,
@@ -126,12 +120,24 @@ enum Packet {
     End(Msg),
 }
 
+#[derive(Clone, Copy)]
+enum Stop {
+    Interrupted,
+    Failed(Error),
+}
+
 impl Job {
-    fn stop(&mut self, why: Error) {
-        if let Some(input) = self.input.take() {
+    fn stop(&mut self, why: Stop) {
+        if self.input.is_some() {
             *self.stopped.lock().unwrap() = Some(why);
-            drop(input);
+            self.input = None;
         }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        self.stop(Stop::Interrupted);
     }
 }
 
@@ -164,14 +170,14 @@ impl Transfers {
         if page.session == self.lease.id() {
             page.attached = false;
             if reason != Reason::Failed {
-                page.release(reason != Reason::Taken);
+                page.record = None;
             }
         }
     }
 
     fn stop(&mut self, why: Error) {
         if let Some(job) = &mut self.job {
-            job.stop(why);
+            job.stop(Stop::Failed(why));
         } else if let Some((_, _, stopped)) = &mut self.waiting {
             *stopped = Some(why);
         }
@@ -250,12 +256,11 @@ impl Transfers {
             }
         }
         // A fresh offer on a new channel can follow a session view that gave up reconnecting.
-        page.release(true);
         let record = Arc::new(Record {
             id, direction, name: self.lease.name().into(),
-            running: AtomicBool::new(false), abandoned: AtomicBool::new(false),
+            running: AtomicBool::new(false),
             state: Mutex::new(State {
-                path: None, initial: Some((folder, name)), file: None, size: direction.size(), result: None, replace: false, staged: false,
+                initial: Some((folder, name)), size: direction.size(), ..State::default()
             }),
         });
         page.record = Some(record.clone());
@@ -308,14 +313,17 @@ impl Transfers {
         let (input, incoming) = mpsc::sync_channel(SLOTS);
         let (outgoing, output) = mpsc::sync_channel(SLOTS);
         let stopped = Arc::new(Mutex::new(None));
-        let io = Pipe { incoming, outgoing, stopped: stopped.clone(), lease: self.lease.clone(), wake: self.wake.clone() };
+        let io = Pipe { incoming, outgoing, stopped: stopped.clone(), lease: self.lease.clone(), wake: self.wake.clone(), wait: WAIT };
         let files = self.files;
         let task = record.clone();
         let thread = std::thread::Builder::new().name("file-transfer".into()).spawn(move || {
             let mut state = task.state.lock().unwrap();
             let result = state.run(id, task.direction, files, &io);
             let result = match result {
-                Err(Error::Cancelled) => io.stopped.lock().unwrap().map(Err),
+                Err(Error::Cancelled) => match *io.stopped.lock().unwrap() {
+                    Some(Stop::Failed(why)) => Some(Err(why)),
+                    _ => None,
+                },
                 result => Some(result),
             };
             let reply = result.map(|result| task.complete(&mut state, result));
@@ -325,6 +333,7 @@ impl Transfers {
             if let Some(reply) = reply {
                 let _ = io.send(Packet::End(reply));
             }
+            drop(io.outgoing);
             let _ = io.wake.send(SessionEvent::TransferReady);
         });
         if thread.is_ok() {
@@ -344,11 +353,21 @@ impl Transfers {
         if self.waiting.is_some() && !self.start() {
             return Some(Instant::now() + Duration::from_millis(10));
         }
-        let mut ch = cx.rtc.channel(id)?;
         if self.pending.is_none() {
-            self.pending = self.job.as_ref().and_then(|job| job.output.try_recv().ok());
+            if let Some(job) = &self.job {
+                match job.output.try_recv() {
+                    Ok(packet) => self.pending = Some(packet),
+                    Err(mpsc::TryRecvError::Empty) => {}
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        cx.rtc.direct_api().close_data_channel(id);
+                        self.detach();
+                        return None;
+                    }
+                }
+            }
         }
         let packet = self.pending.as_ref()?;
+        let mut ch = cx.rtc.channel(id)?;
         if ch.buffered_amount() >= FRAME {
             return Some(Instant::now() + Duration::from_millis(10));
         }
@@ -413,7 +432,6 @@ struct Record {
     name: String,
     direction: Direction,
     running: AtomicBool,
-    abandoned: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -445,7 +463,7 @@ impl Record {
             |path| path.to_string_lossy(),
         );
         let size = state.size.map_or_else(|| "unknown".into(), |size| size.to_string());
-        let replace = state.replace;
+        let replace = state.approval.is_some();
         eprintln!("{} device={:?} direction={direction} path={path:?} size={size} outcome={outcome} why={why} replace={replace}", t("files.transfer"), self.name);
     }
 }
@@ -454,11 +472,6 @@ impl Drop for Record {
     fn drop(&mut self) {
         let state = self.state.get_mut().unwrap();
         if state.result.is_none() {
-            if self.abandoned.load(Ordering::Relaxed) {
-                if let Some(OpenFile::Upload(upload)) = &mut state.file {
-                    upload.abandon();
-                }
-            }
             let state = std::mem::take(state);
             self.log(&state, Err(Error::Cancelled));
         }
@@ -467,7 +480,7 @@ impl Drop for Record {
 
 enum OpenFile {
     Upload(Box<dyn Upload>),
-    Download(Box<dyn Download>),
+    Download(Box<dyn Download>, Option<String>),
 }
 
 #[derive(Default)]
@@ -476,7 +489,7 @@ struct State {
     path: Option<PathBuf>,
     file: Option<OpenFile>,
     size: Option<u64>,
-    replace: bool,
+    approval: Option<Conflict>,
     staged: bool,
     result: Option<Msg>,
 }
@@ -495,36 +508,38 @@ impl State {
                     if limit.is_some_and(|limit| file.size() > limit) {
                         return Err(Error::Limit);
                     }
-                    OpenFile::Download(file)
+                    OpenFile::Download(file, None)
                 }
             });
             self.initial = None;
         }
         let size = self.size.unwrap();
         match self.file.as_mut().unwrap() {
-            OpenFile::Upload(file) => upload(id, size, file.as_mut(), &mut self.replace, &mut self.staged, io)?,
-            OpenFile::Download(file) => download(id, size, file.as_mut(), io)?,
+            OpenFile::Upload(file) => upload(id, size, file.as_mut(), &mut self.approval, &mut self.staged, io)?,
+            OpenFile::Download(file, digest) => download(id, size, file.as_mut(), digest, io)?,
         }
         self.file = None;
         Ok(())
     }
 }
 
-fn approve(id: u32, file: &dyn Upload, replace: &mut bool, io: &Pipe) -> Result<(), Error> {
-    if let Some((size, modified)) = file.conflict(&|| io.seated())? {
-        io.text(Msg::Conflict { id, size, modified })?;
+fn approve(id: u32, file: &dyn Upload, approval: &mut Option<Conflict>, io: &Pipe) -> Result<(), Error> {
+    let observed = file.conflict(&|| io.seated())?;
+    if let Some(conflict) = &observed {
+        io.text(Msg::Conflict { id, size: conflict.metadata.len(), modified: conflict.modified,
+            changed: approval.is_some().then_some(true) })?;
         if !matches!(io.receive()?, Packet::Text(Msg::Replace { .. })) {
             return Err(Error::Protocol);
         }
-        *replace = true;
     }
+    *approval = observed;
     Ok(())
 }
 
-fn upload(id: u32, size: u64, file: &mut dyn Upload, replace: &mut bool, staged: &mut bool, io: &Pipe) -> Result<(), Error> {
+fn upload(id: u32, size: u64, file: &mut dyn Upload, approval: &mut Option<Conflict>, staged: &mut bool, io: &Pipe) -> Result<(), Error> {
     let seated = || io.seated();
-    if !*replace && !*staged {
-        approve(id, file, replace, io)?;
+    if approval.is_none() && !*staged {
+        approve(id, file, approval, io)?;
     }
     let mut offset = file.prepare(&seated)?;
     *staged = true;
@@ -544,25 +559,47 @@ fn upload(id: u32, size: u64, file: &mut dyn Upload, replace: &mut bool, staged:
         return Err(Error::Size);
     }
     loop {
-        match file.commit(&sha256, *replace, &seated) {
-            Err(Error::Exists) => approve(id, file, replace, io)?,
+        file.verify(&sha256, &seated)?;
+        if io.stopped.lock().unwrap().is_some() {
+            return Err(Error::Cancelled);
+        }
+        match io.lease.while_seated(|| file.publish(approval.as_ref())).ok_or(Error::Cancelled)? {
+            Err(Error::Exists) => approve(id, file, approval, io)?,
             Err(why) => return Err(why),
             Ok(replaced) => {
-                *replace = replaced;
+                if !replaced {
+                    *approval = None;
+                }
                 return Ok(());
             }
         }
     }
 }
 
-fn download(id: u32, size: u64, file: &mut dyn Download, io: &Pipe) -> Result<(), Error> {
+fn download(id: u32, size: u64, file: &mut dyn Download, digest: &mut Option<String>, io: &Pipe) -> Result<(), Error> {
     let seated = || io.seated();
-    file.rewind(&seated)?;
     io.text(Msg::Ready { id, size, offset: 0 })?;
-    let Packet::Text(Msg::Start { offset, .. }) = io.receive()? else { return Err(Error::Protocol) };
+    let offset = match io.receive()? {
+        Packet::Text(Msg::Done { offset, .. }) if offset == size && digest.is_some() => return Ok(()),
+        Packet::Text(Msg::Start { offset, .. }) => offset,
+        _ => return Err(Error::Protocol),
+    };
     if offset > size {
         return Err(Error::Protocol);
     }
+    if offset < size || digest.is_none() {
+        *digest = Some(read_download(id, size, offset, file, io)?);
+    }
+    io.text(Msg::Finish { id, offset: size, sha256: digest.as_ref().unwrap().clone() })?;
+    match io.receive()? {
+        Packet::Text(Msg::Done { offset, .. }) if offset == size => Ok(()),
+        _ => Err(Error::Protocol),
+    }
+}
+
+fn read_download(id: u32, size: u64, offset: u64, file: &mut dyn Download, io: &Pipe) -> Result<String, Error> {
+    let seated = || io.seated();
+    file.rewind(&seated)?;
     let mut hash = Sha256::new();
     let mut prefix = 0;
     let mut bytes = vec![0; chunk(offset)];
@@ -592,12 +629,8 @@ fn download(id: u32, size: u64, file: &mut dyn Download, io: &Pipe) -> Result<()
             }
         }
     }
-    file.verify(&seated)?;
-    io.text(Msg::Finish { id, offset: size, sha256: wire::crypto::hex(&hash.finalize()) })?;
-    match io.receive()? {
-        Packet::Text(Msg::Done { offset, .. }) if offset == size => Ok(()),
-        _ => Err(Error::Protocol),
-    }
+    file.finish(&seated)?;
+    Ok(wire::crypto::hex(&hash.finalize()))
 }
 
 fn chunk(left: u64) -> usize {
@@ -607,9 +640,10 @@ fn chunk(left: u64) -> usize {
 struct Pipe {
     incoming: Receiver<Packet>,
     outgoing: SyncSender<Packet>,
-    stopped: Arc<Mutex<Option<Error>>>,
+    stopped: Arc<Mutex<Option<Stop>>>,
     lease: Lease,
     wake: Sender<SessionEvent>,
+    wait: Duration,
 }
 
 impl Pipe {
@@ -621,7 +655,11 @@ impl Pipe {
         if !self.seated() {
             return Err(Error::Cancelled);
         }
-        self.incoming.recv().map_err(|_| Error::Cancelled)
+        let packet = self.incoming.recv_timeout(self.wait).map_err(|_| Error::Cancelled)?;
+        if !self.seated() {
+            return Err(Error::Cancelled);
+        }
+        Ok(packet)
     }
 
     fn text(&self, msg: Msg) -> Result<(), Error> {
@@ -629,7 +667,7 @@ impl Pipe {
     }
 
     fn send(&self, packet: Packet) -> Result<(), Error> {
-        self.outgoing.send(packet).map_err(|_| Error::Cancelled)?;
+        self.outgoing.try_send(packet).map_err(|_| Error::Cancelled)?;
         let _ = self.wake.send(SessionEvent::TransferReady);
         Ok(())
     }
@@ -641,7 +679,7 @@ mod tests {
     use crate::session::terminal::registry::Registry as Terminals;
     use crate::workspace::Download;
 
-    struct Source(u64);
+    struct Source(u64, bool);
 
     impl Download for Source {
         fn size(&self) -> u64 {
@@ -649,6 +687,7 @@ mod tests {
         }
 
         fn rewind(&mut self, _: &dyn Fn() -> bool) -> Result<(), Error> {
+            assert!(self.1, "tried to rewind a finished download");
             Ok(())
         }
 
@@ -660,9 +699,17 @@ mod tests {
             }
         }
 
-        fn verify(&self, _: &dyn Fn() -> bool) -> Result<(), Error> {
+        fn finish(&mut self, _: &dyn Fn() -> bool) -> Result<(), Error> {
             Ok(())
         }
+    }
+
+    fn pipe(lease: Lease, wait: Duration) -> (Pipe, SyncSender<Packet>, Receiver<Packet>) {
+        let (input, incoming) = mpsc::sync_channel(SLOTS);
+        let (outgoing, output) = mpsc::sync_channel(SLOTS);
+        let (wake, _) = mpsc::channel();
+        let pipe = Pipe { incoming, outgoing, stopped: Arc::new(Mutex::new(None)), lease, wake, wait };
+        (pipe, input, output)
     }
 
     #[test]
@@ -671,20 +718,10 @@ mod tests {
         let registry = Terminals::new(|_, _| unreachable!(), updates);
         let lease = registry.admit("desk".into(), "browser".into(), "device".into());
         for (cancel, offset) in [(false, 0), (true, 0), (false, CHUNK as u64), (false, 3 * CHUNK as u64)] {
-            let (input, incoming) = mpsc::sync_channel(SLOTS);
-            let (outgoing, output) = mpsc::sync_channel(SLOTS);
-            let (wake, _events) = mpsc::channel();
-            let stopped = Arc::new(Mutex::new(None));
-            let pipe = Pipe {
-                incoming,
-                outgoing,
-                stopped,
-                lease: lease.clone(),
-                wake,
-            };
+            let (pipe, input, output) = pipe(lease.clone(), Duration::from_secs(2));
             let size = (WINDOW + CHUNK) as u64;
             let worker = std::thread::spawn(move || {
-                download(1, size, &mut Source(size), &pipe)
+                download(1, size, &mut Source(size, true), &mut None, &pipe)
             });
             let read = || output.recv_timeout(Duration::from_secs(2)).unwrap();
             assert!(
@@ -720,6 +757,59 @@ mod tests {
             assert_eq!(sha256, wire::crypto::hex(&wire::crypto::sha256(&vec![0; size as usize])));
             input.send(Packet::Text(Msg::Done { id: 1, offset: size })).ok().unwrap();
             assert_eq!(worker.join().unwrap(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_download_waiting_for_credit_interrupts_at_the_wait_limit() {
+        let (updates, _) = mpsc::channel();
+        let registry = Terminals::new(|_, _| unreachable!(), updates);
+        let lease = registry.admit("desk".into(), "browser".into(), "device".into());
+        let (pipe, input, output) = pipe(lease, Duration::ZERO);
+        input.try_send(Packet::Text(Msg::Start { id: 1, offset: 0 })).ok().unwrap();
+        let size = (WINDOW + CHUNK) as u64;
+        let mut digest = None;
+        assert_eq!(download(1, size, &mut Source(size, true), &mut digest, &pipe), Err(Error::Cancelled));
+        assert!(digest.is_none());
+        assert_eq!(output.try_iter().filter(|packet| matches!(packet, Packet::Data(_))).count(), WINDOW / CHUNK);
+    }
+
+    #[test]
+    fn closing_the_channel_interrupts_the_worker_even_with_pending_input() {
+        let (updates, _) = mpsc::channel();
+        let registry = Terminals::new(|_, _| unreachable!(), updates);
+        let lease = registry.admit("desk".into(), "browser".into(), "device".into());
+        let (pipe, input, output) = pipe(lease.clone(), Duration::ZERO);
+        input.try_send(Packet::Text(Msg::Start { id: 1, offset: 0 })).ok().unwrap();
+        drop(Job {
+            input: Some(input), output, stopped: pipe.stopped.clone(),
+            id: 1, upload: false, receiving: false, received: 0, credit: Credit::default(),
+        });
+        assert!(lease.holds_seat());
+        assert!(!pipe.seated());
+        assert!(matches!(pipe.receive(), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn a_download_resumed_at_the_end_uses_its_cached_finish() {
+        let (updates, _) = mpsc::channel();
+        let registry = Terminals::new(|_, _| unreachable!(), updates);
+        let lease = registry.admit("desk".into(), "browser".into(), "device".into());
+        let size = 1;
+        for verified in [false, true] {
+            let (pipe, input, output) = pipe(lease.clone(), Duration::ZERO);
+            if !verified {
+                input.try_send(Packet::Text(Msg::Start { id: 1, offset: size })).ok().unwrap();
+            }
+            input.try_send(Packet::Text(Msg::Done { id: 1, offset: size })).ok().unwrap();
+            let mut digest = Some("original digest".into());
+            assert_eq!(download(1, size, &mut Source(size, false), &mut digest, &pipe), Ok(()));
+            assert!(matches!(output.try_recv(), Ok(Packet::Text(Msg::Ready { .. }))));
+            if !verified {
+                assert!(matches!(output.try_recv(), Ok(Packet::Text(Msg::Finish { offset, sha256, .. }))
+                    if offset == size && sha256 == "original digest"));
+            }
+            assert!(output.try_recv().is_err());
         }
     }
 
@@ -760,6 +850,40 @@ mod tests {
                 next.lock().unwrap().attached = false;
                 registry.expire(until);
                 assert!(next.lock().unwrap().record.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn leaving_or_expiring_drops_the_record_and_cancel_completes_it() {
+        let (updates, _) = mpsc::channel();
+        let terminals = Terminals::new(|_, _| unreachable!(), updates);
+        let (wake, _) = mpsc::channel();
+        let files = FileTransfers {
+            path: |_, _, _, _| unreachable!(),
+            upload: |_, _, _| unreachable!(),
+            download: |_, _| unreachable!(),
+        };
+        for reason in [Some(Reason::Left), Some(Reason::Taken), Some(Reason::Failed), None] {
+            let mut registry = Registry::default();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            let page = registry.admit("one", "page", "first", deadline);
+            let lease = terminals.admit("first".into(), "browser".into(), "one".into());
+            let mut transfers = Transfers::new(files, page.clone(), lease, wake.clone());
+            assert!(transfers.offer(1, vec![], "file".into(), Direction::Upload(2)));
+            let record = Arc::downgrade(page.lock().unwrap().record.as_ref().unwrap());
+            if let Some(reason) = reason {
+                transfers.ended(reason);
+                if reason == Reason::Failed {
+                    assert!(record.upgrade().is_some());
+                    registry.expire(deadline);
+                }
+                assert!(record.upgrade().is_none());
+            } else {
+                transfers.stop(Error::Cancelled);
+                assert!(transfers.start());
+                assert!(matches!(transfers.pending, Some(Packet::End(Msg::Error { why: Error::Cancelled, .. }))));
+                assert!(record.upgrade().unwrap().finished());
             }
         }
     }

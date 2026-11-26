@@ -13,7 +13,6 @@ export class TerminalView {
   constructor(s) {
     this.s = s;
     this.buttons = [s.osk.button];
-    this.waiting = this.connectingNotice || 'terminal.starting';
     this.onscreenCapsLock = false;
     this.el = h('div', { class: 'terminal-surface' });
     this.status = h('div', { class: 'notice dark passive terminal-status', role: 'status', hidden: true });
@@ -27,7 +26,10 @@ export class TerminalView {
     return this.s.caps ? this.s.hasCap(CAPS.TERMINAL_KEEP) : this.s.device.caps?.includes(CAPS.TERMINAL_KEEP);
   }
   get canClose() { return !!this.stream?.attached && !this.stream.closing; }
-  get connectingNotice() { if (this.s.device.kept_terminal) return 'terminal.reconnecting'; }
+  get connectingNotice() {
+    if (this.opened || (!this.emulator && this.s.device.kept_terminal)) return 'terminal.reconnecting';
+  }
+  get waiting() { return this.connectingNotice || 'terminal.starting'; }
   get recoveringNotice() {
     if (this.stream?.attached && this.keeps) return 'terminal.reconnecting';
   }
@@ -46,12 +48,17 @@ export class TerminalView {
   useChannels({ terminal }) {
     this.stream?.dispose();
     this.emulator?.reset();
+    this.status.hidden = true;
     this.stream = new TerminalChannel(terminal, (bytes, done) => this.emulator.write(bytes, done), (m) => this.onStatus(m));
     terminal.onopen = () => this.active();
   }
 
   active() {
-    if (this.s.stage.hidden || !this.s.connected || !this.s.hasCap(CAPS.TERMINAL) || this.stream?.channel.readyState !== 'open') return;
+    if (!this.s.connected || !this.s.hasCap(CAPS.TERMINAL) || this.stream?.channel.readyState !== 'open') return;
+    if (this.s.stage.hidden) {
+      if (this.opened) this.stream.size(this.emulator.rows, this.emulator.cols);
+      return;
+    }
     if (!this.loading) this.loading = this.load();
     this.fit();
   }
@@ -143,9 +150,11 @@ export class TerminalView {
     if (m.t === Msg.CLOSED) { this.s.leave(); return; }
     if (!this.s.stage.hidden) this.s.ready();
     if (m.t === Msg.OPENED) {
+      this.opened = true;
       this.fit();
       if (m.dropped) this.showStatus(t('terminal.dropped'));
     } else {
+      if (m.t === Msg.EXIT || (m.why !== 'close' && this.stream.channel.readyState === 'open')) this.opened = false;
       if (m.why !== 'close') this.s.osk.toggle(false);
       this.showStatus(m.t === Msg.EXIT
         ? t(m.code < 0 ? 'terminal.signal' : 'terminal.exit', { code: Math.abs(m.code) })

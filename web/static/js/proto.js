@@ -155,7 +155,7 @@ export const CHANNELS = Object.freeze({
       delete: msg(B2H, { path: '[s]', entry: 's' }),
       listing: msg(H2B, { path: '[s]', entries: '[FileEntry]', cursor: 's?' }),
       changed: msg(H2B),
-      error: msg(H2B, { why: 's:not_found|denied|exists|not_empty|invalid_name|invalid_path|busy|io' }),
+      error: msg(H2B, { why: 's:not_found|denied|exists|not_empty|invalid_name|invalid_path|busy|in_use|io' }),
     }),
   },
   [CAPS.FILE_TRANSFER]: {
@@ -164,7 +164,7 @@ export const CHANNELS = Object.freeze({
       upload: msg(B2H, { id: 'i', path: '[s]', name: 's', size: 'i' }),
       download: msg(B2H, { id: 'i', path: '[s]', entry: 's', limit: 'i?' }),
       resume: msg(B2H, { id: 'i' }),
-      conflict: msg(H2B, { id: 'i', size: 'i', modified: 'i' }),
+      conflict: msg(H2B, { id: 'i', size: 'i', modified: 'i', changed: 'b?' }),
       replace: msg(B2H, { id: 'i' }),
       ready: msg(H2B, { id: 'i', size: 'i', offset: 'i' }),
       start: msg(B2H, { id: 'i', offset: 'i' }),

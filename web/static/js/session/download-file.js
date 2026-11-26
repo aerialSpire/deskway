@@ -26,7 +26,7 @@ export async function chooseDownload(name, api = globalThis) {
         close: () => {
           const blob = new Blob(parts, { type: 'application/octet-stream' });
           parts.length = 0;
-          save(blob, name);
+          return () => save(blob, name);
         },
         abort: () => { parts.length = 0; },
       };

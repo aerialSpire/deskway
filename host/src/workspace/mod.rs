@@ -173,7 +173,7 @@ pub type Answer = Result<Value, WorkError>;
 /// A local filesystem operation and its resolved path for the host's journal.
 pub type BrowseFiles = fn(wire::browse::Browse, &dyn Fn() -> bool) -> (PathBuf, wire::browse::Browse);
 
-pub use file_transfer::{Download, FileTransfers, Upload};
+pub use file_transfer::{Conflict, Download, FileTransfers, Upload};
 mod file_transfer;
 
 #[cfg(target_os = "linux")]

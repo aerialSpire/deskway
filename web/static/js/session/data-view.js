@@ -22,7 +22,7 @@ export class DataView {
   }
 
   get filesVisible() { return this.currentView === 'files'; }
-  get hasTerminal() { return !!this.terminal.stream?.attached; }
+  get hasTerminal() { return this.terminal.opened || !!this.terminal.stream?.attached; }
   get keeps() { return this.terminal.keeps; }
   get canClose() { return this.terminal.canClose; }
   get controlsReady() { return !this.filesVisible && this.terminal.controlsReady; }
@@ -58,9 +58,9 @@ export class DataView {
       if (this.s.connected && !this.terminal.stream?.attached && this.terminal.stream?.phase !== 'done') {
         this.s.setWaiting(t(this.terminal.waiting));
       }
-      this.terminal.active();
       this.s.stage.focus({ preventScroll: true });
     }
+    this.terminal.active();
     this.s.toolbar.show();
     this.s.layout();
   }
@@ -81,9 +81,8 @@ export class DataView {
     this.openTransfers();
     this.transfers.next();
     this.files.update();
-    if (this.filesVisible) {
-      if (this.s.caps) this.s.ready();
-    } else this.terminal.active();
+    if (this.filesVisible && this.s.caps) this.s.ready();
+    this.terminal.active();
   }
 
   recover() {

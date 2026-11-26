@@ -1062,7 +1062,7 @@
           "type": "error", "directions": ["host->browser"],
           "meaning": "The requested filesystem operation failed.",
           "fields": {
-            "why": {"type": "string", "optional": false, "meaning": "Reason for the failure.", "enum": ["not_found", "denied", "exists", "not_empty", "invalid_name", "invalid_path", "busy", "io"]}
+            "why": {"type": "string", "optional": false, "meaning": "Reason for the failure.", "enum": ["not_found", "denied", "exists", "not_empty", "invalid_name", "invalid_path", "busy", "in_use", "io"]}
           }
         }
       ]
@@ -1077,13 +1077,13 @@
         {"type": "upload", "directions": ["browser->host"], "meaning": "Offer a file. An existing regular file requires confirmation before granting credit.", "fields": {"id": {"type": "integer", "optional": false}, "path": {"type": "array", "optional": false, "items": "string"}, "name": {"type": "string", "optional": false}, "size": {"type": "integer", "optional": false}}},
         {"type": "download", "directions": ["browser->host"], "meaning": "Open one regular file. Refuse a size above limit when supplied.", "fields": {"id": {"type": "integer", "optional": false}, "path": {"type": "array", "optional": false, "items": "string"}, "entry": {"type": "string", "optional": false}, "limit": {"type": "integer", "optional": true}}},
         {"type": "resume", "directions": ["browser->host"], "meaning": "Continue a previously acknowledged transfer on a fresh channel.", "fields": {"id": {"type": "integer", "optional": false}}},
-        {"type": "conflict", "directions": ["host->browser"], "meaning": "Ask about a regular file at the destination. Modified is Unix seconds.", "fields": {"id": {"type": "integer", "optional": false}, "size": {"type": "integer", "optional": false}, "modified": {"type": "integer", "optional": false}}},
+        {"type": "conflict", "directions": ["host->browser"], "meaning": "Ask about a regular file at the destination. Modified is Unix seconds. A changed destination requires a new answer.", "fields": {"id": {"type": "integer", "optional": false}, "size": {"type": "integer", "optional": false}, "modified": {"type": "integer", "optional": false}, "changed": {"type": "boolean", "optional": true}}},
         {"type": "replace", "directions": ["browser->host"], "meaning": "Approve replacing a regular file at the destination.", "fields": {"id": {"type": "integer", "optional": false}}},
         {"type": "ready", "directions": ["host->browser"], "meaning": "Report the size. For upload grant the initial window at the staged offset.", "fields": {"id": {"type": "integer", "optional": false}, "size": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
         {"type": "start", "directions": ["browser->host"], "meaning": "Grant the initial download window at the offset the browser has written.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
         {"type": "ack", "directions": ["browser->host", "host->browser"], "meaning": "Return receiver credit through the absolute offset consumed.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
         {"type": "finish", "directions": ["browser->host", "host->browser"], "meaning": "All bytes were acknowledged. Receiver verifies the SHA-256 in lowercase hex before committing.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}, "sha256": {"type": "string", "optional": false}}},
-        {"type": "done", "directions": ["browser->host", "host->browser"], "meaning": "The receiver committed the file. The host echoes download completion.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
+        {"type": "done", "directions": ["browser->host", "host->browser"], "meaning": "The receiver committed the file or verified it in browser memory. The host echoes download completion.", "fields": {"id": {"type": "integer", "optional": false}, "offset": {"type": "integer", "optional": false}}},
         {"type": "cancel", "directions": ["browser->host"], "meaning": "Cancel the current transfer and discard staged data.", "fields": {"id": {"type": "integer", "optional": false}}},
         {"type": "error", "directions": ["browser->host", "host->browser"], "meaning": "The transfer ended without completion. The browser may report io, protocol or integrity.", "fields": {"id": {"type": "integer", "optional": false}, "why": {"type": "string", "optional": false, "enum": ["not_found", "denied", "exists", "invalid_name", "invalid_path", "busy", "io", "not_regular", "changed", "size", "limit", "protocol", "cancelled", "integrity", "expired"]}}}
       ]
