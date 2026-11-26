@@ -393,6 +393,10 @@ pub fn open_permission_settings(screen: bool) -> Result<()> {
     open_system_settings(&format!("com.apple.preference.security?{pane}"))
 }
 
+pub fn open_full_disk_access_settings() -> Result<()> {
+    open_system_settings("com.apple.preference.security?Privacy_AllFiles")
+}
+
 pub fn open_system_settings(pane: &str) -> Result<()> {
     let url = NSURL::URLWithString(&NSString::from_str(&format!("x-apple.systempreferences:{pane}")))
         .with_context(|| t("err.mac_settings"))?;

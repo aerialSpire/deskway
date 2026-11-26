@@ -117,6 +117,7 @@ pub enum PageMessage {
     AccessibilityRequest,
     ScreenSettings,
     AccessibilitySettings,
+    FullDiskAccessSettings,
     LoginSettings,
     #[cfg(target_os = "macos")]
     ReopenForPermissions,
@@ -503,5 +504,6 @@ mod tests {
         assert_eq!(m(r#"{"cmd":"lock","on":true}"#).request(), Some(PanelRequest::AutoLock(true)));
         assert_eq!(m(r#"{"cmd":"drag-region","rect":null}"#), PageMessage::DragRegion { rect: None });
         assert_eq!(m(r#"{"cmd":"overlay-size","w":200,"h":28}"#).request(), None);
+        assert_eq!(m(r#"{"cmd":"full-disk-access-settings"}"#), PageMessage::FullDiskAccessSettings);
     }
 }

@@ -74,6 +74,12 @@ pub fn permissions() -> Permissions {
     }
 }
 
+pub fn full_disk_access() -> bool {
+    // The system TCC database is present even on macOS versions without per-user databases.
+    // Opening it read-only checks the process's access without a prompt or reading any records.
+    File::open("/Library/Application Support/com.apple.TCC/TCC.db").is_ok()
+}
+
 pub fn request_accessibility() {
     let prompt = unsafe { kAXTrustedCheckOptionPrompt };
     let options =

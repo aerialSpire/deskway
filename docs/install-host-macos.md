@@ -27,8 +27,8 @@ To build it yourself instead, see [Building from source](#building-from-source).
 
 ## 2. Grant permissions
 
-Click the Deskway Host icon in the menu bar to open its panel. While a permission is missing, the
-status shows **macOS permissions needed**.
+Click the Deskway Host icon in the menu bar to open its panel. While a required permission is
+missing, the status shows **macOS permissions needed**.
 
 1. Click **Allow Screen Recording**, and turn on Deskway Host in the System Settings page that
    opens. When macOS offers to quit and reopen the app, accept, or click **Restart Deskway** in the
@@ -36,9 +36,13 @@ status shows **macOS permissions needed**.
 2. Click **Allow Accessibility**, and turn on Deskway Host in System Settings. This lets remote
    mouse and keyboard input reach the Mac.
 
-The two rows then show **Screen Recording allowed** and **Accessibility allowed**. If you
-dismissed a request, the panel offers **Open Screen Recording settings** or
-**Open Accessibility settings** instead.
+As you grant the required permissions, the panel shows **Screen Recording allowed** or
+**Accessibility allowed** until both are granted. If you dismissed a request, the panel offers
+**Open Screen Recording settings** or **Open Accessibility settings** instead.
+
+To skip folder-by-folder prompts during file transfers or AI file operations, click
+**Open Full Disk Access settings** in the panel and turn on this optional permission for Deskway
+Host. Quit and reopen Deskway if macOS asks.
 
 The ad-hoc signature identifies one specific build, so macOS may ask for these permissions again
 after an update.

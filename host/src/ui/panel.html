@@ -151,19 +151,33 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
     </div>
 
     <section id="mac" hidden>
-      <div id="permissions" role="group" data-i18n-attr="aria-label=mac.permissions_aria" hidden>
-        <p id="permission-request" role="status"></p>
-        <div class="permission-row">
-          <button class="btn text compact" id="screen-request" type="button" data-i18n="mac.screen_request"></button>
-          <span class="permission-granted" id="screen-granted" hidden data-i18n="mac.screen_granted"></span>
-          <button class="btn text compact" id="screen-settings" type="button" hidden data-i18n="mac.screen_settings"></button>
+      <div id="mac-permissions" hidden>
+        <div id="permissions" role="group" data-i18n-attr="aria-label=mac.permissions_aria" hidden>
+          <p id="permission-request" role="status"></p>
+          <div class="permission-row">
+            <button class="btn text compact" id="screen-request" type="button" data-i18n="mac.screen_request"></button>
+            <span class="permission-granted" id="screen-granted" hidden data-i18n="mac.screen_granted"></span>
+            <button class="btn text compact" id="screen-settings" type="button" hidden data-i18n="mac.screen_settings"></button>
+          </div>
+          <div class="permission-row">
+            <button class="btn text compact" id="accessibility-request" type="button" data-i18n="mac.accessibility_request"></button>
+            <span class="permission-granted" id="accessibility-granted" hidden data-i18n="mac.accessibility_granted"></span>
+            <button class="btn text compact" id="accessibility-settings" type="button" hidden data-i18n="mac.accessibility_settings"></button>
+          </div>
+          <button class="btn text compact" id="reopen-for-permissions" type="button" hidden data-i18n="mac.reopen"></button>
         </div>
-        <div class="permission-row">
-          <button class="btn text compact" id="accessibility-request" type="button" data-i18n="mac.accessibility_request"></button>
-          <span class="permission-granted" id="accessibility-granted" hidden data-i18n="mac.accessibility_granted"></span>
-          <button class="btn text compact" id="accessibility-settings" type="button" hidden data-i18n="mac.accessibility_settings"></button>
+        <div class="row" role="group" aria-labelledby="full-disk-access-label">
+          <div>
+            <div class="permission-row">
+              <span id="full-disk-access-label" data-i18n="mac.full_disk_access"></span>
+              <span class="note" id="full-disk-access-status" role="status"></span>
+            </div>
+            <div id="full-disk-access-offer">
+              <p class="note" data-i18n="mac.full_disk_access_hint"></p>
+              <button class="btn text compact" id="full-disk-access-settings" type="button" data-i18n="mac.full_disk_access_settings"></button>
+            </div>
+          </div>
         </div>
-        <button class="btn text compact" id="reopen-for-permissions" type="button" hidden data-i18n="mac.reopen"></button>
       </div>
       <div id="login-cleanup" hidden>
         <p class="sub" id="login-cleanup-status" role="status"></p>
@@ -383,8 +397,8 @@ window.render = (s) => {
   $('loading').hidden = true;
   $('mac').hidden = !s.mac;
   $('minimize').hidden = !s.mac;
-  const permissions = $('permissions');
-  permissions.hidden = !s.mac || (s.mac.screen && s.mac.accessibility);
+  const permissions = $('mac-permissions');
+  permissions.hidden = !s.mac;
   if (s.mac) {
     if (!macDragObserved) {
       observeMacDragRegion();
@@ -392,6 +406,9 @@ window.render = (s) => {
     }
     const abovePermissions = s.enrolled ? $('problem') : $('login-help');
     if (permissions.previousElementSibling !== abovePermissions) abovePermissions.after(permissions);
+    $('permissions').hidden = s.mac.screen && s.mac.accessibility;
+    $('full-disk-access-status').textContent = s.mac.full_disk_access ? t('mac.full_disk_access_on') : t('mac.full_disk_access_off');
+    $('full-disk-access-offer').hidden = s.mac.full_disk_access;
     $('screen-request').hidden = s.mac.screen;
     $('screen-granted').hidden = !s.mac.screen;
     $('accessibility-request').hidden = s.mac.accessibility;
@@ -554,7 +571,7 @@ $('search').addEventListener('input', () => { if (window.last) renderDevices(win
 $('unpair').addEventListener('click', () => { $('unpair-overlay').hidden = false; });
 $('unpair-cancel').addEventListener('click', () => { $('unpair-overlay').hidden = true; });
 $('unpair-confirm').addEventListener('click', () => { $('unpair-overlay').hidden = true; send({ cmd: 'unpair' }); });
-for (const cmd of ['screen-request', 'accessibility-request', 'screen-settings', 'accessibility-settings', 'login-settings', 'reopen-for-permissions']) {
+for (const cmd of ['screen-request', 'accessibility-request', 'screen-settings', 'accessibility-settings', 'full-disk-access-settings', 'login-settings', 'reopen-for-permissions']) {
   $(cmd).addEventListener('click', () => send({ cmd }));
 }
 $('login-cleanup-retry').addEventListener('click', () => send({ cmd: 'autostart', on: false }));
