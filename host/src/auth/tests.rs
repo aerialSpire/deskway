@@ -560,6 +560,28 @@ fn ai_clients_come_in_only_through_a_browser_and_sign_for_nobody() {
 }
 
 #[test]
+fn local_stop_applies_to_the_saved_switch() {
+    for (name, kept, want) in [
+        ("missing", None, Ok((false, AiState::Off))),
+        ("off", Some(r#"{"switch":{"ts":5,"ai":false,"admin":false},"stopped":null}"#), Ok((false, AiState::Off))),
+        ("on", Some(r#"{"switch":{"ts":5,"ai":true,"admin":true},"stopped":4}"#), Ok((true, AiState::Stopped))),
+        ("stopped", Some(r#"{"switch":{"ts":5,"ai":true,"admin":false},"stopped":5}"#), Ok((false, AiState::Stopped))),
+        ("damaged", Some("{"), Err(())),
+    ] {
+        let d = dir(&format!("saved-ai-{name}"));
+        let path = d.join("ai.json");
+        if let Some(kept) = kept {
+            std::fs::write(&path, kept).unwrap();
+        }
+        let result = ai::stop_saved_ai(&d).and_then(|changed| Ok((changed, ai::saved_ai_state(&d)?)));
+        assert_eq!(result.map_err(|_| ()), want, "{name}");
+        if !matches!(want, Ok((true, _))) {
+            assert_eq!(std::fs::read_to_string(path).ok().as_deref(), kept, "{name}");
+        }
+    }
+}
+
+#[test]
 fn the_ai_switch_is_the_newest_a_trusted_browser_signed_for_this_computer() {
     let d = dir("ai-switch");
     let mut t = Trust::open(d.clone(), "H1", "https://node.example").unwrap();

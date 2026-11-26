@@ -38,7 +38,7 @@ use wire::crypto::random;
 use wire::challenge::answer_v1;
 use wire::types::{AnswerAuth, Role};
 
-mod ai;
+pub mod ai;
 pub mod asks;
 mod log;
 pub mod offers;

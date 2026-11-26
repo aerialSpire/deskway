@@ -8,8 +8,9 @@
 //! "Stop", pressed here, ends AI control at once and holds until a browser signs a switch
 //! newer than the one it stopped: only a person can open it again, from their devices.
 
-use std::path::Path;
+use std::{io, path::Path};
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -51,7 +52,19 @@ pub(super) struct Ai {
 
 impl Ai {
     pub(super) fn load(dir: &Path) -> Ai {
-        std::fs::read(dir.join("ai.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        Self::read(dir).unwrap_or_default()
+    }
+
+    fn read(dir: &Path) -> Result<Ai> {
+        match std::fs::read(dir.join("ai.json")) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Ai::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn save(&self, dir: &Path) -> Result<()> {
+        crate::config::write_private(&dir.join("ai.json"), &serde_json::to_vec(self)?)
     }
 
     fn state(&self) -> AiState {
@@ -61,6 +74,31 @@ impl Ai {
             _ => AiState::Off,
         }
     }
+
+    fn stop(&mut self) -> bool {
+        if let (AiState::On { .. }, Some(s)) = (self.state(), self.switch) {
+            self.stopped = Some(s.ts);
+            return true;
+        }
+        false
+    }
+}
+
+/// Read the saved switch without mistaking a damaged or unreadable file for a switch that is off.
+#[cfg(any(not(desktop_host), test))]
+pub fn saved_ai_state(dir: &Path) -> Result<AiState> {
+    Ok(Ai::read(dir)?.state())
+}
+
+/// Stop at the computer while holding exclusive access to the state directory.
+#[cfg(any(not(desktop_host), test))]
+pub fn stop_saved_ai(dir: &Path) -> Result<bool> {
+    let mut ai = Ai::read(dir)?;
+    if ai.stop() {
+        ai.save(dir)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Whether AI clients may use administrator rights here now, as the switch kept in `dir` says:
@@ -110,8 +148,7 @@ impl Trust {
 
     /// Stop, pressed here: AI control ends until a newer switch. Nothing to do when it is not on.
     pub fn stop_ai(&mut self) {
-        if let (AiState::On { .. }, Some(s)) = (self.ai.state(), self.ai.switch) {
-            self.ai.stopped = Some(s.ts);
+        if self.ai.stop() {
             self.save_ai();
         }
     }
@@ -133,8 +170,7 @@ impl Trust {
     }
 
     fn save_ai(&self) {
-        let written = serde_json::to_vec(&self.ai).map_err(anyhow::Error::from).and_then(|b| crate::config::write_private(&self.dir.join("ai.json"), &b));
-        if let Err(e) = written {
+        if let Err(e) = self.ai.save(&self.dir) {
             eprintln!("could not keep the AI switch: {e:#}");
         }
     }

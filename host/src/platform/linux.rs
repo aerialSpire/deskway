@@ -1,4 +1,4 @@
-//! The Linux host runs in the foreground with an in-process workspace.
+//! The Linux host runs in the foreground or under systemd, with an in-process workspace.
 use std::cell::Cell;
 use std::env;
 use std::fs::File;
@@ -7,9 +7,11 @@ use std::mem::MaybeUninit;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
+use crate::auth::ai::{saved_ai_state, stop_saved_ai, AiState};
 use crate::config::{self, Config};
 use crate::i18n::{t, tf};
 use crate::settings::Settings;
@@ -17,6 +19,8 @@ use crate::signal::{self, Control};
 use crate::workspace::Local;
 
 mod programs;
+mod lock;
+use super::unix::{open_host_lock, try_lock_host};
 pub use programs::{kill_tree, session_members, start_program, start_terminal};
 
 pub fn config_dir() -> Option<PathBuf> {
@@ -38,21 +42,56 @@ pub fn prevent_sleep(_: bool) -> Result<()> {
     Ok(())
 }
 
+/// Own the state directory. The file names no process until a running host records itself.
 pub fn lock() -> Result<File> {
-    super::unix::lock_host().map_err(|e| {
-        if e.downcast_ref::<io::Error>().is_some_and(|e| e.kind() == io::ErrorKind::WouldBlock) {
-            e.context(t("cli.host_in_use"))
-        } else {
-            e
+    let file = open_host_lock(&config::dir()?, true)?;
+    match try_lock_host(&file) {
+        Ok(()) => {
+            file.set_len(0)?;
+            Ok(file)
         }
-    })
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e).context(t("cli.host_in_use")),
+        Err(e) => Err(e.into()),
+    }
 }
 
-pub fn run(cfg: Config) -> Result<()> {
+pub fn stop_ai() -> Result<()> {
+    let stopped = stop().with_context(|| t("cli.ai_stop_unconfirmed"))?;
+    println!("{}", t(if stopped { "panel.ai_stopped" } else { "cli.ai_not_on" }));
+    Ok(())
+}
+
+fn stop() -> Result<bool> {
+    let dir = config::dir()?;
+    let file = open_host_lock(&dir, true)?;
+    match try_lock_host(&file) {
+        Ok(()) => return stop_saved_ai(&dir),
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+        Err(e) => return Err(e.into()),
+    }
+    // The running host is asked whatever the saved state says: its memory is what counts.
+    let before = saved_ai_state(&dir);
+    lock::signal_stop(&file)?;
+    let was_on = matches!(before?, AiState::On { .. });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while was_on && matches!(saved_ai_state(&dir)?, AiState::On { .. }) {
+        if Instant::now() >= deadline {
+            return Err(io::Error::from(io::ErrorKind::TimedOut).into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(was_on)
+}
+
+pub fn run() -> Result<()> {
     let (control, requests) = mpsc::channel();
-    let (settings, awake) = Settings::start(config::dir()?, &cfg, None, control.clone());
+    // Whoever finds this process through the lock file may signal it at once.
+    receive_signals(control.clone())?;
+    let mut lock = lock()?;
+    lock::record_pid(&mut lock)?;
+    let cfg = Config::load()?;
+    let (settings, awake) = Settings::start(config::dir()?, &cfg, None, control);
     awake?;
-    quit_on_signal(control)?;
     let waiting = Cell::new(false);
     signal::run(signal::Params {
         cfg, view_only: false, desktop: None,
@@ -66,20 +105,21 @@ pub fn run(cfg: Config) -> Result<()> {
     Ok(())
 }
 
-fn quit_signals() -> libc::sigset_t {
+fn host_signals() -> libc::sigset_t {
     let mut signals = MaybeUninit::uninit();
-    // sigemptyset initializes the set, and all three calls use its valid storage.
+    // sigemptyset initializes the set before the calls that use it.
     unsafe {
         libc::sigemptyset(signals.as_mut_ptr());
         libc::sigaddset(signals.as_mut_ptr(), libc::SIGINT);
         libc::sigaddset(signals.as_mut_ptr(), libc::SIGTERM);
+        libc::sigaddset(signals.as_mut_ptr(), libc::SIGUSR1);
         signals.assume_init()
     }
 }
 
 /// Block these signals before starting any host threads, then receive them synchronously.
-fn quit_on_signal(control: Sender<Control>) -> io::Result<()> {
-    let signals = quit_signals();
+fn receive_signals(control: Sender<Control>) -> io::Result<()> {
+    let signals = host_signals();
     // Spawned threads inherit this mask. The wait below is the only consumer of these signals.
     let error = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut()) };
     if error != 0 {
@@ -87,9 +127,15 @@ fn quit_on_signal(control: Sender<Control>) -> io::Result<()> {
     }
     std::thread::Builder::new().name("signals".into()).spawn(move || {
         let mut received = 0;
-        let error = unsafe { libc::sigwait(&signals, &mut received) };
-        if error != 0 {
-            eprintln!("signal wait: {}", io::Error::from_raw_os_error(error));
+        loop {
+            let error = unsafe { libc::sigwait(&signals, &mut received) };
+            if error != 0 {
+                eprintln!("signal wait: {}", io::Error::from_raw_os_error(error));
+                break;
+            }
+            if received != libc::SIGUSR1 || control.send(Control::StopAi).is_err() {
+                break;
+            }
         }
         let _ = control.send(Control::Quit);
     })?;

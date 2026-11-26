@@ -15,7 +15,7 @@ out of date or wrong, please open an issue with a link to the source.
 | Web client | Served by your server | Self-hosted web client on Server Pro plans above a size threshold [4] | Provided by Google at remotedesktop.google.com [6] |
 | Accounts | Managed on your server | Device ID and password; user accounts, OIDC single sign-on and LDAP in Server Pro [4] | Google account [7] |
 | Controlling device | Desktop and mobile browsers | Desktop, mobile and web clients [5] | Web browser on a computer, mobile apps [6] |
-| Controlled computers | Windows, macOS | Windows, macOS, Linux, Android [5] | Windows, macOS, Linux [6] |
+| Controlled computers | Windows, macOS, Linux (AI workspace) | Windows, macOS, Linux, Android [5] | Windows, macOS, Linux [6] |
 
 "No" for Chrome Remote Desktop's AI rows means its documentation describes no such feature.
 

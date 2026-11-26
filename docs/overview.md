@@ -1,9 +1,9 @@
 # Deskway overview
 
 Deskway is a remote desktop that you host yourself. The server runs on a Linux machine, the
-Windows and Mac computers you want to reach run Deskway Host and stay connected to it, and you
-control them from a browser on a phone, tablet or another computer. AI clients can use the same
-computers as tools once you approve them.
+computers you want to reach run Deskway Host and stay connected to it. Control Windows and Mac
+desktops from a browser on a phone, tablet or another computer. Approved AI clients can also
+run commands, work with files and open tunnels on Linux computers.
 
 ## Parts
 
@@ -11,7 +11,7 @@ computers as tools once you approve them.
 |---|---|---|
 | Server (`deskway-server`) | A Linux server you run | Accounts, device approval, signaling, the TURN relay and the web client, in one Go binary |
 | Web client | Any modern browser | Where you sign in, manage devices and control computers. Can be installed as an app (PWA) |
-| Deskway Host | The computers being controlled | Captures the screen, takes input, transfers files. Windows and macOS |
+| Deskway Host | Windows, macOS and Linux computers | Desktop access on Windows and macOS. AI workspace on all three |
 | `deskway` | The machine running an AI client | Connects MCP clients such as Claude Code to your computers. Windows and macOS |
 
 Video and input go directly between the browser and the computer over WebRTC when the network
@@ -53,8 +53,8 @@ being verified, so it can try them as soon as that answer is applied.
 ### AI control
 
 - AI clients connect through MCP without a password. You approve each one in the browser.
-- AI control is off for every computer until you turn it on. While an AI client is in control,
-  the computer shows it, and the computer keeps a record of what the AI did.
+- AI control is off for every computer until you turn it on. Desktop hosts show when an AI
+  client is in control, and every host keeps a record of what the AI did.
 - The tools cover the screen, mouse and keyboard, commands and programs, files, the clipboard,
   windows and apps, the accessibility tree, and port tunnels. See [AI clients](ai-clients.md).
 
@@ -83,13 +83,14 @@ The full model is in [Security](security.md).
 |---|---|
 | Server | Linux with systemd (x86-64 or ARM64); builds anywhere Go 1.26+ runs |
 | Web client | Current Chrome, Edge and Safari, on desktop and mobile. Other browsers with WebRTC and H.264 may work; the automated tests use Chrome |
-| Deskway Host | Windows 10 and 11 (x64); macOS 15 or later (Apple silicon and Intel) |
+| Deskway Host | Windows 10 and 11 (x64), macOS 15 or later (Apple silicon and Intel), Debian 12 or Ubuntu 22.04 and later (x86-64 and ARM64, AI workspace) |
 | `deskway` (AI clients) | Windows (x64, ARM64); macOS (Apple silicon, Intel) |
 
 ## Where to go next
 
 - To run your own server, see [Self-hosting](self-hosting.md).
-- To install the host, see [Windows](install-host-windows.md) or [macOS](install-host-macos.md).
+- To install the host, see [Windows](install-host-windows.md), [macOS](install-host-macos.md)
+  or [Linux](install-host-linux.md).
 - To connect an AI client, see [AI clients](ai-clients.md).
 - [Accounts](accounts.md) explains how accounts and approvals work.
 - [Architecture](architecture.md), [Protocol](protocol.md) and
