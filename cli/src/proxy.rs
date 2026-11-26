@@ -10,13 +10,15 @@
 //! `tools/call`), `{"id", "op": "release", "computer"}`, `{"id", "op": "quit"}` (signing out).
 //! A gateway request can include an absolute `deadline`. Requests are answered
 //! `{"id", "result"}` or `{"id", "error"}` before expiry. With no client and no call for 10
-//! minutes the proxy leaves.
+//! minutes the shared proxy leaves. A gateway that owns its proxy uses the same request queue
+//! directly, in its own process.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -34,6 +36,7 @@ use crate::link::{self, LinkEvent};
 use crate::store::{Account, ProxyPlace};
 
 const IDLE: Duration = Duration::from_secs(10 * 60);
+const GOODBYE_WAIT: Duration = Duration::from_millis(300);
 
 /// What a client asks of the proxy.
 enum Request {
@@ -44,6 +47,20 @@ enum Request {
     Tunnel { computer: String, port: u16, local: u16, reply: Sender<Value> },
     /// Leave now, giving every computer up.
     Quit(Sender<Value>),
+}
+
+impl Request {
+    fn from_message(m: &Value, reply: Sender<Value>) -> Option<Self> {
+        let computer = || m["computer"].as_str().unwrap_or_default().to_string();
+        Some(match m["op"].as_str()? {
+            "computers" => Self::Computers(reply),
+            "release" => Self::Release { computer: computer(), reply },
+            "call" => Self::Call { computer: computer(), request: m["request"].clone(), reply },
+            "tunnel" => Self::Tunnel { computer: computer(), port: m["port"].as_u64().unwrap_or_default() as u16, local: m["local_port"].as_u64().unwrap_or_default() as u16, reply },
+            "quit" => Self::Quit(reply),
+            _ => return None,
+        })
+    }
 }
 
 type PendingRequest = (Request, Option<Instant>);
@@ -219,6 +236,12 @@ impl Hub {
             let _ = self.out_tx.send(json!({ "type": "attach", "session": session, "device": id }).to_string());
         }
     }
+
+    fn release_all(&mut self) {
+        for (_, (_, tx)) in self.links.drain() {
+            let _ = tx.send(LinkEvent::Leave);
+        }
+    }
 }
 
 /// Serves one client: its token first, then its requests, each answered before its deadline.
@@ -241,14 +264,7 @@ fn client(stream: TcpStream, token: String, requests: Sender<PendingRequest>, cl
                 None => None,
             };
             let (reply, answer) = channel();
-            let r = match m["op"].as_str().unwrap_or_default() {
-                "computers" => Request::Computers(reply),
-                "release" => Request::Release { computer: m["computer"].as_str().unwrap_or_default().to_string(), reply },
-                "call" => Request::Call { computer: m["computer"].as_str().unwrap_or_default().to_string(), request: m["request"].clone(), reply },
-                "tunnel" => Request::Tunnel { computer: m["computer"].as_str().unwrap_or_default().to_string(), port: m["port"].as_u64().unwrap_or_default() as u16, local: m["local_port"].as_u64().unwrap_or_default() as u16, reply },
-                "quit" => Request::Quit(reply),
-                _ => continue,
-            };
+            let Some(r) = Request::from_message(&m, reply) else { continue };
             if requests.send((r, deadline)).is_err() {
                 break;
             }
@@ -273,13 +289,17 @@ fn client(stream: TcpStream, token: String, requests: Sender<PendingRequest>, cl
     clients.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Runs the proxy until it has had no client and no call for 10 minutes.
-pub fn run() -> Result<()> {
-    let account = Account::load()?;
+fn profile(dir: &Path) -> Result<(Account, Arc<DeviceKey>)> {
+    let account = Account::load_from(dir)?;
     if !account.signed_in() {
         bail!("not signed in: run `deskway login` first");
     }
-    let key = Arc::new(DeviceKey::load_or_create()?);
+    Ok((account, Arc::new(DeviceKey::load_or_create()?)))
+}
+
+/// Runs the shared proxy until it has had no client and no call for 10 minutes.
+pub fn run() -> Result<()> {
+    let (account, key) = profile(&crate::store::dir()?)?;
     let listener = TcpListener::bind("127.0.0.1:0").context("listen on this machine")?;
     let token = URL_SAFE_NO_PAD.encode(wire::crypto::random::<24>());
     ProxyPlace { port: listener.local_addr()?.port(), token: token.clone(), version: crate::update::version().to_string() }.save()?;
@@ -292,6 +312,65 @@ pub fn run() -> Result<()> {
             std::thread::spawn(move || client(s, token, tx, c));
         }
     });
+    run_profile(account, key, req_rx, &clients)
+}
+
+pub struct Owned {
+    requests: Sender<PendingRequest>,
+    done: Receiver<Result<()>>,
+    profile: PathBuf,
+    account: Account,
+    next_check: Instant,
+}
+
+impl Owned {
+    pub fn start() -> Result<Self> {
+        let profile_dir = crate::store::dir()?;
+        let (account, key) = profile(&profile_dir)?;
+        let (requests, receive) = channel();
+        let (finished, done) = channel();
+        let sign_in = account.clone();
+        std::thread::Builder::new().spawn(move || {
+            let _ = finished.send(run_profile(account, key, receive, &AtomicUsize::new(1)));
+        })?;
+        Ok(Self { requests, done, profile: profile_dir, account: sign_in, next_check: Instant::now() })
+    }
+
+    pub fn check(&mut self) -> Result<()> {
+        match self.done.try_recv() {
+            Ok(result) => {
+                result?;
+                bail!("the owned proxy stopped");
+            }
+            Err(TryRecvError::Disconnected) => bail!("the owned proxy stopped unexpectedly"),
+            Err(TryRecvError::Empty) => {}
+        }
+        // Keep checking even if the proxy worker is blocked in a signaling handshake.
+        if Instant::now() >= self.next_check {
+            self.account.check_sign_in(&Account::load_from(&self.profile)?)?;
+            self.next_check = Instant::now() + Duration::from_millis(100);
+        }
+        Ok(())
+    }
+
+    pub fn requests(&self) -> impl Fn(Value, Instant) -> Result<Value> + Clone + Send + 'static {
+        let requests = self.requests.clone();
+        move |m, until| {
+            let (reply, answer) = channel();
+            let request = Request::from_message(&m, reply).context("unknown proxy operation")?;
+            requests.send((request, Some(until))).ok().context("the proxy stopped")?;
+            answer.recv_timeout(until.saturating_duration_since(Instant::now())).context("waiting for the proxy")
+        }
+    }
+
+    pub fn stop(self) -> Result<()> {
+        // Let active links send their goodbyes. A blocked signaling connection cannot delay exit.
+        let _ = self.requests.send((Request::Quit(channel().0), None));
+        self.done.recv_timeout(Duration::from_secs(2)).unwrap_or(Ok(()))
+    }
+}
+
+fn run_profile(account: Account, key: Arc<DeviceKey>, req_rx: Receiver<PendingRequest>, clients: &AtomicUsize) -> Result<()> {
     let (out_tx, out_rx) = channel::<String>();
     let (ended_tx, ended_rx) = channel();
     let mut hub = Hub { account, key, list: Value::Null, ice: Value::Null, links: HashMap::new(), out_tx, ended_tx, last_call: Instant::now() };
@@ -301,7 +380,7 @@ pub fn run() -> Result<()> {
             Ok(mut ws) => {
                 delay = Duration::from_secs(1);
                 hub.attach_all();
-                if let Err(e) = serve(&mut ws, &mut hub, &req_rx, &out_rx, &ended_rx, &clients) {
+                if let Err(e) = serve(&mut ws, &mut hub, &req_rx, &out_rx, &ended_rx, clients) {
                     eprintln!("signaling lost: {e:#}");
                 } else {
                     return Ok(());
@@ -312,7 +391,13 @@ pub fn run() -> Result<()> {
             // only `deskway login` can sign it in again.
             Err(e) if ended(&e) => match crate::account::renew(&mut hub.account) {
                 Ok(()) => continue,
-                Err(r) => return Err(r),
+                Err(r) => {
+                    if !hub.links.is_empty() {
+                        hub.release_all();
+                        std::thread::sleep(GOODBYE_WAIT);
+                    }
+                    return Err(r).context("cannot renew the profile sign-in");
+                }
             },
             Err(e) => eprintln!("cannot reach the server: {e:#}"),
         }
@@ -338,12 +423,10 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, hub: &mut Hub, requests:
         if !hub.list.is_null() && !hub.ice.is_null() {
             while let Some((r, deadline)) = next_request(requests) {
                 if let Request::Quit(reply) = r {
-                    for (_, (_, tx)) in hub.links.drain() {
-                        let _ = tx.send(LinkEvent::Leave);
-                    }
+                    hub.release_all();
                     let _ = reply.send(json!({ "quit": true }));
                     // The links' goodbyes go out before the socket closes.
-                    std::thread::sleep(Duration::from_millis(300));
+                    std::thread::sleep(GOODBYE_WAIT);
                     while let Ok(m) = out.try_recv() {
                         ws.send(Message::text(m))?;
                     }
@@ -356,9 +439,7 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, hub: &mut Hub, requests:
         // No AI client is connected any more (it quit, was closed or crashed): the computers it
         // held are given up now, not after 10 idle minutes, so nobody sees an AI there that is gone.
         if clients.load(Ordering::SeqCst) == 0 && !hub.links.is_empty() {
-            for (_, (_, tx)) in hub.links.drain() {
-                let _ = tx.send(LinkEvent::Leave);
-            }
+            hub.release_all();
         }
         while let Ok((session, why)) = ended.try_recv() {
             hub.links.retain(|_, (s, _)| *s != session);

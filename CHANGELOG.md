@@ -11,6 +11,7 @@ Notable changes to Deskway are recorded here. The format follows
 - Serve a Deskway AI profile over MCP Streamable HTTP with `deskway gateway`, behind an authenticating HTTPS server.
   Gateway error messages are in English.
 - Open a Linux computer's terminal from the browser, with the same on-screen keyboard and takeover controls as a desktop session.
+- Run a supervised MCP gateway with a private Unix socket on Linux and macOS and a proxy that stops with the gateway.
 - The Mac host panel offers optional Full Disk Access to skip folder-by-folder prompts during file transfers and AI file operations.
 - Install Deskway Host as a Linux service on x86-64 or ARM64 for AI commands, files and tunnels, and stop AI control locally with `deskway-host stop-ai`.
 - AI applications on Linux x64 and ARM64 can connect to Deskway computers with `deskway`.

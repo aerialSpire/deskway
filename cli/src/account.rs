@@ -80,9 +80,15 @@ pub fn download(a: &mut Account, path: &str) -> Result<Vec<u8>> {
 /// Signs in again with this device's key, as an approved AI client does whenever its session
 /// has ended (the proxy, on being refused).
 pub fn renew(a: &mut Account) -> Result<()> {
+    let saved = Account::load()?;
+    a.check_sign_in(&saved)?;
+    if *a != saved {
+        *a = saved;
+        return Ok(());
+    }
     let key = DeviceKey::load_or_create()?;
     match ask(a, &agent()?, &key, true)?.status() {
-        204 => a.save(),
+        204 => a.save_renewal(&saved),
         s => bail!("signing in again was refused ({s}): run `deskway login` again"),
     }
 }
@@ -137,13 +143,11 @@ pub fn login(server: &str, user: &str, name: &str, shown: impl Fn(&str)) -> Resu
 /// device (`forget` drops it too).
 pub fn logout(forget: bool) -> Result<()> {
     crate::proxy_client::stop_proxy();
-    let mut a = Account::load()?;
+    let mut a = Account::clear()?;
     if a.signed_in() {
         let url = format!("{}/api/logout", a.server);
         let _ = call(&mut a, agent()?.post(&url), None);
     }
-    a.session.clear();
-    a.save()?;
     if forget {
         DeviceKey::forget()?;
         Account::default().save()?;
