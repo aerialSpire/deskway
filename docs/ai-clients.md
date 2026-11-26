@@ -88,11 +88,13 @@ of them allow AI control.
 | `deskway logout [--forget]` | Signs out. `--forget` also deletes the device key |
 | `deskway mcp` | The MCP server an AI client starts (stdio) |
 | `deskway gateway --listen IP:PORT` | Serves MCP over HTTP on loopback for remote AI clients |
+| `deskway gateway --listen unix:PATH` | Serves MCP over HTTP on a private Unix socket on Linux and macOS |
 | `deskway computers` | Lists the account's computers and where AI control is allowed |
 | `deskway call COMPUTER TOOL [JSON]` | Makes one tool call, as an AI client would |
 | `deskway update` | Replaces this program with the server's version now |
 
-AI clients using the same Deskway profile share one proxy and one link to each computer in use.
+By default, AI clients using the same Deskway profile share one proxy and one link to each
+computer in use. A gateway started with `--own-proxy` has its own proxy and its own links.
 
 `deskway` keeps its sign-in in `%LOCALAPPDATA%\Deskway\cli` on Windows and
 `~/Library/Application Support/Deskway/cli` on macOS. On Linux it uses
@@ -110,12 +112,40 @@ deskway gateway --listen 127.0.0.1:8765
 ```
 
 The gateway serves Streamable HTTP at `http://127.0.0.1:8765/mcp`. You can also listen on
-`[::1]`. Put an authenticating HTTPS server in front of it before offering remote access and
-cap request bodies at 2 MiB before forwarding them.
+`[::1]`. Every local process can reach this listener. Put an authenticating HTTPS server in
+front of it before offering remote access and cap request bodies at 2 MiB before forwarding them.
 Anyone who can reach the gateway can act as that approved Deskway AI client. For a fronting
 server that preserves the public Host header, set `--public-host mcp.example.net` (include a
 nondefault HTTPS port if used). If a caller sends an Origin header, its origin must match the
 request's local HTTP or configured public HTTPS authority.
+
+On Linux and macOS, a supervisor running as the same user can connect over a Unix socket:
+
+```sh
+mkdir -m 700 "$HOME/deskway-gateway"
+deskway gateway --listen "unix:$HOME/deskway-gateway/mcp.sock" --own-proxy
+```
+
+Use an absolute socket path in an existing directory that belongs to the gateway user and has
+no group or other permissions. The gateway creates the socket with mode `0600`. On macOS the
+directory must also be free of extended access control lists. Send HTTP requests to `/mcp` over
+the socket. Unix permissions control access, and the gateway does not check `Host` or `Origin`
+on this listener. Windows does not offer the `unix:` form.
+
+With `--own-proxy`, the gateway runs its own proxy in the same process. A supervisor must
+spawn it with an stdin pipe and hold the only write end open for as long as it wants the
+gateway to run. Closing the pipe or exiting stops the gateway. On Unix, `SIGTERM` and `SIGINT`
+also stop it. The gateway removes its socket on orderly exit. Startup fails if the socket path
+already exists. After a forced exit such as `SIGKILL`, the supervisor must confirm that the
+gateway process has exited and remove the socket file before restarting it.
+Use a separate profile if other Deskway clients need their shared proxy at the same time.
+
+The gateway writes one readiness line to stderr when it begins serving HTTP. The form is
+`Gateway listening at http://IP:PORT/mcp` for TCP, with the actual bound address and port, or
+`Gateway listening at unix:PATH` for a Unix socket. A startup failure exits nonzero with an
+error on stderr. If `deskway logout` clears the profile sign-in or the owned proxy cannot renew
+it, the gateway releases its links and exits nonzero with an error on stderr. After a forced
+exit, an open AI seat clears when the computer detects the lost link.
 
 The gateway serves MCP `2025-06-18` and `2025-11-25` with the initialization handshake and
 `2026-07-28` with per-request metadata and `server/discover`. Requests are independent of
@@ -124,13 +154,13 @@ request the unsupported `2025-03-26` revision during initialization. Clients can
 offered revision if they support it. The gateway supports one approved identity per process.
 Use separate `DESKWAY_CLI_HOME` directories and processes for separate identities.
 
-Gateway calls reuse the link opened by any Deskway client in the same profile. The computer
-gives up its AI seat after 10 minutes without a tool call, when the last client of the profile's
-proxy disconnects, or immediately when you call `release`. The gateway offers the same tool
-annotations as `deskway mcp`. Use stdio for `copy_to`, `copy_from`, and `tunnel`, which use paths
-or ports on the machine running Deskway.
+The computer gives up its AI seat after 10 minutes without a tool call, when
+the last client of the shared proxy disconnects, or immediately when you call `release`. The
+gateway offers the same tool annotations as `deskway mcp`. Use stdio for `copy_to`, `copy_from`,
+and `tunnel`, which use paths or ports on the machine running Deskway.
 
-The gateway sends its JSON-RPC error messages and tool errors in English.
+CLI usage and diagnostics, along with the gateway's JSON-RPC error messages and tool errors,
+are in English.
 
 ### Remote call limits
 

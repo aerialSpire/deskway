@@ -2,7 +2,8 @@
 
 use std::io::{Cursor, Read};
 use std::net::{IpAddr, SocketAddr, TcpListener};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
@@ -13,9 +14,14 @@ use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response};
 
 use crate::mcp::{self, Access};
+use crate::os::gateway::{validate_socket_path, watch_shutdown, HttpServer};
 use crate::proxy_client::Proxy;
 
-pub const USAGE: &str = "   deskway gateway --listen IP:PORT [--public-host HOST] [--call-timeout-seconds SECONDS] [--max-result-chars CHARS]";
+pub const USAGE: &str = concat!(
+    "   deskway gateway --listen IP:PORT [--public-host HOST] [--own-proxy] [--call-timeout-seconds SECONDS] [--max-result-chars CHARS]\n",
+    "   Use --listen unix:PATH for a Unix socket. Unix sockets are unavailable on Windows.\n",
+    "   Use --own-proxy to run a private proxy and stop when the supervisor closes stdin.",
+);
 
 const PATH: &str = "/mcp";
 const MODERN: &str = "2026-07-28";
@@ -43,9 +49,15 @@ impl Drop for RequestSlot {
 }
 
 struct Config {
-    address: SocketAddr,
+    listen: Listen,
     public_host: Option<Authority>,
+    own_proxy: bool,
     limits: Limits,
+}
+
+enum Listen {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
 }
 
 #[derive(Clone, Copy)]
@@ -57,38 +69,51 @@ struct Limits {
 impl Config {
     fn parse(args: &[String]) -> Result<Self> {
         const LISTEN_ERROR: &str = "--listen requires a loopback IP and port, such as 127.0.0.1:8765 or [::1]:8765.";
-        let mut address = None;
+        let mut listen = None;
         let mut public_host = None;
+        let mut own_proxy = false;
         let mut limits = Limits { call: Duration::from_secs(240), result: 150_000 };
-        let mut pairs = args.chunks_exact(2);
-        for pair in &mut pairs {
-            match pair[0].as_str() {
+        let mut args = args.iter().map(String::as_str);
+        while let Some(flag) = args.next() {
+            if flag == "--own-proxy" {
+                own_proxy = true;
+                continue;
+            }
+            let value = args.next().context(USAGE)?;
+            match flag {
                 "--listen" => {
-                    let socket: SocketAddr = pair[1].parse().ok().context(LISTEN_ERROR)?;
-                    if !socket.ip().is_loopback() {
-                        bail!("The gateway has no authorization of its own. Listen on a loopback address only.");
-                    }
-                    address = Some(socket);
+                    listen = Some(if let Some(path) = value.strip_prefix("unix:") {
+                        let path = PathBuf::from(path);
+                        validate_socket_path(&path)?;
+                        Listen::Unix(path)
+                    } else {
+                        let socket: SocketAddr = value.parse().ok().context(LISTEN_ERROR)?;
+                        if !socket.ip().is_loopback() {
+                            bail!("The gateway has no authorization of its own. Listen on a loopback address only.");
+                        }
+                        Listen::Tcp(socket)
+                    });
                 }
                 "--public-host" => {
-                    public_host = Some(authority(&pair[1]).context("--public-host requires a host name or IP with an optional port.")?);
+                    public_host = Some(authority(value).context("--public-host requires a host name or IP with an optional port.")?);
                 }
                 "--call-timeout-seconds" => {
-                    limits.call = pair[1].parse().ok().filter(|&n| n > 0).map(Duration::from_secs)
+                    limits.call = value.parse().ok().filter(|&n| n > 0).map(Duration::from_secs)
                         .filter(|&d| Instant::now().checked_add(d).is_some())
                         .context("--call-timeout-seconds requires a positive number of seconds.")?;
                 }
                 "--max-result-chars" => {
-                    limits.result = pair[1].parse().ok().filter(|&n| n >= MIN_RESULT_CHARS)
+                    limits.result = value.parse().ok().filter(|&n| n >= MIN_RESULT_CHARS)
                         .with_context(|| format!("--max-result-chars requires at least {MIN_RESULT_CHARS} characters so errors can fit."))?;
                 }
                 _ => bail!("{USAGE}"),
             }
         }
-        if !pairs.remainder().is_empty() {
-            bail!("{USAGE}");
+        let listen = listen.context(LISTEN_ERROR)?;
+        if matches!(listen, Listen::Unix(_)) && public_host.is_some() {
+            bail!("--public-host is only available with a TCP listener.");
         }
-        Ok(Self { address: address.context(LISTEN_ERROR)?, public_host, limits })
+        Ok(Self { listen, public_host, own_proxy, limits })
     }
 }
 
@@ -161,8 +186,10 @@ fn reject(id: &Value, status: u16, code: i32, message: &str) -> HttpResponse {
 }
 
 fn preflight(method: &Method, path: &str, headers: &[Header], config: &Config) -> Option<HttpResponse> {
-    if !allowed_origin(headers, config.address, config.public_host.as_ref()) {
-        return Some(empty(403));
+    if let Listen::Tcp(address) = config.listen {
+        if !allowed_origin(headers, address, config.public_host.as_ref()) {
+            return Some(empty(403));
+        }
     }
     if path != PATH {
         return Some(empty(404));
@@ -362,7 +389,7 @@ fn implementation(info: &Value) -> bool {
     info["name"].is_string() && info["version"].is_string()
 }
 
-fn serve(mut req: Request, config: &Config, proxy: Arc<Proxy>, slot: Arc<RequestSlot>) {
+fn serve(mut req: Request, config: &Config, ask: impl Fn(Value, Instant) -> Result<Value> + Send + 'static, slot: Arc<RequestSlot>) {
     if let Some(response) = preflight(req.method(), req.url(), req.headers(), config) {
         let _ = req.respond(response);
         return;
@@ -376,7 +403,7 @@ fn serve(mut req: Request, config: &Config, proxy: Arc<Proxy>, slot: Arc<Request
             let call_slot = slot.clone();
             rpc(req.headers(), &body, config.limits, move |m, until| {
                 let _slot = &call_slot;
-                proxy.ask_until(m, Some(until))
+                ask(m, until)
             })
         }
     };
@@ -386,15 +413,64 @@ fn serve(mut req: Request, config: &Config, proxy: Arc<Proxy>, slot: Arc<Request
 pub fn run(args: &[String]) -> Result<()> {
     const BIND_ERROR: &str = "Cannot start the gateway listener.";
     let mut config = Config::parse(args)?;
-    let listener = TcpListener::bind(config.address).context(BIND_ERROR)?;
-    config.address = listener.local_addr()?;
-    let proxy = Proxy::connect()?;
-    let server = tiny_http::Server::from_listener(listener, None).map_err(|e| anyhow::anyhow!("{e}")).context(BIND_ERROR)?;
-    eprintln!("Gateway listening at http://{}/mcp", config.address);
+    let stopped = config.own_proxy.then(watch_shutdown).transpose()?;
+    let stopped = stopped.as_deref();
+    match &mut config.listen {
+        Listen::Tcp(address) => {
+            let listener = TcpListener::bind(*address).context(BIND_ERROR)?;
+            *address = listener.local_addr()?;
+            let endpoint = format!("http://{address}{PATH}");
+            run_with(config, &endpoint, stopped, || HttpServer::new(listener).context(BIND_ERROR))
+        }
+        Listen::Unix(path) => {
+            let server = HttpServer::unix(path).context(BIND_ERROR)?;
+            let endpoint = format!("unix:{}", path.display());
+            run_with(config, &endpoint, stopped, || Ok(server))
+        }
+    }
+}
+
+fn run_with(
+    config: Config, endpoint: &str, stopped: Option<&AtomicBool>,
+    bind: impl FnOnce() -> Result<HttpServer>,
+) -> Result<()> {
+    if config.own_proxy {
+        let server = bind()?;
+        let mut proxy = crate::proxy::Owned::start()?;
+        let requests = proxy.requests();
+        let result = listen(server.server(), endpoint, config, stopped, || proxy.check(), requests);
+        drop(server);
+        result.and(proxy.stop())
+    } else {
+        let proxy = Proxy::connect()?;
+        let server = bind()?;
+        listen(server.server(), endpoint, config, stopped, || Ok(()), move |m, until| proxy.ask_until(m, Some(until)))
+    }
+}
+
+fn listen(
+    server: &tiny_http::Server,
+    endpoint: &str,
+    config: Config,
+    stopped: Option<&AtomicBool>,
+    mut check_proxy: impl FnMut() -> Result<()>,
+    ask: impl Fn(Value, Instant) -> Result<Value> + Clone + Send + 'static,
+) -> Result<()> {
+    let stopping = || stopped.is_some_and(|stop| stop.load(Ordering::Acquire));
+    if stopping() {
+        bail!("The gateway was stopped before it was ready.");
+    }
+    check_proxy()?;
+    eprintln!("Gateway listening at {endpoint}");
     let config = Arc::new(config);
     let active = Arc::new(AtomicUsize::new(0));
-    loop {
-        let request = server.recv().context("The gateway listener failed.")?;
+    while !stopping() {
+        let request = match stopped {
+            Some(_) => server.recv_timeout(Duration::from_millis(100)),
+            None => server.recv().map(Some),
+        }.context("The gateway listener failed.")?;
+        check_proxy()?;
+        let Some(request) = request else { continue };
         if headers_named(request.headers(), "Content-Length").any(|value| {
             match value.parse::<u64>() {
                 Ok(length) => length > MAX_REQUEST_BYTES,
@@ -410,9 +486,10 @@ pub fn run(args: &[String]) -> Result<()> {
         }
         active.fetch_add(1, Ordering::Relaxed);
         let slot = Arc::new(RequestSlot(active.clone()));
-        let (config, proxy) = (config.clone(), proxy.clone());
-        std::thread::spawn(move || serve(request, &config, proxy, slot));
+        let (config, ask) = (config.clone(), ask.clone());
+        std::thread::spawn(move || serve(request, &config, ask, slot));
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -2,8 +2,9 @@ use super::*;
 
 fn config(address: &str, public: Option<&str>) -> Config {
     Config {
-        address: address.parse().unwrap(),
+        listen: Listen::Tcp(address.parse().unwrap()),
         public_host: public.map(|host| authority(host).unwrap()),
+        own_proxy: false,
         limits: Limits { call: Duration::from_secs(2), result: 150_000 },
     }
 }
@@ -40,6 +41,7 @@ fn listener_is_loopback_and_options_have_safe_defaults() {
         let got = Config::parse(&["--listen".into(), address.into()]);
         assert_eq!(got.is_ok(), valid, "{address}");
         if let Ok(config) = got {
+            assert!(!config.own_proxy);
             assert_eq!(config.limits.call, Duration::from_secs(240));
             assert_eq!(config.limits.result, 150_000);
         }
@@ -58,8 +60,40 @@ fn listener_is_loopback_and_options_have_safe_defaults() {
 }
 
 #[test]
+fn private_listener_and_proxy_options() {
+    const PATH_ERROR: &str = "--listen unix:PATH requires an absolute path with a socket filename and no line breaks.";
+    let parse = |args: &[&str]| Config::parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>());
+    assert!(parse(&["--own-proxy", "--listen", "127.0.0.1:0"]).unwrap().own_proxy);
+    assert!(parse(&["--listen", "127.0.0.1:0", "--own-proxy", "true"]).is_err());
+    for (path, options, error) in [
+        ("", &[][..], PATH_ERROR),
+        ("relative.sock", &[][..], PATH_ERROR),
+        ("/", &[][..], PATH_ERROR),
+        ("/private/second\nline", &[][..], PATH_ERROR),
+        ("/private/mcp.sock", &["--public-host", "localhost"][..], "--public-host is only available with a TCP listener."),
+    ] {
+        let address = format!("unix:{path}");
+        let args = [&["--listen", &address][..], options].concat();
+        let expected = if crate::os::gateway::UNIX_SOCKETS {
+            error
+        } else {
+            "Unix socket listeners are unavailable on Windows."
+        };
+        assert_eq!(parse(&args).err().unwrap().to_string(), expected);
+    }
+    if crate::os::gateway::UNIX_SOCKETS {
+        let config = parse(&["--listen", "unix:/private/mcp.sock", "--own-proxy"]).unwrap();
+        assert!(matches!(config.listen, Listen::Unix(ref path) if path == std::path::Path::new("/private/mcp.sock")));
+        let fields = headers(&[("Host", "foreign.example"), ("Origin", "https://foreign.example"),
+            ("Content-Type", JSON), ("Accept", "application/json, text/event-stream")]);
+        assert!(preflight(&Method::Post, PATH, &fields, &config).is_none());
+    }
+}
+
+#[test]
 fn only_local_and_configured_authorities_and_origins_are_allowed() {
-    let config = config("127.0.0.1:8000", Some("mcp.example.test"));
+    let address = "127.0.0.1:8000".parse().unwrap();
+    let public = authority("mcp.example.test");
     for (host, origin, allowed) in [
         ("127.0.0.1:8000", None, true),
         ("LOCALHOST:8000", Some("http://localhost:8000"), true),
@@ -80,14 +114,14 @@ fn only_local_and_configured_authorities_and_origins_are_allowed() {
         if let Some(origin) = origin {
             fields.extend(headers(&[("Origin", origin)]));
         }
-        assert_eq!(allowed_origin(&fields, config.address, config.public_host.as_ref()), allowed, "{host} {origin:?}");
+        assert_eq!(allowed_origin(&fields, address, public.as_ref()), allowed, "{host} {origin:?}");
     }
     for pairs in [
         vec![],
         vec![("Host", "localhost:8000"), ("HOST", "localhost:8000")],
         vec![("Host", "localhost:8000"), ("Origin", "http://localhost:8000"), ("ORIGIN", "http://localhost:8000")],
     ] {
-        assert!(!allowed_origin(&headers(&pairs), config.address, config.public_host.as_ref()));
+        assert!(!allowed_origin(&headers(&pairs), address, public.as_ref()));
     }
     assert!(allowed_origin(&headers(&[("Host", "[::1]:8000"), ("Origin", "http://[::1]:8000")]),
         "[::1]:8000".parse().unwrap(), None));

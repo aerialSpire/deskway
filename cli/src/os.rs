@@ -1,5 +1,7 @@
-//! What `deskway` needs of the system besides its key: private state and a proxy process
-//! that outlives the one that started it.
+//! What `deskway` needs of the system besides its key: private state, the detached shared
+//! proxy, and gateway sockets and shutdown.
+
+pub mod gateway;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

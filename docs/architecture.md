@@ -27,7 +27,7 @@ Every change follows these rules:
 | Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): an AI client's workspace (programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
 | Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the desk seat's terminal, and the AI seat with its in-process workspace for commands, files and tunnels. |
-| AI client's machine | `deskway` (cli/): `login`, `mcp` for MCP over stdio, `gateway` for MCP over HTTP, and one proxy per profile that holds the sign-in and a link to each computer in use. |
+| AI client's machine | `deskway` (cli/): `login`, `mcp` for MCP over stdio, `gateway` for MCP over HTTP, and a proxy that holds the profile's sign-in and a link to each computer in use. Clients share the profile's proxy by default. A supervised gateway can own its proxy in-process. |
 
 Each platform has exactly one process model. The network service talks to the agent only
 through `platform::Remote`, a generic proxy that implements `Platform` over the IPC pipe (calls
@@ -200,14 +200,14 @@ keys/              the device key (the system's key store where there is one)
 store.rs           what it keeps on this machine, in a folder only its user reads
 mcp.rs             the shared MCP tool list from proto/tools.json and tool dispatch
 stdio.rs           line-delimited MCP for `deskway mcp`
-gateway.rs         Streamable HTTP for `deskway gateway`: loopback, Host and Origin checks,
-                   version handling, and remote call limits
+gateway.rs         Streamable HTTP for `deskway gateway`: loopback with Host and Origin checks,
+                   private Unix sockets, version handling, and remote call limits
 proxy_client.rs    a persistent connection to the profile's proxy, reused across MCP requests
-proxy.rs           one per profile: the signaling socket, the account's computers, where this
-                   machine is (peer::here), one link per computer in use
+proxy.rs           the shared or gateway-owned proxy: the signaling socket, the account's
+                   computers, where this machine is (peer::here), one link per computer in use
 link.rs            one connection to one computer: offer signed with the device key, the
                    computer's signed answer checked against its pinned key, MCP in frames
-os.rs              per-platform state directory and file operations, starting the proxy on its own
+os.rs              per-platform state files, detaching the shared proxy, gateway sockets and shutdown
 update.rs          keeping the program itself up to date from the server
 copy.rs            copy_to and copy_from, done on this side
 ```
@@ -237,6 +237,9 @@ The design follows these principles:
   programs of the computer and outlive its session.
 
 ### Topology
+
+By default, clients of a profile share the proxy and one link per computer as shown below.
+A gateway started with `--own-proxy` has its own in-process proxy and links.
 
 ```
 MCP client window 1 -stdio-> deskway mcp -+
@@ -292,7 +295,7 @@ with device checks off still recognizes it as an AI client (`internal/server/aut
 
 ### The local proxy
 
-The first `deskway mcp` or `deskway gateway` starts `deskway proxy` (`cli/src/proxy.rs`), which
+By default the first `deskway mcp` or `deskway gateway` starts `deskway proxy` (`cli/src/proxy.rs`), which
 every MCP client using that state directory shares as one AI device. The proxy holds the
 sign-in, the signaling socket and one link for each computer in use (`link.rs`). It listens on
 127.0.0.1, at the port recorded in `proxy.json` together with an access token (a file only this
@@ -302,6 +305,18 @@ releases unused seats. Calls can overlap on either transport. When the last prox
 disconnects, the proxy releases every computer at once, and after 10 minutes with no client
 and no call it exits. A newly started MCP process that finds a proxy of a different version
 replaces it.
+
+`deskway gateway --own-proxy` runs the same proxy loop in the gateway process and submits calls
+directly to its request queue. The owned proxy has no local network listener or `proxy.json`.
+The supervisor keeps the write end of the gateway's stdin pipe, whose EOF requests shutdown.
+On Linux and macOS, a signal waiter also requests shutdown on `SIGTERM` and `SIGINT`.
+Orderly shutdown gives active links time to send goodbyes. Process exit closes every link socket,
+including on `SIGKILL`. The host ends a link lost abruptly through its existing peer liveness rules.
+The saved profile sign-in governs the owned proxy's lifetime. Clearing it with `deskway logout`
+or failing to renew it releases the links and makes the gateway exit nonzero with an error.
+For Unix sockets, the gateway removes its socket on orderly exit. If the path already exists,
+startup fails. After a forced exit, the supervisor confirms the process is gone and removes its
+socket before restarting.
 
 ### The channel
 
