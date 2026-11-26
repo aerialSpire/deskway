@@ -8,6 +8,7 @@ Notable changes to Deskway are recorded here. The format follows
 
 ### Added
 
+- The Mac host panel offers optional Full Disk Access to skip folder-by-folder prompts during file transfers and AI file operations.
 - Connection details show whether a direct session is local or over the internet and which relays a relayed session uses.
 - Admins can check whether their browser can pass traffic through each relay over UDP, TCP, and TLS where available.
 - Self-hosted servers can add regional relay nodes from **Relays** in the admin menu with a single command.

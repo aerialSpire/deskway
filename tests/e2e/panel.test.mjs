@@ -222,7 +222,22 @@ export const area = {
       h.check(`panel ${lang}: Stop AI control asks the host to stop AI clients`, (await sent()).some((m) => m.cmd === 'stop-ai'), JSON.stringify(await sent()));
 
       // AppKit uses the visible title's rectangle, so controls stay clickable as the labels reflow.
-      const mac = { screen: false, accessibility: false, login: 'approval' };
+      const mac = { screen: false, accessibility: false, full_disk_access: false, login: 'approval' };
+      for (const [state, granted] of [['off', false], ['on', true], ['off again', false]]) {
+        await render(base({ service: false, mac: { ...mac, screen: true, accessibility: true, full_disk_access: granted } }));
+        const access = t[granted ? 'mac.full_disk_access_on' : 'mac.full_disk_access_off'];
+        h.check(`panel ${lang}: Full Disk Access is ${state} and the host is online`, await p.eval(`
+          !document.querySelector('#mac-permissions').hidden && document.querySelector('#permissions').hidden
+          && document.querySelector('#status').textContent === ${lit(t['status.online'])}
+          && document.querySelector('#full-disk-access-label').textContent === ${lit(t['mac.full_disk_access'])}
+          && document.querySelector('#full-disk-access-status').textContent === ${lit(access)}`));
+      }
+      await clearSent();
+      await render(base({ service: false, mac: { ...mac, screen: true, accessibility: true } }));
+      await p.eval(`document.querySelector('#full-disk-access-settings').click()`);
+      h.check(`panel ${lang}: Full Disk Access opens its settings`, (await sent()).some((m) => m.cmd === 'full-disk-access-settings'));
+      await layout('optional Full Disk Access');
+
       await render(base({ mac }));
       h.check(`panel ${lang}: restart appears after requesting Screen Recording`,
         await p.eval(`document.querySelector('#reopen-for-permissions').hidden`));

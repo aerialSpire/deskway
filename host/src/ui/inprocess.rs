@@ -146,6 +146,7 @@ impl Backend for InProcess {
             "mac": {
                 "screen": permissions.screen,
                 "accessibility": permissions.accessibility,
+                "full_disk_access": platform::full_disk_access(),
                 "permission_request": self.permission_request,
                 "login": login,
                 "error": self.settings_error,
@@ -186,6 +187,7 @@ impl Backend for InProcess {
             }
             PageMessage::ScreenSettings => platform::ui::open_permission_settings(true),
             PageMessage::AccessibilitySettings => platform::ui::open_permission_settings(false),
+            PageMessage::FullDiskAccessSettings => platform::ui::open_full_disk_access_settings(),
             PageMessage::ReopenForPermissions => platform::ui::reopen_after_exit().map(|()| {
                 let _ = self.proxy.send_event(UiEvent::Backend(BackendEvent::Reopen));
             }),
