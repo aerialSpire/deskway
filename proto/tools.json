@@ -309,7 +309,7 @@
       "batch": 1,
       "screen": "none",
       "needs_user": true,
-      "description": "Runs a command as the workspace user (the host user on Linux) and waits up to wait_ms. Windows prefers PowerShell 7 and falls back to Windows PowerShell. Ordinary commands on macOS and Linux use $SHELL -lc, defaulting to /bin/zsh and /bin/sh respectively. Programs outlive the AI session. Use proc_read with the returned id and next to read on.",
+      "description": "Runs a command as the workspace user (the host user on Linux) and waits up to wait_ms. Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. Ordinary commands on macOS and Linux use $SHELL -lc, defaulting to /bin/zsh and /bin/sh respectively. Programs outlive the AI session. Use proc_read with the returned id and next to read on.",
       "input": {
         "type": "object",
         "properties": {
@@ -342,7 +342,7 @@
       "batch": 2,
       "screen": "none",
       "needs_user": true,
-      "description": "Starts a terminal as the workspace user (the host user on Linux). Windows prefers PowerShell 7 and falls back to Windows PowerShell. macOS and Linux use $SHELL -lc for a command or $SHELL -l for an interactive shell, defaulting to /bin/zsh and /bin/sh respectively. Use proc_write for input and proc_read for plain output. The program outlives the AI session.",
+      "description": "Starts a terminal as the workspace user (the host user on Linux). Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. macOS and Linux use $SHELL -lc for a command or $SHELL -l for an interactive shell, defaulting to /bin/zsh and /bin/sh respectively. Use proc_write for input and proc_read for plain output. The program outlives the AI session.",
       "input": {
         "type": "object",
         "properties": {

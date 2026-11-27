@@ -3,12 +3,15 @@
 //! their own (ConPTY). A terminal's console host is this process's child, so a terminal program
 //! loses its console when the user worker restarts; a piped one runs on.
 
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Write};
+use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle};
 use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT};
@@ -55,14 +58,54 @@ fn rights(elevated_asked: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The shell commands run in: PowerShell 7 (`pwsh.exe`) where it is installed (on the PATH),
-/// else Windows PowerShell, which every Windows has.
-fn shell() -> &'static str {
-    static SHELL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    SHELL.get_or_init(|| {
-        let found = std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d.join("pwsh.exe").is_file()));
-        if found { "pwsh.exe" } else { "powershell.exe" }
+/// PowerShell for both AI programs and browser terminals.
+fn powershell() -> &'static Path {
+    static POWERSHELL: OnceLock<PathBuf> = OnceLock::new();
+    POWERSHELL.get_or_init(|| {
+        let path = std::env::var_os("PATH");
+        // Resolve relative PATH entries before passing the executable to either launch API.
+        let candidates = path.iter().flat_map(std::env::split_paths)
+            .filter_map(|dir| std::path::absolute(dir.join("pwsh.exe")).ok());
+        let program_files = super::known_folder(super::KnownFolder::ProgramFiles);
+        let system = super::known_folder(super::KnownFolder::System);
+        select_powershell(candidates, &program_files, &system, Path::is_file)
     })
+}
+
+fn select_powershell(path_candidates: impl IntoIterator<Item = PathBuf>, program_files: &Path, system: &Path, mut is_file: impl FnMut(&Path) -> bool) -> PathBuf {
+    path_candidates.into_iter()
+        .chain(std::iter::once(program_files.join(r"PowerShell\7\pwsh.exe")))
+        .find(|candidate| is_file(candidate))
+        .unwrap_or_else(|| system.join(r"WindowsPowerShell\v1.0\powershell.exe"))
+}
+
+#[cfg(test)]
+#[test]
+fn powershell_prefers_path_then_program_files_then_windows_powershell() {
+    let program_files = Path::new(r"C:\Program Files");
+    let system = Path::new(r"D:\Windows\System32");
+    let first = r"C:\tools\pwsh.exe";
+    let second = r"C:\other tools\pwsh.exe";
+    let installed = r"C:\Program Files\PowerShell\7\pwsh.exe";
+    for (files, expected) in [
+        (&[first, second, installed][..], first),
+        (&[second, installed], second),
+        (&[installed], installed),
+        (&[], r"D:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+    ] {
+        let selected = select_powershell([first, second].map(PathBuf::from), program_files, system, |candidate| {
+            files.iter().any(|file| candidate == Path::new(file))
+        });
+        assert_eq!(selected, Path::new(expected), "files: {files:?}");
+    }
+}
+
+fn powershell_line(args: &str) -> OsString {
+    let mut line = OsString::from("\"");
+    line.push(powershell());
+    line.push("\" ");
+    line.push(args);
+    line
 }
 
 /// Starts `command` with its output piped. Out of this process's job when the job allows it
@@ -73,7 +116,7 @@ pub fn start_program(command: &str, cwd: Option<&str>, elevated: bool) -> std::i
     // console's code page from it) would otherwise write in the system's (GBK and the like).
     let command = format!("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n{command}");
     let build = |flags: u32| {
-        let mut c = Command::new(shell());
+        let mut c = Command::new(powershell());
         c.args(["-NoProfile", "-NonInteractive", "-Command", &command]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).creation_flags(flags);
         if let Some(dir) = cwd {
             c.current_dir(dir);
@@ -86,23 +129,22 @@ pub fn start_program(command: &str, cwd: Option<&str>, elevated: bool) -> std::i
 /// Starts `command` (PowerShell itself, when there is none) in a terminal of `cols` × `rows`.
 pub fn start_terminal(command: Option<&str>, cwd: Option<&str>, cols: u16, rows: u16, elevated: bool) -> std::io::Result<Started> {
     rights(elevated)?;
-    let mut line = format!("{} -NoLogo -NoProfile", shell());
+    let mut line = powershell_line("-NoLogo -NoProfile");
     if command.is_none() {
         // A plain prompt: PSReadLine redraws the line with cursor moves, which read as text
         // without them (`proc_read`) come out as the same input more than once.
-        line.push_str(" -NoExit -Command Remove-Module PSReadLine -ErrorAction SilentlyContinue");
+        line.push(" -NoExit -Command Remove-Module PSReadLine -ErrorAction SilentlyContinue");
     }
     if let Some(c) = command {
         // As UTF-16 in base64: the command line takes it whatever quotes it has.
         let utf16: Vec<u8> = c.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        line.push_str(&format!(" -EncodedCommand {}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, utf16)));
+        line.push(format!(" -EncodedCommand {}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, utf16)));
     }
-    let (program, output) = start_console(&line, cwd.map(std::ffi::OsStr::new), cols, rows, None)?;
+    let (program, output) = start_console(&line, cwd.map(OsStr::new), cols, rows, None)?;
     Ok(Started { program: Box::new(program), output: vec![Box::new(output)] })
 }
 
-fn start_console(line: &str, cwd: Option<&std::ffi::OsStr>, cols: u16, rows: u16, browser: Option<(&Job, &dyn Fn() -> bool)>) -> io::Result<(Terminal, File)> {
-    use std::os::windows::ffi::OsStrExt;
+fn start_console(line: &OsStr, cwd: Option<&OsStr>, cols: u16, rows: u16, browser: Option<(&Job, &dyn Fn() -> bool)>) -> io::Result<(Terminal, File)> {
     use windows::Win32::System::Threading::{ResumeThread, CREATE_SUSPENDED};
     let (cols, rows) = (i16::try_from(cols).map_err(io::Error::other)?, i16::try_from(rows).map_err(io::Error::other)?);
     unsafe {
@@ -133,7 +175,7 @@ fn start_console(line: &str, cwd: Option<&std::ffi::OsStr>, cols: u16, rows: u16
             // A process that ignores Ctrl-C hands that down to its children; the shell must not.
             windows::Win32::System::Console::SetConsoleCtrlHandler(None, false)?;
             let create = |flags: u32| {
-                let mut cmd: Vec<u16> = line.encode_utf16().chain([0]).collect();
+                let mut cmd: Vec<u16> = line.encode_wide().chain([0]).collect();
                 let mut pi = PROCESS_INFORMATION::default();
                 CreateProcessW(None, Some(PWSTR(cmd.as_mut_ptr())), None, None, false, EXTENDED_STARTUPINFO_PRESENT | PROCESS_CREATION_FLAGS(flags), None, dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr())), &si.StartupInfo, &mut pi).map(|()| pi)
             };
@@ -267,24 +309,16 @@ impl Drop for Job {
     }
 }
 
-pub(super) fn browser_command() -> String {
-    let pwsh = super::known_folder(super::KnownFolder::ProgramFiles).join("PowerShell").join("7").join("pwsh.exe");
-    if pwsh.is_file() {
-        format!("\"{}\" -NoLogo -NoProfile", pwsh.display())
-    } else {
-        format!("{} -NoLogo -NoProfile", shell())
-    }
-}
-
-pub(super) fn open_pty(line: &str, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
+pub(super) fn open_pty(command: Option<&str>, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
     if !allowed() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     let home = std::env::home_dir().ok_or(io::ErrorKind::NotFound)?;
-    browser_pty(line, &home, rows, cols, allowed)
+    let line = command.map_or_else(|| powershell_line("-NoLogo -NoProfile"), OsString::from);
+    browser_pty(&line, &home, rows, cols, allowed)
 }
 
-fn browser_pty(line: &str, home: &std::path::Path, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
+fn browser_pty(line: &OsStr, home: &Path, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
     let job = Job::new()?;
     let (terminal, output) = start_console(line, Some(home.as_os_str()), cols, rows, Some((&job, &allowed)))?;
     Ok(Box::new(BrowserPty {
@@ -394,7 +428,7 @@ impl Drop for BrowserPty {
 #[test]
 fn a_suspended_shell_is_rejected_if_the_console_locks_during_start() {
     let home = std::env::temp_dir();
-    let line = format!("{} -NoLogo -NoProfile", shell());
+    let line = powershell_line("-NoLogo -NoProfile");
     let error = browser_pty(&line, &home, 24, 80, || false).err().unwrap();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 }
@@ -415,8 +449,8 @@ fn wait_for_conpty_output(events: &mpsc::Receiver<crate::platform::pty::PtyEvent
 
 /// A shell that keeps no history, so tests leave the account's own untouched.
 #[cfg(test)]
-fn plain_shell() -> String {
-    format!("{} -NoLogo -NoProfile -NoExit -Command Remove-Module PSReadLine -ErrorAction SilentlyContinue", shell())
+fn plain_shell() -> OsString {
+    powershell_line("-NoLogo -NoProfile -NoExit -Command Remove-Module PSReadLine -ErrorAction SilentlyContinue")
 }
 
 #[cfg(test)]

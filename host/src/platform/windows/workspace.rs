@@ -120,7 +120,6 @@ pub fn sweep_home() {
 }
 
 pub fn browser(test_lock: Option<PathBuf>, command: Option<String>) -> Browser {
-    let line = command.unwrap_or_else(super::programs::browser_command);
     let state = Arc::new(move || {
         let mut state = current();
         if test_lock.as_ref().is_some_and(|path| std::fs::read_to_string(path).is_ok_and(|s| s.trim() == "locked")) {
@@ -132,7 +131,7 @@ pub fn browser(test_lock: Option<PathBuf>, command: Option<String>) -> Browser {
     let open = Arc::new(move |rows, cols| {
         let state = current.clone();
         let user = state().user;
-        super::programs::open_pty(&line, rows, cols, move || {
+        super::programs::open_pty(command.as_deref(), rows, cols, move || {
             let now = state();
             now.user == user && now.refusal(false).is_none()
         })
