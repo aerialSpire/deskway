@@ -11,7 +11,7 @@ const pick = (text) => `[...document.querySelectorAll('.page .menu:not([hidden])
 // The title row of a computer's page: where the way back, the name, the ⋯ and the status are.
 const TITLE_ROW = `(() => {
   const r = (s) => document.querySelector(s)?.getBoundingClientRect();
-  const back = r('.heading .title-back'), name = r('.heading h1'), more = r('.heading .more'), status = r('.heading > .status');
+  const back = r('.heading .title-back'), name = r('.heading h1'), more = r('.heading .more'), status = r('.heading > .computer-status > .status');
   const page = document.querySelector('.page');
   return {
     back: back && [back.left, back.top, back.bottom], name: [name.left, name.top, name.bottom],
