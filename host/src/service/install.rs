@@ -20,6 +20,7 @@ use crate::i18n::t;
 use super::net::{AGENT_SERVICE, NET_SERVICE};
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+pub const TRUST_DIR: &str = "server-trust";
 
 pub fn program_dir() -> PathBuf {
     crate::platform::known_folder(crate::platform::KnownFolder::ProgramFiles).join("Deskway")
@@ -230,6 +231,19 @@ pub fn secure_service_dir() -> Result<()> {
         }
     }
     protect(&dir.join("service"), &service_sddl()?)
+}
+
+/// Only the elevated enrollment can authorize a root. The network service can read it for TLS.
+pub fn check_trust_dir(dir: &Path) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    let owner = owner_of(dir)?;
+    let meta = std::fs::symlink_metadata(dir)?;
+    anyhow::ensure!(
+        (owner == ADMINS || owner == SYSTEM) && meta.is_dir() && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0,
+        "invalid permissions on {}", dir.display()
+    );
+    Ok(())
 }
 
 fn set_sid_and_privileges(svc: &windows_service::service::Service, restricted: bool, privileges: &[&str]) -> Result<()> {
@@ -530,7 +544,13 @@ pub fn sign_in(from: &std::path::Path) -> Result<()> {
         bail!(t("err.need_admin"));
     }
     let new = crate::config::Config::load_from(from).context("read the sign-in")?;
-    crate::config::Config::settle_in(&crate::service::machine_dir(), new).map(drop)
+    let dir = crate::service::machine_dir();
+    if new.server_root.is_some() {
+        let trust = dir.join(TRUST_DIR);
+        fresh_dir(&trust, &service_sddl()?)?;
+        check_trust_dir(&trust)?;
+    }
+    crate::config::Config::settle_in(&dir, new).map(drop)
 }
 
 /// Signs the installed service out: the services start again, waiting for a sign-in. The
@@ -544,6 +564,7 @@ pub fn sign_out() -> Result<()> {
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     stop_and_wait(&m, AGENT_SERVICE);
     stop_and_wait(&m, NET_SERVICE);
+    crate::platform::retire_server_root(&crate::service::machine_dir())?;
     crate::config::Config::sign_out()?;
     run_services(&m)
 }

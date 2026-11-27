@@ -26,7 +26,6 @@ use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::{json, Value};
-use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 use wire::types::Reason;
@@ -116,12 +115,13 @@ fn ended(e: &anyhow::Error) -> bool {
 }
 
 fn connect(a: &Account) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
-    let url = format!("{}/ws/client", a.server.replacen("http", "ws", 1));
-    let mut req = url.into_client_request()?;
-    req.headers_mut().insert("Cookie", a.cookies().parse().context("cookie header")?);
-    // The server takes the socket only from its own origin.
-    req.headers_mut().insert("Origin", a.server.parse().context("origin header")?);
-    let (mut ws, _) = tungstenite::connect(req).context("the signaling socket")?;
+    let server = a.connection()?;
+    let mut ws = server.websocket("/ws/client", |req| {
+        req.headers_mut().insert("Cookie", a.cookies().parse().context("cookie header")?);
+        // The server takes the socket only from its own origin.
+        req.headers_mut().insert("Origin", server.url("").parse().context("origin header")?);
+        Ok(())
+    }).context("the signaling socket")?;
     let timeout = Some(Duration::from_millis(20));
     match ws.get_ref() {
         MaybeTlsStream::Plain(s) => s.set_read_timeout(timeout)?,

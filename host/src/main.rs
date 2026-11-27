@@ -39,7 +39,7 @@ mod workspace;
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{BufRead, IsTerminal, Write};
-use std::sync::Arc;
+use deskway_server_connection::Address;
 
 use i18n::{t, tf};
 #[cfg(windows)]
@@ -80,23 +80,19 @@ pub fn shown_name(name: &str) -> String {
     platform::computer_name().unwrap_or_else(|| t("device.this_computer"))
 }
 
-fn agent() -> Result<ureq::Agent> {
-    Ok(ureq::AgentBuilder::new().tls_connector(Arc::new(native_tls::TlsConnector::new()?)).build())
-}
-
 /// Signs this computer in. `name` is the one chosen, or "" for none: the server is told the name
 /// shown for it. `back` is the computer signed out here (`Config::kept`): when the same account
 /// signs in at the same server, the server answers with its id and no token, and `Config::settle`
 /// gives it back as it was. Otherwise the answer is a new computer, waiting for approval. Nothing
 /// is saved here: the caller settles it where the computer keeps its sign-in.
 pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: Option<&config::Kept>) -> Result<config::Config> {
-    let mut server = server.trim().trim_end_matches('/').to_string();
-    if !server.starts_with("http://") && !server.starts_with("https://") {
-        server = format!("https://{server}");
-    }
+    let address = Address::parse(server).map_err(server_error)?;
+    let server = address.saved();
+    let server_root = address.fetch_root().map_err(server_error)?;
+    let connection = address.connection(server_root.as_deref()).map_err(server_error)?;
     let back = back.filter(|k| k.server == server).map(|k| k.id.as_str());
-    let res = agent()?
-        .post(&format!("{server}/api/host/enroll"))
+    let res = connection.http(ureq::builder())?
+        .post(&connection.url("/api/host/enroll"))
         .send_json(serde_json::json!({ "user": user, "password": password, "name": shown_name(name), "os": std::env::consts::OS, "back": back, "shows_code": true }));
     let body: serde_json::Value = match res {
         Ok(r) => r.into_json()?,
@@ -104,10 +100,11 @@ pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: O
         // The account has as many computers as the server allows.
         Err(ureq::Error::Status(403, _)) => bail!(t("err.computer_limit")),
         Err(ureq::Error::Status(429, _)) => bail!(t("err.too_many")),
-        Err(e) => return Err(anyhow!(tf("err.cant_reach_server", &[("e", e.to_string())]))),
+        Err(e) => return Err(server_error(e)),
     };
     Ok(config::Config {
         server,
+        server_root,
         id: body["id"].as_str().with_context(|| t("err.bad_response"))?.into(),
         // Given back, the computer keeps the token it has.
         token: body["token"].as_str().unwrap_or_default().into(),
@@ -122,13 +119,18 @@ pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: O
     })
 }
 
+fn server_error(e: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!(tf("err.cant_reach_server", &[("e", format!("{e:#}"))]))
+}
+
 /// Withdraws a sign-in that was never put to use (the service's elevated step was declined):
 /// the server forgets the computer it just added. Signing out never does this; only removing
 /// the computer from the account does.
 #[cfg(desktop_host)]
 pub fn withdraw(cfg: &config::Config) -> Result<()> {
-    agent()?
-        .post(&format!("{}/api/host/leave?id={}", cfg.server, cfg.id))
+    let server = cfg.connection()?;
+    server.http(ureq::builder())?
+        .post(&server.url(&format!("/api/host/leave?id={}", cfg.id)))
         .set("Authorization", &format!("Bearer {}", cfg.token))
         .call()?;
     Ok(())
@@ -142,9 +144,22 @@ fn enroll_command(args: &[String]) -> Result<()> {
     #[cfg(target_os = "linux")]
     let _lock = platform::lock()?;
     let cfg = config::Config::settle(enroll_with(&server, &user, &read_password()?, &name, config::Config::kept().as_ref())?)?;
+    #[cfg(target_os = "macos")]
+    if let Err(e) = update_browser_trust(&cfg, true) {
+        eprintln!("{}", tf("err.root_trust", &[("e", format!("{e:#}"))]));
+    }
     // A host with no window says how to start it and where its approval code appears.
     let done = if cfg!(desktop_host) { "cli.enrolled" } else { "cli.enrolled_linux" };
     println!("{}", tf(done, &[("name", shown_name(&cfg.name))]));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn update_browser_trust(cfg: &config::Config, install: bool) -> Result<()> {
+    let address = Address::parse(&cfg.server)?;
+    if let Some(fingerprint) = address.fingerprint() {
+        platform::update_server_root(&config::root_path(&config::dir()?), fingerprint, install)?;
+    }
     Ok(())
 }
 

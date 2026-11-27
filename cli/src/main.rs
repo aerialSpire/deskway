@@ -1,7 +1,7 @@
 //! deskway: lets AI clients that speak MCP use the account's Deskway
 //! computers (docs/architecture.md, "AI control").
 //!
-//!   deskway login --server URL --user NAME [--name NAME]   (no password: a browser approves)
+//!   deskway login URL --user NAME [--name NAME]   (a browser approves)
 //!   deskway logout [--forget]
 //!   deskway mcp                       the MCP server an AI client starts (stdio)
 //!   deskway computers                 the account's computers, and where AI is allowed
@@ -42,7 +42,9 @@ fn login(args: &[String]) -> Result<()> {
     if args.len() == 2 && args[1] == "--finish" {
         return account::finish_prepared();
     }
-    let server = flag(args, "--server").context("--server URL is needed")?;
+    let server = flag(args, "--server")
+        .or_else(|| args.get(1).filter(|arg| !arg.starts_with('-')).cloned())
+        .context("a server address is needed")?;
     let user = flag(args, "--user").context("--user NAME is needed")?;
     let name = flag(args, "--name").unwrap_or_else(this_machine);
     if args.get(1).is_some_and(|arg| arg == "--prepare") {

@@ -90,8 +90,21 @@ The server keeps the two certificates and the intermediate key in `local-ca/` be
 state file. The key has mode `0600` on Unix, and the server refuses to load a key with group
 or other access. On Windows the key file has a protected DACL granting access to the server
 account, SYSTEM and Administrators. The intermediate signs the TLS leaves. The server sends
-the leaf and intermediate. Browsers trust the installed root certificate through the device's
-certificate settings. Hosts and the `deskway` CLI use platform TLS certificate verification.
+the leaf and intermediate.
+
+The Host and `deskway` CLI take the root's SHA-256 fingerprint from the `#ca=<64 hex digits>`
+part of the address. They fetch `/local/ca.crt` over HTTPS without certificate verification
+or credentials, compare the SHA-256 of the returned DER with the pin and save a matching
+root as PEM. For that address, HTTP and signaling use native TLS verification of the
+server name and chain with system roots plus the saved root. Public addresses use system
+roots. The six-digit approval still authenticates the device joining the account.
+
+On Windows the SYSTEM agent adds the root to `LocalMachine\Root` from the protected
+enrollment files. DeskwayNet can request an update and read the root for TLS. On macOS
+the Host asks the system to trust the root for SSL in the login keychain. The panel
+reports a refused store update, and the Host can still sign in using its copy of the root.
+Signing out removes that exact certificate from the store. The headless Linux Host and
+the CLI use their saved root without updating OS trust.
 
 Before installing, compare the fingerprint in the HTTP guide with the startup log on the hub
 computer itself. Verify that the downloaded root certificate also has that fingerprint. On
@@ -611,7 +624,7 @@ The service mode consists of three processes, all from one binary:
 | Process | Account | Does | Does not |
 |---|---|---|---|
 | `Deskway` service (`service`) | LocalSystem, session 0 | Starts the agent in the console session and restarts it when the session changes; writes the pipe key | Network, parsing, reading user files |
-| Agent (`agent`) | SYSTEM token, console session; privileges stripped except SeChangeNotify and SeImpersonate | Capture, encode, input, file transfers (as the signed-in user); follows the input desktop (Default, Winlogon, UAC) | Network |
+| Agent (`agent`) | SYSTEM token, console session; privileges stripped except SeChangeNotify and SeImpersonate | Capture, encode, input, file transfers (as the signed-in user), input desktop tracking (Default, Winlogon, UAC), and applying administrator-authorized browser trust for a local server | Network |
 | `DeskwayNet` service (`net`) | `NT SERVICE\DeskwayNet` (a virtual account): SeChangeNotify, SeCreateGlobal and SeImpersonate only | Signaling, WebRTC, TURN, device key checks, pairing | Run as SYSTEM, touch the screen |
 
 The user worker serves browser Terminal and Files through its authenticated pipe. The admin

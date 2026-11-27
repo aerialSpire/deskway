@@ -10,6 +10,7 @@ mod files;
 mod input;
 mod power;
 mod programs;
+mod server_root;
 mod windows;
 pub mod ui;
 
@@ -21,6 +22,7 @@ pub use displays::DisplayWatch;
 pub(crate) use desk::workspace_browser;
 pub(crate) mod file_metadata;
 pub use power::{PowerNotifications, PowerRequest};
+pub use server_root::update_server_root;
 pub use encoder::Encoder as NativeEncoder;
 pub use files::Files as NativeFiles;
 pub use input::MacInput as NativeInput;

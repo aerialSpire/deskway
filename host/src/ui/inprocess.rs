@@ -20,7 +20,8 @@ pub enum BackendEvent {
     /// Signing in finished: the new config, or why it failed.
     Enrolled(std::result::Result<Config, String>),
     /// Signed out.
-    Left,
+    Left(Result<Option<String>, String>),
+    RootChanged(Option<String>),
     /// Ask macOS for a permission (Screen Recording: true), once the panel says it is asked.
     Permission(bool),
     /// Quit gracefully once a launcher is waiting to reopen this bundle.
@@ -34,10 +35,11 @@ pub struct InProcess {
     /// The running host's queue and settings.
     control: Option<Wake<Control>>,
     settings: Option<Arc<Settings>>,
-    /// Signing in.
+    /// A sign-in, sign-out or browser trust prompt is in progress.
     busy: bool,
     /// Why signing in failed.
     error: String,
+    root_problem: Option<String>,
     /// Why the last Mac setting could not be changed.
     settings_error: String,
     permission_request: Option<&'static str>,
@@ -45,7 +47,7 @@ pub struct InProcess {
 
 impl InProcess {
     pub fn new(proxy: EventLoopProxy<UiEvent>, _at_login: bool) -> InProcess {
-        InProcess { proxy, cfg: Config::load().ok(), control: None, settings: None, busy: false, error: String::new(), settings_error: String::new(), permission_request: None }
+        InProcess { proxy, cfg: Config::load().ok(), control: None, settings: None, busy: false, error: String::new(), root_problem: None, settings_error: String::new(), permission_request: None }
     }
 
     fn set_login_item(&mut self, on: bool) -> Result<()> {
@@ -128,20 +130,36 @@ impl InProcess {
     fn enroll(&mut self, server: String, user: String, password: String) {
         self.busy = true;
         self.error.clear();
+        self.root_problem = None;
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let res = crate::enroll_with(&server, &user, &password, "", Config::kept().as_ref()).and_then(Config::settle).map_err(|e| format!("{e:#}"));
+            let local = res.as_ref().ok().filter(|cfg| cfg.server_root.is_some()).cloned();
             let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Enrolled(res)));
+            if let Some(cfg) = local {
+                let error = crate::update_browser_trust(&cfg, true).err().map(|e| format!("{e:#}"));
+                let _ = proxy.send_event(UiEvent::Backend(BackendEvent::RootChanged(error)));
+            }
         });
     }
 
     /// Signs out here only: the server keeps this computer, offline, for the same account to
     /// take back (`Config::sign_out`).
     fn leave(&mut self) {
-        self.quit();
-        if self.cfg.is_some() {
-            let _ = self.proxy.send_event(UiEvent::Backend(BackendEvent::Left));
-        }
+        let Some(cfg) = self.cfg.clone() else { return };
+        self.busy = true;
+        self.error.clear();
+        let proxy = self.proxy.clone();
+        let control = self.control.clone();
+        std::thread::spawn(move || {
+            let result = Config::sign_out().map(|()| {
+                if let Some(control) = control {
+                    let _ = control.send(Control::Quit);
+                }
+                crate::update_browser_trust(&cfg, false).err().map(|e| format!("{e:#}"))
+            }).map_err(|e| format!("{e:#}"));
+            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Left(result)));
+        });
     }
 }
 
@@ -156,6 +174,7 @@ impl Backend for InProcess {
         let login = platform::ui::login_status();
         json!({
             "enrolled": self.cfg.is_some(), "busy": self.busy, "error": self.error,
+            "root_problem": super::root_problem(self.root_problem.as_deref()),
             "autostart": login.registered(),
             "mac": {
                 "screen": permissions.screen,
@@ -184,13 +203,13 @@ impl Backend for InProcess {
 
     fn page(&mut self, m: PageMessage) -> bool {
         let result = match m {
-            PageMessage::Login { server, user, password } => {
+            PageMessage::Login { server, user, password } if !self.busy => {
                 self.enroll(server, user, password);
                 return true;
             }
-            PageMessage::Leave => {
+            PageMessage::Leave if !self.busy => {
                 self.leave();
-                return false;
+                return true;
             }
             PageMessage::ScreenRequest | PageMessage::AccessibilityRequest => {
                 let screen = m == PageMessage::ScreenRequest;
@@ -223,6 +242,7 @@ impl Backend for InProcess {
                 self.busy = false;
                 match res {
                     Ok(cfg) => {
+                        self.busy = cfg.server_root.is_some();
                         self.cfg = Some(cfg);
                         self.error.clear();
                         self.start_host();
@@ -231,14 +251,26 @@ impl Backend for InProcess {
                 }
                 true
             }
-            BackendEvent::Left => {
+            BackendEvent::RootChanged(error) => {
+                self.busy = false;
+                self.root_problem = error;
+                true
+            }
+            BackendEvent::Left(result) => {
+                self.busy = false;
+                self.root_problem = match result {
+                    Ok(error) => error,
+                    Err(e) => {
+                        self.error = e;
+                        return true;
+                    }
+                };
                 self.cfg = None;
                 self.control = None;
                 self.settings = None;
                 // Signed out: nothing here should start at login or keep the Mac awake.
                 let _ = crate::power::prevent_sleep(false);
                 self.settings_error = platform::ui::set_login(false).with_context(|| t("err.mac_login_off")).err().map(|e| format!("{e:#}")).unwrap_or_default();
-                let _ = Config::sign_out();
                 // No host runs now: nothing is shown as controlled.
                 let _ = self.proxy.send_event(UiEvent::Status(None));
                 true

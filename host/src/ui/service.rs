@@ -30,6 +30,7 @@ pub enum BackendEvent {
     SignedOut(Option<crate::config::Kept>),
     /// Signing in finished: why not, if it did not.
     SignedIn(Result<(), String>),
+    RootProblem(Option<String>),
 }
 
 pub struct Service {
@@ -50,11 +51,12 @@ pub struct Service {
     /// Signing in or out is under way; and why the last one did not happen.
     busy: bool,
     error: String,
+    root_problem: Option<String>,
 }
 
 impl Service {
     pub fn new(proxy: EventLoopProxy<UiEvent>, at_login: bool) -> Service {
-        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new() }
+        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new(), root_problem: None }
     }
 
     fn send(&self, r: PanelRequest) {
@@ -113,6 +115,7 @@ impl Backend for Service {
                             ToPanel::Status(s) => (UiEvent::Status(Some(s)), false),
                             ToPanel::SignedOut(kept) => (UiEvent::Backend(BackendEvent::SignedOut(kept)), false),
                             ToPanel::Exit => (UiEvent::Backend(BackendEvent::Exit), true),
+                            ToPanel::RootProblem(error) => (UiEvent::Backend(BackendEvent::RootProblem(error)), false),
                         };
                         if proxy.send_event(event).is_err() || exit {
                             return;
@@ -133,6 +136,7 @@ impl Backend for Service {
     fn extras(&self) -> Value {
         json!({
             "enrolled": !self.signed_out, "busy": self.busy, "error": self.error,
+            "root_problem": super::root_problem(self.root_problem.as_deref()),
             "service": true, "service_running": self.running, "service_checked": self.checked,
             "starting": self.starting, "autostart": install::autostart(),
         })
@@ -214,6 +218,10 @@ impl Backend for Service {
             BackendEvent::SignedIn(done) => {
                 self.busy = false;
                 self.error = done.err().unwrap_or_default();
+                true
+            }
+            BackendEvent::RootProblem(error) => {
+                self.root_problem = error;
                 true
             }
         }

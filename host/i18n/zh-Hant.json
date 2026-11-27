@@ -1,4 +1,5 @@
 {
+  "err.root_trust": "無法更新瀏覽器憑證信任。{e}",
   "files.transfer": "檔案傳輸",
   "files.operation": "檔案操作",
   "terminal.opened": "{name} 開啟了終端機",

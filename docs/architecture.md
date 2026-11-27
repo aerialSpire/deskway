@@ -50,6 +50,8 @@ peer/              what a WebRTC peer needs whatever it is for: net.rs, the netw
                    socket per local address, IPv4 + IPv6; the STUN address, stun.rs; TURN
                    relays, turn.rs; binding again on every ICE restart); state.rs, the
                    session's state machine, the same on both ends
+server/            the Host and CLI's server address, pinned root bootstrap and native TLS
+                   for HTTP and WebSockets
 ```
 
 ## Host modules (`host/src`)
@@ -60,7 +62,8 @@ product.rs         the program's name as people see it (Deskway Host), also for 
 icon.rs            the shared Deskway D mark for the host, browser client and README. build.rs
                    makes the Windows .ico, the mac-icon example draws the macOS iconset, and
                    the icon test writes and checks the browser and README PNGs
-config.rs          the host's config (host.json) and where it lives; private writes
+config.rs          the host's config (host.json) and its local server root (host-ca.pem);
+                   private writes
 settings.rs        what the panel asks (PanelRequest) and the settings the host carries out:
                    saved first, then applied (keep-awake, language, the signaling host)
 i18n.rs            the texts of host/i18n (en, zh-Hans, zh-Hant) and the language in use
@@ -227,6 +230,8 @@ The trait offers the capabilities a session needs, at the level at which a sessi
 - `desktop`: locking, and the input desktop (on Windows the input desktop itself; on macOS the
   session's lock state).
 - `language`: the language of notes shown at the computer.
+- `sync_server_root`: the Windows agent applies enrollment's browser trust and reports an
+  error through `ServerRootSynced`.
 
 Keep-awake is not a `Platform` call. `power.rs` is called by the process that knows the reason
 for it (for the setting, the always-running part; for a session, `Local`), and each of these
@@ -722,6 +727,14 @@ The source of truth is the viewer's constraints.
   display name, guide port and private interface addresses. It answers on-link queries with the
   current interface addresses and withdraws its records on orderly shutdown. It joins interfaces
   at startup.
+- The Host and CLI keep the full sign-in address including `#ca=`. `crates/server` verifies
+  the bootstrap certificate against the pin and builds same-server HTTP and signaling
+  connections using system roots and that PEM. The CLI keeps the PEM in `account.json`.
+  The Host keeps it beside its config. On Windows the administrator-authorized PEM is in
+  the protected `server-trust/` subdirectory, readable by DeskwayNet. Signing out retires
+  the PEM there before the services restart, so the SYSTEM agent can remove the exact root
+  from the machine store and finish the cleanup. On macOS the panel uses the login keychain
+  for browser trust and removes the matching certificate on sign-out.
 - Accounts (docs/accounts.md) are the admin and the members it creates. Each uses only its own
   computers, and nothing is shared between them. An account is stored under a random id; what it
   signs in with is its `name`, which is unique and can be changed (`POST /api/me/name`, after
@@ -809,7 +822,7 @@ The Mac code guarantees the following:
 | Clipboard | `changeCount` is checked when sharing turns on and twice a second while it stays on. The browser's formats are promised through `NSPasteboardItemDataProvider` and marked `org.nspasteboard.TransientType`. |
 | Permissions | The panel shows Screen Recording and Accessibility. Desktop control requires both. Terminal and Files use the app's ordinary user rights and macOS privacy permissions. Programs an AI client starts inherit these permissions (security.md, R5). |
 | Lock screen | The host runs in the signed-in user's session, including while it is locked. The remote view shows the lock screen, and macOS verifies the password. Control-Command-Q locks the Mac. |
-| Files | `host.json`, `host-key`, `controllers.json`, `pairing.json` and `ai.json` are stored in `~/Library/Application Support/Deskway`, with mode 0700. |
+| Files | `host.json`, `host-ca.pem` (for a local server), `host-key`, `controllers.json`, `pairing.json` and `ai.json` are stored in `~/Library/Application Support/Deskway`, with mode 0700. |
 
 To test on a Mac, run `cargo test --locked --release` (covering AVCC to Annex B conversion, the
 key table, coordinate mapping and the macOS-only tests). `DESKWAY_TEST_VT_MODES=1 cargo test

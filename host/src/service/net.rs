@@ -20,7 +20,7 @@ use windows_service::service::UserEventCode;
 
 use super::ipc::{self, Pipe, AGENT_PIPE, UI_PIPE};
 use crate::config::Config;
-use crate::platform::Remote;
+use crate::platform::{Platform, PlatformEvent, Remote};
 use crate::settings::{PanelRequest, Settings};
 use crate::signal::{self, Control, Status};
 use crate::wake::Wake;
@@ -44,6 +44,8 @@ pub enum ToPanel {
     SignedOut(Option<crate::config::Kept>),
     /// Deskway is being installed again or removed: the panel quits.
     Exit,
+    /// The agent's last browser trust error, if any.
+    RootProblem(Option<String>),
 }
 
 /// Runs the network service until the process is stopped.
@@ -56,14 +58,31 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     // The panels can connect while the computer is not signed in yet; what they ask waits for it.
     let for_panels = Arc::new(OnceLock::new());
     serve_ui(dev, for_panels.clone())?;
+
+    let (events, from_agent) = channel();
+    let (to_host, platform_events) = channel();
+    let platform = Remote::new(events);
+    std::thread::spawn(move || {
+        for event in from_agent {
+            if let PlatformEvent::ServerRootSynced { error } = event {
+                PANELS.root_problem(error);
+            } else if to_host.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    // A signed-out service also needs the agent, to remove the previous root.
+    platform.sync_server_root();
+    serve_agent(dev, platform.clone())?;
     let cfg = signed_in();
+    if cfg.server_root.is_some() {
+        platform.sync_server_root();
+    }
     crate::i18n::from_config();
     PANELS.status(Status::offline(&cfg));
     let (control_tx, control_rx) = signal::control_channel();
     let _ = HOST.set(control_tx.clone());
 
-    let (events, platform_events) = channel();
-    let platform = Remote::new(events);
     let dir = crate::config::dir()?;
     let (settings, awake) = Settings::start(dir.clone(), &cfg, Some(platform.clone()), control_tx.clone());
     if let Err(e) = awake {
@@ -80,7 +99,6 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
         }
         true
     })?;
-    serve_agent(dev, platform.clone())?;
 
     // Run by hand (`--dev`), this process is the person; as the service it is not, and the
     // person's workspace is the user worker's.
@@ -136,11 +154,17 @@ struct Panels {
     list: Mutex<Vec<Arc<Pipe>>>,
     left: Condvar,
     latest: Mutex<Option<ToPanel>>,
+    root_problem: Mutex<Option<String>>,
 }
 
-static PANELS: Panels = Panels { list: Mutex::new(Vec::new()), left: Condvar::new(), latest: Mutex::new(None) };
+static PANELS: Panels = Panels { list: Mutex::new(Vec::new()), left: Condvar::new(), latest: Mutex::new(None), root_problem: Mutex::new(None) };
 
 impl Panels {
+    fn root_problem(&self, error: Option<String>) {
+        *self.root_problem.lock().unwrap() = error.clone();
+        self.send(&ToPanel::RootProblem(error));
+    }
+
     fn status(&self, st: Status) {
         *self.latest.lock().unwrap() = Some(ToPanel::Status(st.clone()));
         self.send(&ToPanel::Status(st));
@@ -171,6 +195,8 @@ impl Panels {
         if let Some(m) = self.latest.lock().unwrap().clone() {
             let _ = p.send_json(&m);
         }
+        let root_problem = self.root_problem.lock().unwrap();
+        let _ = p.send_json(&ToPanel::RootProblem(root_problem.clone()));
         self.list.lock().unwrap().push(p);
     }
 

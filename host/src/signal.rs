@@ -17,7 +17,6 @@ use anyhow::{Context, Result};
 use polling::{Event, Events, Poller};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message as WsMessage, WebSocket};
 
@@ -187,7 +186,7 @@ impl Router {
             PlatformEvent::Capturing { .. } | PlatformEvent::Desktop(_) => (true, true),
             PlatformEvent::Thumbnail { .. } | PlatformEvent::DisplaysChanged(_) | PlatformEvent::TransferNote(_) => (false, true),
             // Answers: handed over in `route`, before this is asked.
-            PlatformEvent::Snapshot { .. } | PlatformEvent::SnapshotFailed { .. } | PlatformEvent::InputDone { .. } => (false, false),
+            PlatformEvent::Snapshot { .. } | PlatformEvent::SnapshotFailed { .. } | PlatformEvent::InputDone { .. } | PlatformEvent::ServerRootSynced { .. } => (false, false),
         }
     }
 
@@ -988,10 +987,10 @@ fn tcp(ws: &Socket) -> &TcpStream {
 }
 
 fn connect(cfg: &Config) -> Result<Socket> {
-    let base = cfg.server.replacen("http", "ws", 1);
-    let mut req = format!("{base}/ws/host?id={}", cfg.id).into_client_request()?;
-    req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.token).parse().context("token header")?);
-    let (ws, _) = tungstenite::connect(req)?;
+    let ws = cfg.connection()?.websocket(&format!("/ws/host?id={}", cfg.id), |req| {
+        req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.token).parse().context("token header")?);
+        Ok(())
+    })?;
     tcp(&ws).set_write_timeout(Some(alive::WRITE_TIMEOUT))?;
     // A blocking TLS write can also need to read, so bound that wait too.
     tcp(&ws).set_read_timeout(Some(alive::WRITE_TIMEOUT))?;

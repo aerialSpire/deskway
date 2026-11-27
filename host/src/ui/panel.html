@@ -33,7 +33,7 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 .sub { margin-top: var(--s1); color: var(--quiet); font-size: var(--fs-small); }
 /* The sign-in's fields start below its line, as the web's do below its title. */
 #login .fields { margin-top: var(--s5); }
-.problem { margin-top: var(--s2); color: var(--danger); font-size: var(--fs-caption); line-height: var(--lh-body); overflow-wrap: anywhere; user-select: text; }
+.problem { margin-top: var(--s2); color: var(--danger); font-size: var(--fs-caption); line-height: var(--lh-body); overflow-wrap: anywhere; white-space: pre-line; user-select: text; }
 #running > .btn { margin-top: var(--s3); }
 .ai-row { margin-top: var(--s3); padding: var(--s2) var(--s3); display: flex; align-items: center; gap: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); line-height: var(--lh-tight); }
 .ai-row[hidden] { display: none; }
@@ -117,8 +117,8 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
       <button class="btn primary block" id="submit" type="submit" data-i18n="login.submit"></button>
     </form>
 
+    <div class="problem" id="problem" role="status" hidden></div>
     <div id="running" hidden>
-      <div class="problem" id="problem" role="status" hidden></div>
       <button class="btn primary block" id="end" type="button" hidden></button>
       <div class="ai-row" id="ai-row" hidden><span class="dot" id="ai-dot" aria-hidden="true"></span><span id="ai-line"></span><button class="btn compact" id="stop-ai" type="button"></button></div>
       <button class="btn primary block" id="start-service" type="button" hidden data-i18n="panel.start_service"></button>
@@ -439,6 +439,8 @@ window.render = (s) => {
   $('login').hidden = !!s.enrolled;
   $('running').hidden = !s.enrolled;
   $('status-line').hidden = !s.enrolled;
+  $('problem').textContent = [s.problem, s.root_problem].filter(Boolean).join('\n');
+  $('problem').hidden = !$('problem').textContent;
   if (!s.enrolled) {
     ui.adding = false;
     ui.sawQr = false;
@@ -487,8 +489,6 @@ window.render = (s) => {
   $('prevent-sleep-note').textContent = t('panel.prevent_sleep_note', { percent: s.keep_awake_min_battery });
   // A failure has a reason; "connecting" forever without one helps nobody.
   if (!s.online && s.problem) { text = t('status.no_server'); dot = 'warn'; }
-  $('problem').hidden = !(!s.online && s.problem);
-  $('problem').textContent = s.problem || '';
   $('status').textContent = text;
   $('dot').className = `dot ${dot}`;
   $('end').hidden = !s.controller;

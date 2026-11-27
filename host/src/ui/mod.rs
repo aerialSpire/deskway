@@ -205,6 +205,10 @@ fn panel_state(status: Option<&Status>, extras: Value) -> Value {
     state
 }
 
+fn root_problem(error: Option<&str>) -> Option<String> {
+    error.map(|e| crate::i18n::tf("err.root_trust", &[("e", e.to_string())]))
+}
+
 struct App {
     backend: HostBackend,
     /// The host's last status; None before the first, or while it cannot be reached.

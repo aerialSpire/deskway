@@ -58,6 +58,12 @@ after an update.
    page, only if it shows the same code.
 3. The panel shows **Online**. The Mac appears in the browser's list of computers.
 
+For a [local server](self-hosting.md#local-mode), paste the whole
+`https://name.local:port#ca=<64 hex digits>` address into **Server address**. Use the
+fingerprint from the hub's startup log. To let browsers trust the hub, approve the macOS
+prompt to trust the root for SSL in your login keychain. The Host connects using the
+verified root even if you decline. Signing out removes the certificate from that keychain.
+
 ## 4. Allow the devices you control from
 
 A Mac accepts control only from devices that were added to it at the Mac itself.

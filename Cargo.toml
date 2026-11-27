@@ -2,7 +2,7 @@
 # for AI clients, and the crates both use.
 [workspace]
 resolver = "2"
-members = ["crates/wire", "crates/peer", "host", "cli"]
+members = ["crates/wire", "crates/peer", "crates/server", "host", "cli"]
 
 [workspace.package]
 license = "AGPL-3.0-only"

@@ -125,6 +125,7 @@
   "err.computer_limit": "This account has as many computers as it may have. Remove one in “My devices” on the website first",
   "err.cant_reach_server": "Can't connect to the server: {e}",
   "err.bad_response": "Invalid response from the server",
+  "err.root_trust": "Couldn’t update browser trust. {e}",
   "err.not_done": "Not completed",
   "err.start_failed": "Deskway Host didn't start: {e}",
   "err.unknown_command": "Unknown command {cmd}",
