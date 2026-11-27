@@ -40,9 +40,9 @@ export function words(key, params, { lang = 'en', texts = WEB_TEXTS } = {}) {
 }
 
 // Pages run in English unless a check asks for another language: `t` is the web client's words
-// in English, and `q` the same quoted for an expression evaluated on the page.
+// in English, and `q` the same as a literal for the page (`lit` below).
 export const t = (key, params) => words(key, params);
-export const q = (key, params) => JSON.stringify(t(key, params));
+export const q = (key, params) => lit(t(key, params));
 // A value from outside the test (a computer's id or name) as a literal in an expression evaluated on the page:
 // JSON, with every character that could end a script or a line written as its escape.
 export const lit = (value) => JSON.stringify(value).replace(/[<>\/\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
