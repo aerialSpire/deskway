@@ -56,6 +56,9 @@ img, svg { -webkit-user-drag: none; }
 .field-label { display: flex; flex-direction: column; gap: var(--s2); color: var(--quiet); font-size: var(--fs-small); }
 .dialog .steps { margin: var(--s3) 0 0; padding-left: var(--s5); display: flex; flex-direction: column; gap: var(--s2); }
 .dialog .note-box { margin-top: var(--s4); }
+.dialog .qr-lead { margin-top: var(--s3); text-align: center; color: var(--ink); }
+.qr-addr { text-align: center; }
+.qr-addr .copyable-code { display: inline-block; }
 .form > .note-box { margin-bottom: var(--s5); }
 /* A note on a page: the home-screen app's first sign-in, and the like. */
 .note-box { display: flex; gap: var(--s2); padding: var(--s3); border-radius: var(--r-box); background: var(--accent-soft); font-size: var(--fs-small); }

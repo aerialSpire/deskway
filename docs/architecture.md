@@ -847,7 +847,8 @@ manifest.json, icons/  installable; the icons are host/src/icon.rs's drawing (it
 design.css           every design token and shared component (docs/design.md); the host builds
                      the same file into its panel, setup window and in-session bar
 style.css            the client's page and session layout, in those tokens only
-vendor/              the upstream xterm.js modules and stylesheet, loaded on terminal open
+vendor/              upstream xterm.js modules and stylesheet for Terminal, and qrcode-generator
+                     for the Scan to open dialog
 ```
 
 ## Tests

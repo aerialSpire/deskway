@@ -302,6 +302,8 @@
   "qr.add": "添加",
   "qr.addedText": "现在可以控制「{name}」了。",
   "qr.failed": "添加失败，请重试。",
+  "scanOpen.title": "扫码打开",
+  "scanOpen.lead": "用另一台设备的相机扫码，打开这个 Deskway。",
   "pw.title": "修改密码",
   "pw.intro": "电脑不受影响，它们用自己的凭据连接服务器。",
   "pw.current": "当前密码",
