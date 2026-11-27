@@ -2,10 +2,11 @@
 // loads the language and finds out who is signed in.
 import { store } from './env.js';
 import { pickLanguage, setLanguage } from './i18n.js';
-import { api, onUnauthorized, onMustChoose, socket, setIce } from './net.js';
+import { api, onUnauthorized, socket, setIce } from './net.js';
 import { state, registerPage, render, renderFromServer, updateWatch, currentSession, followsServer } from './state.js';
 import { onDialogClosed } from './dialogs.js';
-import { start, showLogin, showChoose, showUnreachable } from './views/login.js';
+import { start, showLogin, showUnreachable } from './views/login.js';
+import { captureSetupLink, showSetup } from './views/setup.js';
 import { renderList, onThumb } from './views/list.js';
 import { renderDetail } from './views/detail.js';
 import { renderDevices } from './views/devices.js';
@@ -23,6 +24,7 @@ import { onAudit } from './views/audit.js';
 import { installAppFeel } from './app-feel.js';
 import { PROTOCOL_VERSION, Signal } from './proto.js';
 
+const setupLink = captureSetupLink();
 installAppFeel();
 startPwa(() => { if (!currentSession() && state.view !== 'login') render(); });
 registerPage('list', renderList);
@@ -34,7 +36,6 @@ registerPage('relays', renderRelays);
 registerPage('aiclient', renderAiClient);
 registerPage('mcp-approval', renderMcpApproval);
 onUnauthorized(showLogin);
-onMustChoose(showChoose);
 // A request to approve waits while another dialog is open.
 onDialogClosed(showNextApproval);
 
@@ -129,4 +130,4 @@ window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload();
 if (store.get('deskway.test') === '1') (await import('./test-api.js')).installTestApi();
 takePairLink();
 // The texts first, so the first screen is already in the right language.
-setLanguage(pickLanguage()).then(start).catch(() => showUnreachable());
+setLanguage(pickLanguage()).then(() => setupLink ? showSetup(setupLink, () => start(true)) : start()).catch(() => showUnreachable());

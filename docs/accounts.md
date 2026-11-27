@@ -1,79 +1,53 @@
 # Accounts
 
-A Deskway server serves a small group of people: its admin and the people the admin creates
-accounts for. Each account uses only its own computers, and nothing is shared between accounts.
-A computer is listed, watched and controlled only by the account that owns it, and it trusts
-only that account's devices.
-
-## Roles
-
-There are two kinds of account.
-
-The **admin** is the server's first account. It is created when the server is set up, by
-running `deskway-server admin NAME` once while there is no state yet (see
-[self-hosting.md](self-hosting.md)). A server has exactly one admin, and the role cannot be
-transferred.
-
-**Members** are all other accounts. Only the admin can create, reset or remove them, on the
-**Members** page described below. There is no self-service sign-up.
+A Deskway server serves its admin and the members the admin creates. Each account sees and
+controls its own computers, and each computer trusts devices of its own account.
 
 ## Making an account
 
-On the **Members** page the admin presses **Create user** and enters a sign-in name and,
-optionally, a display name (which defaults to the sign-in name). The server creates the account
-with a generated initial password and shows that password once, together with a button that
-copies a short message the admin can send through any chat app:
+The server operator runs `admin-link` as the service user, for example
+`sudo -u deskway deskway-server admin-link -data FILE -url https://YOUR_DOMAIN`, and opens the link.
+If the server has no admin, the page asks for a sign-in name, an optional display name and a
+password. A server has one admin and the role cannot be transferred. See [Self-hosting](self-hosting.md#7-first-sign-in-and-adding-people).
 
-```
-Deskway
-Link: https://<server>/
-Account: <sign-in name>
-Initial password: <password>
-```
-
-The message is written in the admin's language. The server stores only the password's hash, so
-this is the only time the password is shown.
+The admin opens **Members** from the menu under their name, chooses **Create user** and enters
+a sign-in name and an optional display name. The display name defaults to the sign-in name.
+Deskway shows the one-time invitation link and account name in a dialog. **Copy** puts both
+into a message in the admin’s language. Send it privately to the intended person.
 
 ## First sign-in
 
-An account whose password is an initial one (because the admin has just created or reset it)
-must choose its own password before it can do anything else. On the account's very first
-sign-in it must also choose its super password.
-
-Signing in with the initial password approves the account's first browser. No other device
-exists that could approve it, and the password came from the admin. The browser registers its
-device key on sign-in, so a newly approved computer can trust that browser from its first
-connection.
-
-After sign-in, the page asks for a new password and, the first time, for the super password.
-Until both are set, nothing else is available: neither the computers nor the account page.
-
-As a result, the admin knows only the initial password and never learns the password the member
-actually uses.
+Open the invitation link in a browser that can store a device key and choose a password. The
+link approves the browser, registers its device key and signs you in. A newly approved computer
+can trust that browser from its first connection. Once you have set a password, use it for later sign-ins.
+An approved device must approve a new browser that signs in with a password.
 
 ## Managing members
 
-**Members** is a separate page, opened from the menu under the admin's name in the top bar,
-next to the account page and the device list. Only the admin's menu contains it, and the page
-shows nothing to any other account.
+**Members** shows each member’s sign-in name, display name, creation time, last activity and
+computer count. It also shows unused invitations and reset links with their remaining lifetime,
+and marks expired links. All member links expire after seven days.
 
-The list shows each member's sign-in name, display name, creation time, last activity and
-number of computers. It shows nothing about the computers themselves: no names, no pictures and
-no way to control them.
+From the member’s **⋯** menu, choose **New link** to replace a pending or expired invitation or
+to issue a reset link for a member with a password. Choose **Revoke link** to invalidate an unused
+link. Deskway shows each new link only when it is issued. **Remove** asks for confirmation and
+removes the member and its devices, signs out its browsers and ends its sessions.
 
-**Reset password** generates a new initial password and shows it once, with the same copy
-button. The member must choose a new password at the next sign-in. Browsers that were already
-approved remain approved.
+## Recovery
 
-**Remove**, after a confirmation, deletes the account together with its browsers and computers.
-Its pages are signed out immediately, its sessions end, and its computers are told that they
-have been removed.
+- **Member**. Ask the admin for a new link. The admin issues it under **Members**.
+- **Admin**. Run the same `admin-link` command as the service user. The command works while the
+  service is running. The link expires after one hour.
+
+Opening a reset link lets you choose a password and signs in the browser. The account’s existing
+password works until the link is redeemed. Its computers, approved browsers and data are kept.
+A browser approved by a link may still need to be added at a computer that already trusts other
+devices. See [Adding a device](security.md#adding-a-device).
 
 ## Limits
 
-An account can have at most 10 computers; an enrollment beyond that is refused with a message
-saying why. At most `maxPendingPerUser` computers and at most `maxPendingPerUser` browsers can
-be waiting for approval at the same time.
+An account can have up to 10 computers, including those waiting for approval. At most five
+computers and five browsers can wait for approval at the same time.
 
-The relay limits each account's traffic (`-relay-account-mbps`, default 30), so that one
-account's relayed sessions cannot crowd out another's.
+The relay limits each account’s traffic (`-relay-account-mbps`, default 30) so one account’s
+relayed sessions cannot crowd out another’s.

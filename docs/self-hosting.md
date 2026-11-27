@@ -4,16 +4,16 @@
 
 On Debian or Ubuntu with systemd, point your domain's DNS A record to the server's public
 IPv4 address and [open the firewall ports](#open-the-firewall). With `curl` and
-`ca-certificates` installed, run this on the server with your own domain and admin name.
+`ca-certificates` installed, run this on the server with your own domain.
 
 ```sh
 installer=$(curl -fsSL https://github.com/aerialSpire/deskway/releases/latest/download/install-server.sh) &&
-  printf '%s\n' "$installer" | sudo sh -s -- --domain desk.example.net --admin me
+  printf '%s\n' "$installer" | sudo sh -s -- --domain desk.example.net
 ```
 
 The installer looks up the domain's public IPv4 address in DNS for TURN, verifies the release
-archive, and checks that the installed service is running. Save the initial admin password
-when it appears, then follow [First sign-in](#7-first-sign-in-and-adding-people). Add
+archive, and checks that the installed service is running. If setup is still pending, it prints a
+one-time admin link. Open it within one hour and follow [First sign-in](#7-first-sign-in-and-adding-people). Add
 `--version TAG` to select a release by tag. Use the [by-hand route](#install-by-hand) to build
 from source or customize the install. To let applications connect directly to your server's
 MCP address, see [Remote MCP](#remote-mcp).
@@ -114,20 +114,17 @@ works from Windows or macOS too:
 GOOS=linux GOARCH=amd64 go build -o bin/deskway-server ./cmd/deskway-server
 ```
 
-### 4. Install it and create the admin account
+### 4. Install the server and prepare its state directory
 
-From the folder with `deskway-server`, install it, create the system user and state directory,
-and create the admin account.
+From the folder with `deskway-server`, install the binary and create the system user and state directory.
 
 ```sh
 sudo install -m 755 deskway-server /usr/local/bin/deskway-server
 sudo useradd --system --user-group --home-dir /var/lib/deskway --shell /usr/sbin/nologin deskway
 sudo install -d -m 700 -o deskway -g deskway /var/lib/deskway
-sudo -u deskway /usr/local/bin/deskway-server admin me -data /var/lib/deskway/state.json
 ```
 
-Save the initial password when it appears. The command requires a stopped server and an empty
-account list.
+After starting the service, create the admin in [step 7](#7-first-sign-in-and-adding-people).
 
 ### 5. AI client programs (automatic for releases)
 
@@ -196,17 +193,24 @@ can take a few seconds while the certificate is issued.
 
 ## 7. First sign-in and adding people
 
-1. Open `https://desk.example.net` and sign in as `me` with the initial password. This first
-   browser does not need approval. You are then asked to choose your own **Password** and a
-   **Super password**. The super password signs you in when no approved device is at hand, for
-   example after you lose all your devices. Keep it somewhere safe.
-2. To give someone else an account, open the menu under your name, choose **Members**, then
-   **Create user**. Send the person the link, the account name and the initial password, which is
-   shown only once. Each person sees and controls only their own computers. See
-   [Accounts](accounts.md).
+Open the one-time link from the installer. If you installed by hand or need a new link, run
+this command as the service user while Deskway is running. This gives the service access to
+the link and lock files the command creates.
 
-From then on, every new browser and computer has to be approved on the **My devices** page of a
-browser that is already approved. A password alone is not enough to get in.
+```sh
+sudo -u deskway /usr/local/bin/deskway-server admin-link -data /var/lib/deskway/state.json -url https://desk.example.net
+```
+
+Pass the public HTTPS origin in `-url`, including any non-default port. Use the same `-data`
+path as the service. The link works once and expires after one hour. When there is no admin,
+the page asks you to choose the admin’s sign-in name (for example, `me`) and password. When
+there is an admin, it resets that account’s password. In either case, the browser you used is
+approved and signed in.
+
+To give someone an account, open the menu under your name, choose **Members**, then **Create
+user**. Copy the message with the invitation link and account name and send it privately. The
+member has seven days to choose a password and sign in through the link. Password sign-in on
+a new browser requires approval from an approved device. See [Accounts](accounts.md).
 
 ## 8. Add your first computer
 
@@ -287,15 +291,17 @@ tag=0.1.0   # the release version, without the leading "v"
 image=ghcr.io/aerialspire/deskway-server:$tag
 
 sudo install -d -m 700 -o 65532 -g 65532 /var/lib/deskway
-sudo docker run --rm -v /var/lib/deskway:/data "$image" admin me -data /data/state.json
-
 sudo docker run -d --name deskway --restart unless-stopped --network host \
   -v /var/lib/deskway:/data "$image" \
   -data /data/state.json -listen :443 -domain desk.example.net -public-ip 203.0.113.10
 ```
 
-The first command prints the admin's initial password once, as in step 4. The container can bind
-port 443 although it does not run as root. `sudo docker logs deskway` shows the server log.
+The container can bind port 443 as an unprivileged user. `sudo docker logs deskway` shows the
+server log. Run the link command inside the running container, then open the link as in step 7.
+
+```sh
+sudo docker exec deskway /usr/local/bin/deskway-server admin-link -data /data/state.json -url https://desk.example.net
+```
 
 The image fetches AI client programs at startup and caches them in `/data/clients/.release`
 on the mounted volume. For offline deployments, append `-fetch-clients=false` to the server
@@ -489,9 +495,8 @@ hour. Browsers pick up the new web client and show “A new version of Deskway i
 ## Backup and restore
 
 Everything the server keeps is in `/var/lib/deskway`: `state.json` (accounts, devices, approvals),
-`state.json.super` (super passwords), `certs/`, `clients/` and, with remote MCP, `mcp/`
-(approved applications' AI profiles and device keys). For a consistent copy, stop the service
-first:
+`state.json.links` (account links), `certs/`, `clients/` and, with remote MCP, `mcp/`
+(approved applications' AI profiles and device keys). For a consistent copy, stop the service and issue links only after it is running again.
 
 ```sh
 sudo systemctl stop deskway
@@ -510,7 +515,7 @@ Read the log with `sudo journalctl -u deskway -n 100 --no-pager`.
 |---|---|
 | The HTTPS page doesn't load | The DNS record points to this server; TCP 443 is open in both firewalls; nothing else listens on 443 (`sudo ss -ltnp 'sport = :443'`); the log shows no certificate errors |
 | Certificate errors in the log | Port 443 must reach this server directly. Let's Encrypt rate-limits repeated failures; fix the cause and wait before retrying |
-| `admin` says the state is locked | The server is running. Stop it first |
+| The admin link expired or was used | Issue a new link as described in step 7 |
 | Sessions work on the same network but not from mobile data | `-public-ip` is the server's public address; TCP/UDP 3478 and UDP 49160–49359 are open in both firewalls |
 | Can sign in but cannot connect on a network that only allows TCP 443 | Enable `-public-ip` and terminate TLS in Deskway on port 443. Check that the log shows `TURN over TLS at` with the public hostname and that the browser and host trust its certificate |
 | A computer stays "Waiting for approval on a signed-in device" | Approve it from an approved browser, on **My devices** |

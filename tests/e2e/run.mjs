@@ -3,10 +3,12 @@
 // with --areas and those they need. Reports video metrics only; it never saves screen frames.
 //
 //   node tests/e2e/run.mjs --browser PATH --url URL --user NAME --password-file FILE
-//     --super-file FILE (the super password) --host-exe PATH --home DIR --out DIR
+//     --host-exe PATH --home DIR --out DIR
 //     [--devtools-port 9333] [--areas auth,session,...] [--server-exe PATH --server-state FILE]
-// --user is the server's admin (deskway-server admin), with its own password and super password
-// chosen; members is the area that makes another account, through the admin's page.
+// --user and --password-file identify an account with a password and an enrolled host.
+// Auth and devices issue admin recovery links using --server-exe and --server-state.
+// To run auth with a member account or without local access to the server, pass a fresh reset
+// link in --setup-link-file. The relay area also uses --setup-link-file.
 // URL must use a host name such as localhost: device keys and passkeys need a secure context.
 // --host-exe and --home let the tests open pairing windows on the test host, as its owner would.
 // On macOS, --areas host-restart starts and restarts a host with that separate test profile.

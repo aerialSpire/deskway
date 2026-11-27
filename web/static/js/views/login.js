@@ -1,10 +1,8 @@
-// Signing in: the account password, then (for a new device) approval on a device already
-// signed in, or the super password; with an initial password, choosing the account's own
-// (docs/accounts.md, First sign-in). Also the start of the page: who is signed in.
+// Signing in with a password and, for a new browser, approval from a signed-in device.
 import { $app, h, loading } from '../dom.js';
 import { separateHomeScreenApp } from '../env.js';
 import { t, currentLang, setLanguage } from '../i18n.js';
-import { api, socket, signedOut } from '../net.js';
+import { api, socket } from '../net.js';
 import { ensurePasskey, reportPasskey, storedPasskey, deviceLabel } from '../auth.js';
 import { keyCode } from '../auth-messages.js';
 import { browserSignIn } from '../browser-sign-in.js';
@@ -15,24 +13,21 @@ import { languagePicker, topbar, heading, codeBox } from './common.js';
 import { mcpRequest } from '../mcp-approval.js';
 import { mcpSignInNotice } from './mcp-approval.js';
 
-const signIn = browserSignIn({
-  // Not through api(): a 401 here is the answer asked for.
-  getSession: () => fetch('/api/me'),
-  ensurePasskey, reportPasskey, keyCode,
-});
+// Not through api(): a 401 here is the answer asked for.
+const getSession = () => fetch('/api/me');
+const signIn = browserSignIn({ getSession, ensurePasskey, reportPasskey, keyCode });
 
 // Finds out who is signed in, then shows the computers, or the sign-in page.
-export async function start() {
+export async function start(afterSetup = false) {
   let res;
   try {
-    res = await signIn.current();
+    res = afterSetup ? await getSession() : await signIn.current();
   } catch {
     // Not signed out: the server is unreachable. Saying "sign in" here would be wrong.
     showUnreachable();
     return;
   }
   if (res.status === 401) { showLogin(); return; }
-  if (res.status === 428) { showChoose(await res.json()); return; }
   if (!res.ok) { showUnreachable(); return; }
   state.me = await res.json();
   if (mcpRequest(location)) { setView('mcp-approval'); return; }
@@ -73,7 +68,7 @@ export function showLogin() {
       e.preventDefault();
       submit.disabled = true;
       await postSignIn({ user: user.value.trim(), password: pass.value }, error, 'login.wrong', async (res) => {
-        if (res.status === 202) showWaiting((await res.json()).code, user.value.trim(), pass.value);
+        if (res.status === 202) showWaiting((await res.json()).code);
         else await start();
       });
       submit.disabled = false;
@@ -101,9 +96,8 @@ export function showLogin() {
 let waitTimer = null;
 
 // A new device waits here. It first makes its passkey, then shows six digits made from that
-// key; the person checks them on a device that is already signed in and approves there. The
-// password stays in this closure only for the super-password path.
-function showWaiting(serverCode, userName, password) {
+// key; the person checks them on a device that is already signed in and approves there.
+function showWaiting(serverCode) {
   clearInterval(waitTimer);
   setView('waiting');
   const stop = () => clearInterval(waitTimer);
@@ -122,7 +116,6 @@ function showWaiting(serverCode, userName, password) {
   }, 2000);
 
   const step = h('div', { class: 'wait-step' });
-  const error = h('div', { class: 'error', role: 'alert' });
   const showCode = (code, note) => step.replaceChildren(
     h('p', { class: 'hint' }, t('wait.hint')),
     codeBox(code, t('wait.codeLabel', { code })),
@@ -143,78 +136,10 @@ function showWaiting(serverCode, userName, password) {
     name.select();
   }
 
-  const input = h('input', { class: 'input', type: 'password', autocomplete: 'off', required: true, placeholder: t('wait.superPlaceholder'), 'aria-label': t('wait.superPlaceholder') });
-  const setup = h('form', {
-    class: 'setup',
-    hidden: true,
-    onsubmit: async (e) => {
-      e.preventDefault();
-      await postSignIn({ user: userName, password, super_password: input.value }, error, 'wait.superWrong', async () => {
-        stop();
-        await start();
-      });
-    },
-  }, h('p', { class: 'hint' }, t('wait.superHint')), input, h('button', { class: 'btn primary block', type: 'submit' }, t('wait.superSubmit')));
-  const toggle = h('button', {
-    class: 'btn text',
-    type: 'button',
-    onclick: () => { setup.hidden = false; toggle.hidden = true; input.focus(); },
-  }, t('wait.noOther'));
   $app.replaceChildren(h('div', { class: 'page single' }, topbar(), heading(t('wait.title')), h('div', { class: 'form' },
     mcpSignInNotice(),
     step,
-    error,
-    toggle,
-    setup,
     h('button', { class: 'btn text', type: 'button', onclick: () => { stop(); showLogin(); } }, t('wait.back')))));
-}
-
-// The account signed in with an initial password: it chooses its own (twice), and the first
-// time its super password too, before any other page opens. `needs.super`: the super password
-// is to be chosen as well.
-export function showChoose(needs) {
-  currentSession()?.leave();
-  closeDialogs();
-  socket.close();
-  setView('choose');
-  const secret = (key) => h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true, 'aria-label': t(key) });
-  const label = (key, input) => h('label', {}, t(key), input);
-  const pass = secret('choose.password');
-  const again = secret('choose.again');
-  const superPass = needs.super ? secret('choose.super') : null;
-  const superAgain = needs.super ? secret('choose.superAgain') : null;
-  const error = h('div', { class: 'error', role: 'alert' });
-  const submit = h('button', { class: 'btn primary block', type: 'submit' }, t('choose.submit'));
-  const say = (key) => { error.textContent = t(key); };
-  const form = h('form', {
-    class: 'form choose',
-    onsubmit: async (e) => {
-      e.preventDefault();
-      error.textContent = '';
-      if (pass.value.length < 8) return say('pw.tooShort');
-      if (pass.value !== again.value) return say('pw.mismatch');
-      if (superPass && superPass.value.length < 8) return say('super.tooShort');
-      if (superPass && superPass.value !== superAgain.value) return say('super.mismatch');
-      submit.disabled = true;
-      try {
-        const res = await api('POST', '/api/initial-password', { new: pass.value, super_password: superPass?.value });
-        if (res.ok) { await start(); return; }
-        say(res.status === 409 ? 'choose.same' : 'err.notSaved');
-      } catch (err) {
-        if (!signedOut(err)) say('err.noServer');
-      }
-      submit.disabled = false;
-    },
-  },
-  h('p', { class: 'hint' }, t('choose.intro')),
-  h('div', { class: 'fields' }, label('choose.password', pass), label('choose.again', again)),
-  superPass ? h('p', { class: 'hint choose-super' }, t('choose.superIntro')) : null,
-  superPass ? h('div', { class: 'fields' }, label('choose.super', superPass), label('choose.superAgain', superAgain)) : null,
-  error,
-  submit,
-  h('button', { class: 'btn text', type: 'button', onclick: async () => { await api('POST', '/api/logout').catch(() => {}); showLogin(); } }, t('menu.signOut')));
-  $app.replaceChildren(h('div', { class: 'page single', 'data-page': 'choose' }, topbar(), heading(t('choose.title')), form));
-  pass.focus();
 }
 
 export function showUnreachable() {

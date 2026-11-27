@@ -19,7 +19,7 @@ func TestApprovalGivesOneSession(t *testing.T) {
 	f := newFixture(t)
 	first := f.signedIn("me")
 	second := f.browser()
-	want(t, "second login", f.login(second, nil).StatusCode, http.StatusAccepted)
+	want(t, "second login", f.login(second).StatusCode, http.StatusAccepted)
 	list := f.pending()
 	if len(list) != 1 || list[0].Kind != "browser" || list[0].Code == "" {
 		t.Fatalf("approvals: %+v", list)
@@ -37,7 +37,7 @@ func TestApprovalGivesOneSession(t *testing.T) {
 	want(t, "signed out", f.status(second, "GET", "/api/me", nil), http.StatusUnauthorized)
 
 	// With the password it comes back without another approval.
-	want(t, "trusted login", f.login(second, nil).StatusCode, http.StatusNoContent)
+	want(t, "trusted login", f.login(second).StatusCode, http.StatusNoContent)
 	want(t, "wrong password on trusted browser", f.status(second, "POST", "/api/login", map[string]string{"user": "me", "password": "nope"}), http.StatusUnauthorized)
 }
 
@@ -45,7 +45,7 @@ func TestWaitingBrowserCannotApproveItself(t *testing.T) {
 	f := newFixture(t)
 	f.signedIn("me")
 	second := f.browser()
-	f.login(second, nil)
+	f.login(second)
 	id := f.pending()[0].ID
 	want(t, "self approval", f.status(second, "POST", "/api/approvals", map[string]any{"kind": "browser", "id": id, "allow": true}), http.StatusUnauthorized)
 }
@@ -54,7 +54,7 @@ func TestDenied(t *testing.T) {
 	f := newFixture(t)
 	first := f.signedIn("me")
 	second := f.browser()
-	f.login(second, nil)
+	f.login(second)
 	id := f.pending()[0].ID
 	want(t, "deny", f.status(first, "POST", "/api/approvals", map[string]any{"kind": "browser", "id": id, "allow": false}), http.StatusNoContent)
 	want(t, "status after deny", f.status(second, "GET", "/api/login/status", nil), http.StatusGone)
@@ -65,7 +65,7 @@ func TestRequestExpires(t *testing.T) {
 	f := newFixture(t)
 	first := f.signedIn("me")
 	second := f.browser()
-	f.login(second, nil)
+	f.login(second)
 	id := f.pending()[0].ID
 	f.s.store.ageBrowser(id, pendingBrowserTTL+time.Minute)
 
@@ -80,7 +80,7 @@ func TestApprovedThenNotCollectedExpires(t *testing.T) {
 	f := newFixture(t)
 	first := f.signedIn("me")
 	second := f.browser()
-	f.login(second, nil)
+	f.login(second)
 	id := f.pending()[0].ID
 	f.status(first, "POST", "/api/approvals", map[string]any{"kind": "browser", "id": id, "allow": true})
 	f.s.store.ageBrowser(id, pendingBrowserTTL+time.Minute)
@@ -91,7 +91,7 @@ func TestApprovedThenNotCollectedExpires(t *testing.T) {
 func TestPendingRequestsAreBounded(t *testing.T) {
 	f := newFixture(t)
 	for range maxPendingPerUser * 3 {
-		f.login(f.browser(), nil)
+		f.login(f.browser())
 	}
 	if n := len(f.pending()); n > maxPendingPerUser {
 		t.Errorf("%d waiting requests", n)
@@ -102,7 +102,7 @@ func TestRemovingABrowserEndsLoginAndSocket(t *testing.T) {
 	f := newFixture(t)
 	first := f.signedIn("me")
 	second := f.browser()
-	f.login(second, nil)
+	f.login(second)
 	id := f.pending()[0].ID
 	f.status(first, "POST", "/api/approvals", map[string]any{"kind": "browser", "id": id, "allow": true})
 	f.status(second, "GET", "/api/login/status", nil)
@@ -134,7 +134,7 @@ func TestRemovingABrowserEndsLoginAndSocket(t *testing.T) {
 		}
 	}
 	// Coming back takes approval again, even with the password.
-	want(t, "login after removal", f.login(second, nil).StatusCode, http.StatusAccepted)
+	want(t, "login after removal", f.login(second).StatusCode, http.StatusAccepted)
 }
 
 func TestOtherAccountsCannotActOnRequests(t *testing.T) {
@@ -142,7 +142,7 @@ func TestOtherAccountsCannotActOnRequests(t *testing.T) {
 	f.signedIn("me")
 	friend := f.signedIn("friend")
 	second := f.browser()
-	f.login(second, nil)
+	f.login(second)
 	id := f.pending()[0].ID
 	want(t, "friend approves", f.status(friend, "POST", "/api/approvals", map[string]any{"kind": "browser", "id": id, "allow": true}), http.StatusNotFound)
 	want(t, "friend removes", f.status(friend, "DELETE", "/api/browsers/"+id, nil), http.StatusNotFound)
@@ -174,7 +174,7 @@ func TestBrowserKeyApprovalAndRemovalAreLogged(t *testing.T) {
 	firstKey := map[string]any{"cred": "Y3JlZDE", "alg": -7, "key": "a2V5MQ==", "name": "iPhone"}
 	want(t, "first attaches its key", f.status(first, "POST", "/api/login/device", firstKey), http.StatusOK)
 	second := f.browser()
-	f.login(second, nil)
+	f.login(second)
 	newKey := map[string]any{"cred": "Y3JlZDI", "alg": -7, "key": "a2V5Mg==", "name": "iPad"}
 	want(t, "waiting browser attaches its key", f.status(second, "POST", "/api/login/device", newKey), http.StatusOK)
 	reqs := f.pending()
@@ -217,31 +217,4 @@ func TestBrowserKeyApprovalAndRemovalAreLogged(t *testing.T) {
 		t.Fatalf("removal not logged: %+v", l)
 	}
 	want(t, "removed device is signed out", f.status(second, "GET", "/api/me", nil), http.StatusUnauthorized)
-}
-
-func TestSuperApprovalOfAWaitingKeyIsLoggedOnce(t *testing.T) {
-	f := newFixture(t)
-	store, user := f.s.store, f.id("me")
-	const id = "waiting"
-	now := time.Now().Unix()
-	if _, err := store.AskApproval(id, user, "", "Browser", "", "123456", now, maxPendingPerUser); err != nil {
-		t.Fatal(err)
-	}
-	key := proto.BrowserKey{Cred: "Y3JlZDE", Alg: -7, Key: "a2V5MQ==", Name: "iPhone"}
-	if _, ok := store.AttachKey(id, "", key, now); !ok {
-		t.Fatal("waiting key was not attached")
-	}
-	if l, _ := store.DeviceLog(user); len(l) != 0 {
-		t.Fatalf("waiting key was logged before approval: %+v", l)
-	}
-	// Both sign-ins can have observed the pending browser before either approves it.
-	for range 2 {
-		if err := store.ApproveWithSuper(id, user, "Browser", "", now); err != nil {
-			t.Fatal(err)
-		}
-	}
-	l, _ := store.DeviceLog(user)
-	if len(l) != 1 || l[0].Op != proto.OpAdd || l[0].Cred != key.Cred || l[0].By != "" {
-		t.Fatalf("expected one unsigned add for the approved browser: %+v", l)
-	}
 }

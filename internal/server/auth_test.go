@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// Signing in: a password alone gets no session, the super password, the session cookie.
+// Signing in: a password alone gets no session, the session cookie.
 
 func TestPasswordAloneGetsNoSession(t *testing.T) {
 	f := newFixture(t)
 	c := f.browser()
-	res := f.login(c, nil)
+	res := f.login(c)
 	want(t, "first login", res.StatusCode, http.StatusAccepted)
 	var body struct{ Code string }
 	if err := json.NewDecoder(res.Body).Decode(&body); err != nil || len(body.Code) != 6 {
@@ -30,29 +30,6 @@ func TestWrongPasswordCreatesNoRequest(t *testing.T) {
 	if n := len(f.pending()); n != 0 {
 		t.Errorf("%d requests after a wrong password", n)
 	}
-}
-
-func TestSuperPasswordLetsBrowsersIn(t *testing.T) {
-	f := newFixture(t)
-	wrong := f.browser()
-	want(t, "no super password set", f.login(wrong, map[string]string{"super_password": testSuper}).StatusCode, http.StatusForbidden)
-	if err := f.s.store.SetSuper(f.id("me"), testSuper); err != nil {
-		t.Fatal(err)
-	}
-	want(t, "wrong super password", f.login(wrong, map[string]string{"super_password": "not it at all"}).StatusCode, http.StatusForbidden)
-	a := f.browser()
-	want(t, "right super password", f.login(a, map[string]string{"super_password": testSuper}).StatusCode, http.StatusNoContent)
-	want(t, "session works", f.status(a, "GET", "/api/me", nil), http.StatusOK)
-	// Not used up: it is for every time all devices are lost.
-	b := f.browser()
-	want(t, "works again", f.login(b, map[string]string{"super_password": testSuper}).StatusCode, http.StatusNoContent)
-}
-
-func TestSuperPasswordNeedsThePassword(t *testing.T) {
-	f := newFixture(t)
-	_ = f.s.store.SetSuper(f.id("me"), testSuper)
-	c := f.browser()
-	want(t, "super password without password", f.status(c, "POST", "/api/login", map[string]string{"user": "me", "password": "nope", "super_password": testSuper}), http.StatusUnauthorized)
 }
 
 func TestForgedSessionCookieIsRejected(t *testing.T) {

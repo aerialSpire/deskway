@@ -7,11 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -19,7 +17,7 @@ import (
 )
 
 // User is one account, kept under its id: everything that belongs to it (computers, browsers,
-// the super password, sessions) names the id, never the name it signs in with, so that name
+// account links, sessions) names the id, never the name it signs in with, so that name
 // can change. Nothing is shared between accounts (docs/accounts.md).
 type User struct {
 	// Name is what the account signs in with; unique, and the account's own to change.
@@ -29,12 +27,6 @@ type User struct {
 	Created int64  `json:"created"`
 	// Admin: the server's first account, which makes, resets and removes the others.
 	Admin bool `json:"admin,omitempty"`
-	// MustChange: the password is an initial one, which the admin was shown; the account
-	// chooses its own before anything else.
-	MustChange bool `json:"must_change,omitempty"`
-	// HadBrowser: a browser of the account has been approved at some time. Until then, while
-	// the password is an initial one, signing in with it approves the browser at once.
-	HadBrowser bool `json:"had_browser,omitempty"`
 	// DeviceLog is the signed history of the account's browser keys, replayed by its computers.
 	DeviceLog []proto.LogEntry `json:"device_log,omitempty"`
 }
@@ -108,24 +100,12 @@ type Store struct {
 // OpenStore takes the state file's lock, then loads path or creates it with fresh secrets. It
 // fails with ErrLocked while another process has it open.
 func OpenStore(path string) (*Store, error) {
-	s, err := openStore(path)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.saveLocked(); err != nil {
-		s.Close()
-		return nil, err
-	}
-	return s, nil
-}
-
-func openStore(path string) (*Store, error) {
 	lock, err := lockState(path)
 	if err != nil {
 		return nil, err
 	}
 	s := &Store{path: path, lock: lock, Users: map[string]*User{}, Devices: map[string]*DeviceRecord{}, Browsers: map[string]*BrowserRecord{}}
-	if err := readState(path, s); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := s.load(); err != nil {
 		lock.Close()
 		return nil, err
 	}
@@ -138,15 +118,52 @@ func openStore(path string) (*Store, error) {
 	if s.TURNSecret == "" {
 		s.TURNSecret = randomHex(32)
 	}
+	// Remove the retired super password file so its hashes do not remain on disk.
+	if err := os.Remove(path + ".super"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.Close()
+		return nil, err
+	}
+	if err := s.saveLocked(); err != nil {
+		s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
-func readState(path string, s *Store) error {
+func (s *Store) load() error {
+	state := struct {
+		*Store
+		Users map[string]struct {
+			User
+			Unused bool `json:"must_change"`
+		} `json:"users"`
+	}{Store: s}
+	if err := readState(s.path, &state); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	// Discard unused initial passwords and the browsers they let in before setup finished.
+	for id, u := range state.Users {
+		if u.Unused {
+			u.Hash = ""
+		}
+		s.Users[id] = &u.User
+	}
+	for id, b := range s.Browsers {
+		if b.Role == "" && state.Users[b.Owner].Unused {
+			delete(s.Browsers, id)
+		}
+	}
+	return nil
+}
+
+func readState(path string, state any) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(raw, s); err != nil {
+	if err := json.Unmarshal(raw, state); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
 	return nil
@@ -162,6 +179,10 @@ func (s *Store) Close() error {
 
 // writeFile replaces path with b: written next to it, then renamed over it.
 func writeFile(path string, b []byte) error {
+	return writeFileWithRename(path, b, os.Rename)
+}
+
+func writeFileWithRename(path string, b []byte, rename func(string, string) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -169,7 +190,7 @@ func writeFile(path string, b []byte) error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return rename(tmp, path)
 }
 
 func (s *Store) saveLocked() error {
@@ -177,162 +198,10 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return writeFile(s.path, b)
+	return writeFileWithRename(s.path, b, replaceStateFile)
 }
 
-/// ---- the super password ----
-
-// The super password lets a browser in without an approved browser around, after every
-// signed-in device is lost. Unlike approval it needs nothing but the account password and this
-// password, so it should be long and kept offline. The account chooses it at its first sign-in
-// and changes it on its account page.
-//
-// Hashes live in their own file beside the state file, read each time one is checked.
-func superPath(statePath string) string { return statePath + ".super" }
-
-var superMu sync.Mutex
-
-// readSuper reads the super password file; a missing one is empty. On an error the map is
-// empty too, so a check fails closed, but a change must not write it back over the file.
-func readSuper(path string) (map[string]string, error) {
-	hashes := map[string]string{}
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return hashes, nil
-	}
-	if err != nil {
-		return hashes, err
-	}
-	if err := json.Unmarshal(raw, &hashes); err != nil {
-		return map[string]string{}, err
-	}
-	return hashes, nil
-}
-
-// updateSuper changes the super password file of the state file at statePath.
-func updateSuper(statePath string, change func(hashes map[string]string)) error {
-	superMu.Lock()
-	defer superMu.Unlock()
-	path := superPath(statePath)
-	hashes, err := readSuper(path)
-	if err != nil {
-		return err
-	}
-	change(hashes)
-	b, err := json.Marshal(hashes)
-	if err != nil {
-		return err
-	}
-	return writeFile(path, b)
-}
-
-// SetSuper sets or replaces an account's super password, by the account's id. Only a bcrypt
-// hash is kept.
-func (s *Store) SetSuper(user, password string) error {
-	if !validSecret(password) {
-		return errBadSecret
-	}
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return err
-	}
-	return updateSuper(s.path, func(hashes map[string]string) { hashes[user] = string(h) })
-}
-
-// HasSuper says whether the account has a super password yet.
-func (s *Store) HasSuper(user string) bool {
-	superMu.Lock()
-	defer superMu.Unlock()
-	hashes, _ := readSuper(superPath(s.path))
-	_, ok := hashes[user]
-	return ok
-}
-
-// CheckSuper verifies an account's super password, spending the same time when it has none.
-func (s *Store) CheckSuper(user, password string) bool {
-	superMu.Lock()
-	hashes, _ := readSuper(superPath(s.path))
-	superMu.Unlock()
-	h, ok := hashes[user]
-	if !ok {
-		h = noHash
-	}
-	return bcrypt.CompareHashAndPassword([]byte(h), []byte(password)) == nil && ok
-}
-
-// ---- accounts and passwords ----
-
-// Accounts are made only with a generated initial password (docs/accounts.md): the admin by
-// the admin command, members by the admin.
-
-var errHasAccounts = errors.New("this server has accounts already; its admin makes the others")
-
-// CreateAdmin initializes the first account on disk. The state file is first saved
-// with the account, so a failed first install can retry creating the admin.
-func CreateAdmin(path, name string) (string, error) {
-	s, err := openStore(path)
-	if err != nil {
-		return "", err
-	}
-	defer s.Close()
-	return s.CreateAdmin(name)
-}
-
-// CreateAdmin makes the server's first account, the admin, and returns its initial password.
-// It refuses once any account exists.
-func (s *Store) CreateAdmin(name string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.Users) > 0 {
-		return "", errHasAccounts
-	}
-	_, password, err := s.addUserLocked(name, name, true)
-	return password, err
-}
-
-// CreateMember makes a member account and returns its id and initial password.
-func (s *Store) CreateMember(name, display string) (id, password string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.addUserLocked(name, display, false)
-}
-
-func (s *Store) addUserLocked(name, display string, admin bool) (id, password string, err error) {
-	if !ValidAccountName(name) {
-		return "", "", errBadName
-	}
-	if idOf(s.Users, name) != "" {
-		return "", "", errNameTaken
-	}
-	password = initialPassword()
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", "", err
-	}
-	id = randomHex(16)
-	s.Users[id] = &User{Name: name, Display: display, Hash: string(h), Created: time.Now().Unix(), Admin: admin, MustChange: true}
-	return id, password, s.saveLocked()
-}
-
-// ResetPassword gives a member a new initial password and returns it. Its approved browsers
-// stay approved.
-func (s *Store) ResetPassword(member string) (string, error) {
-	password := initialPassword()
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u := s.Users[member]
-	if u == nil || u.Admin {
-		return "", errNoUser
-	}
-	u.Hash, u.MustChange = string(h), true
-	return password, s.saveLocked()
-}
-
-// SetPassword sets a password the account chose; an initial one is gone with it.
+// SetPassword sets a password the account chose.
 func (s *Store) SetPassword(user, password string) error {
 	if !validSecret(password) {
 		return errBadSecret
@@ -347,20 +216,19 @@ func (s *Store) SetPassword(user, password string) error {
 	if u == nil {
 		return errNoUser
 	}
-	u.Hash, u.MustChange = string(h), false
+	u.Hash = string(h)
 	return s.saveLocked()
 }
 
-// RemoveMember deletes a member account, by its id, with its browsers, computers and super
-// password. It returns the browsers and computers that went, for their connections to end.
+// RemoveMember deletes a member and its account link, browsers and computers. It returns the
+// browsers and computers that went, for their connections to end.
 func (s *Store) RemoveMember(member string) (browsers, computers map[string]bool, profiles []string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if u := s.Users[member]; u == nil || u.Admin {
 		return nil, nil, nil, errNoUser
 	}
-	// The super password goes first: if its file cannot be changed, nothing is removed yet.
-	if err := updateSuper(s.path, func(hashes map[string]string) { delete(hashes, member) }); err != nil {
+	if err := s.revokeMemberLinkLocked(member); err != nil {
 		return nil, nil, nil, err
 	}
 	delete(s.Users, member)
@@ -379,26 +247,6 @@ func (s *Store) RemoveMember(member string) (browsers, computers map[string]bool
 	}
 	profiles = s.mcpRemoveLocked(browsers)
 	return browsers, computers, profiles, s.saveLocked()
-}
-
-// initialAlphabet leaves out what reads alike (0 o, 1 l i) and has no capitals, so an initial
-// password is easy to read aloud and to type on a phone.
-const initialAlphabet = "23456789abcdefghjkmnpqrstuvwxyz"
-
-// initialPassword is four groups of four from initialAlphabet, joined by '-' (about 79 bits).
-func initialPassword() string {
-	b := make([]byte, 0, 19)
-	for i := range 16 {
-		if i > 0 && i%4 == 0 {
-			b = append(b, '-')
-		}
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(initialAlphabet))))
-		if err != nil {
-			panic(err)
-		}
-		b = append(b, initialAlphabet[n.Int64()])
-	}
-	return string(b)
 }
 
 // A hash for no account, so a check against an unknown account takes as long as a real one.
@@ -420,7 +268,7 @@ func (s *Store) SignIn(name, password string) string {
 func (s *Store) PasswordOK(user, password string) bool {
 	s.mu.Lock()
 	hash, ok := noHash, false
-	if u := s.Users[user]; u != nil {
+	if u := s.Users[user]; u != nil && u.Hash != "" {
 		hash, ok = u.Hash, true
 	}
 	s.mu.Unlock()

@@ -151,7 +151,7 @@ func (s *Store) mcpUseRegistration(id string, now time.Time) error {
 
 func (s *Store) mcpApproverLocked(user, browser string) *proto.BrowserKey {
 	u, b := s.Users[user], s.Browsers[browser]
-	if u == nil || u.MustChange || b == nil || b.Owner != user || !b.Approved || b.Role != "" ||
+	if u == nil || b == nil || b.Owner != user || !b.Approved || b.Role != "" ||
 		b.Key == nil || b.Key.Alg != -7 || b.Key.Role != "" {
 		return nil
 	}

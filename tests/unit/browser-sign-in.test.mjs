@@ -2,25 +2,23 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { browserSignIn } from '../../web/static/js/browser-sign-in.js';
 
-for (const status of [200, 428]) {
-  test(`the signed-in page waits for its device key to be reported (HTTP ${status})`, async () => {
-    const response = { status, ok: status === 200 };
-    const key = { key: 'public' };
-    const { promise: started, resolve: reporting } = Promise.withResolvers();
-    const { promise: reported, resolve: finish } = Promise.withResolvers();
-    const signIn = browserSignIn({
-      getSession: async () => response,
-      ensurePasskey: async () => key,
-      reportPasskey: (rec) => { reporting(rec); return reported; },
-    });
-    let ready = false;
-    const current = signIn.current().then((res) => { ready = true; return res; });
-    assert.equal(await started, key);
-    assert.equal(ready, false);
-    finish(true);
-    assert.equal(await current, response);
+test('the signed-in page waits for its device key to be reported', async () => {
+  const response = { status: 200, ok: true };
+  const key = { key: 'public' };
+  const { promise: started, resolve: reporting } = Promise.withResolvers();
+  const { promise: reported, resolve: finish } = Promise.withResolvers();
+  const signIn = browserSignIn({
+    getSession: async () => response,
+    ensurePasskey: async () => key,
+    reportPasskey: (rec) => { reporting(rec); return reported; },
   });
-}
+  let ready = false;
+  const current = signIn.current().then((res) => { ready = true; return res; });
+  assert.equal(await started, key);
+  assert.equal(ready, false);
+  finish(true);
+  assert.equal(await current, response);
+});
 
 test('a signed-out browser does not prepare a key', async () => {
   const response = { status: 401, ok: false };

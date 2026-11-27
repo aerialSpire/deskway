@@ -2,18 +2,11 @@
 import { PROTOCOL_VERSION, Signal } from './proto.js';
 
 let unauthorized = () => {};
-let mustChoose = () => {};
 
 // What happens when the server says this browser is no longer signed in.
 export function onUnauthorized(fn) { unauthorized = fn; }
 
-// What happens when the server says the account's password is an initial one, to be replaced
-// before anything else (428); `fn({ super })`, true when the super password is to be chosen too.
-export function onMustChoose(fn) { mustChoose = fn; }
-
-// The error a request fails with when the server says this browser is signed out, or must
-// choose its password first. The page for that is already showing then, so callers say nothing
-// about it.
+// The sign-in page is already showing, so callers say nothing about this error.
 const signedOutError = () => Object.assign(new Error('unauthorized'), { signedOut: true });
 export const signedOut = (err) => !!(err && err.signedOut);
 
@@ -25,10 +18,6 @@ export async function api(method, path, body) {
   });
   if (res.status === 401 && path !== '/api/login') {
     unauthorized();
-    throw signedOutError();
-  }
-  if (res.status === 428) {
-    mustChoose(await res.json().catch(() => ({})));
     throw signedOutError();
   }
   return res;

@@ -16,3 +16,11 @@ func lockFile(f *os.File) error {
 	}
 	return err
 }
+
+func openStateSnapshot(path string) (*os.File, error) {
+	return os.Open(path)
+}
+
+func replaceStateFile(from, to string) error {
+	return os.Rename(from, to)
+}

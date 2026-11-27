@@ -62,10 +62,6 @@ img, svg { -webkit-user-drag: none; }
 .note-box b { display: block; font-weight: 400; }
 .wait-step { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s3); }
 .wait-step .code { margin-top: 0; }
-.setup { margin-top: var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
-/* Choosing the account's own passwords: each group under the words that say what it is for. */
-.choose > .hint + .fields { margin-top: var(--s4); }
-.choose > .fields + .choose-super { margin-top: var(--s6); }
 .form > .btn.text { align-self: flex-start; margin-top: var(--s3); margin-left: calc(-1 * var(--s3)); }
 
 /* ---- My computers ---- */
@@ -276,10 +272,11 @@ img, svg { -webkit-user-drag: none; }
 .setting-list { margin-top: var(--s6); border-top: 1px solid var(--line); }
 .section-title + .setting-row, .hint + .setting-row { margin-top: var(--s3); border-top: 1px solid var(--line); }
 
-/* ---- Members: the members, and a new initial password shown once ---- */
+/* ---- Members: the members, and one-time account links ---- */
 .actions-row + .device-list, .actions-row + .members-empty { margin-top: var(--s6); }
 .credentials { margin-top: var(--s4); border-top: 1px solid var(--line); }
 .credentials .setting-row { padding: var(--s2) 0; }
+.credentials .setting-row > :last-child { min-width: 0; }
 .credential { font-family: var(--font-mono); text-align: right; overflow-wrap: anywhere; }
 
 /* ---- Session: the remote screen fills the window; toolbar, panels and notes float above ---- */

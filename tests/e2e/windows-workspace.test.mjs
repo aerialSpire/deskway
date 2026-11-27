@@ -5,12 +5,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join, parse, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { keyboardOf, lit, q, signIn, sleep, t } from './harness.mjs';
+import { keyboardOf, lit, q, issueAdminLink, redeemSetup, sleep, t } from './harness.mjs';
 
 const command = promisify(execFile);
 const user = 'workspace-trial';
 const password = 'workspace trial password';
-const superPassword = 'workspace trial super password';
 const buttons = '.computer-actions button';
 const title = 'document.querySelector(".dialog h2")?.textContent';
 const terminal = '[...document.querySelectorAll(".xterm-rows > div")].map(row => row.textContent).join("\\n")';
@@ -124,24 +123,14 @@ export const area = {
       DESKWAY_TEST_WORKSPACE_SHELL: "powershell.exe -NoLogo -NoProfile -NoExit -Command Set-PSReadLineOption -HistorySavePath (Join-Path $env:APPDATA 'workspace-history.txt')",
     };
     const exec = (exe, args, env) => command(exe, args, { env, windowsHide: true, timeout: 30000, encoding: 'utf8' });
-    const { stdout } = await exec(serverExe, ['admin', user, '-data', state]);
-    const initial = stdout.match(/Initial password: (\S+)/)?.[1];
-    if (!initial) throw new Error('The server did not print its temporary password');
     const server = start(serverExe, ['-listen', '127.0.0.1:' + address.port, '-data', state]);
     let host, panel;
     try {
       await waitFor(async () => server.log.includes('listening on') && (await fetch(h.opts.url).catch(() => null))?.ok, 'server');
       const page = await h.newPage();
       await page.addAuthenticator();
-      await page.until('!!document.querySelector("form.login")', 'login');
       await page.eval('localStorage.setItem("deskway.autofull", "0")');
-      await signIn(page, { user, password: initial });
-      await page.until('!!document.querySelector("form.choose input")', 'password setup');
-      await page.eval(`(() => {
-        const form = document.querySelector('form.choose');
-        ${lit([password, password, superPassword, superPassword])}.forEach((value, i) => { form.querySelectorAll('input')[i].value = value; });
-        form.requestSubmit();
-      })()`);
+      await redeemSetup(page, await issueAdminLink(serverExe, state, url), { user, password });
 
       const computer = 'Windows workspace';
       await exec(hostExe, ['enroll', '--server', h.opts.url, '--user', user, '--name', computer],

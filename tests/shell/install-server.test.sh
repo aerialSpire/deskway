@@ -21,6 +21,13 @@ cat > "$package/deskway-server" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$fixture/server.log"
 case "$1" in
+  admin-link)
+    grep -Fxq 'is-active --quiet deskway.service' "$fixture/systemctl.log" || exit 1
+    [ "$2" = -if-needed ] || exit 1
+    if [ "$needs_admin" = yes ]; then
+      printf '%s\n' "$6/setup#c=test-link"
+    fi
+    ;;
   upgrade) echo '# upgraded' >> "$0" ;;
   remote-mcp-check)
     [ "$preflight" != fail ] || { echo 'remote MCP: preflight failed' >&2; exit 1; }
@@ -72,7 +79,10 @@ cat > "$work/bin/systemctl" <<'SH'
 #!/bin/sh
 case "$1" in
   show)
-    printf '%s\n' "FragmentPath=$fixture/etc/deskway.service" 'NeedDaemonReload=no' 'User=deskway'
+    case "$2" in
+      --property=User) printf '%s\n' 'deskway' ;;
+      *) printf '%s\n' "FragmentPath=$fixture/etc/deskway.service" 'NeedDaemonReload=no' 'User=deskway' ;;
+    esac
     exit 0
     ;;
   --no-pager)
@@ -102,7 +112,9 @@ export PATH="$work/bin:$PATH"
 while read -r case_name before option arch preflight locale fail_at expected; do
   fixture="$work/$case_name"
   trial_arch=$arch
-  export fixture trial_arch preflight fail_at
+  needs_admin=no
+  case "$case_name" in new-*|rerun-unfinished-setup|rerun-proxy-setup) needs_admin=yes ;; esac
+  export fixture trial_arch preflight fail_at needs_admin
   mkdir -p "$fixture/run" "$fixture/etc" "$fixture/bin" "$fixture/data"
   sed -e 's/@DOMAIN@/desk.example.net/g' -e 's/@IP@/192.0.2.1/g' "$package/deskway.service" > "$fixture/base"
   if [ "$before" != none ]; then
@@ -112,6 +124,7 @@ while read -r case_name before option arch preflight locale fail_at expected; do
     cp "$fixture/bin/deskway-server" "$fixture/binary-before"
     case "$before" in
       off|drop-in|environment) cp "$fixture/base" "$fixture/before" ;;
+      proxy) sed '/^ExecStart=/s/-listen :443 -domain desk\.example\.net/-listen 127.0.0.1:8080/' "$fixture/base" > "$fixture/before" ;;
       on) sed '/^ExecStart=/s/$/ -remote-mcp/' "$fixture/base" > "$fixture/before" ;;
       value) sed '/^ExecStart=/s/$/ -remote-mcp=true/' "$fixture/base" > "$fixture/before" ;;
       quoted) sed '/^ExecStart=/s/$/ "-remote-mcp"/' "$fixture/base" > "$fixture/before" ;;
@@ -127,8 +140,11 @@ while read -r case_name before option arch preflight locale fail_at expected; do
         ;;
     esac
     cp "$fixture/before" "$fixture/etc/deskway.service"
+    printf '%s\n' '{}' > "$fixture/data/state.json"
   fi
-  set -- --domain desk.example.net --admin test --version local
+  domain=desk.example.net
+  [ "$case_name" != rerun-unfinished-setup ] || domain=different.example.net
+  set -- --domain "$domain" --version local
   [ "$option" = keep ] || set -- "$@" "$option"
   status=0
   LC_ALL="$locale" sh "$work/install.sh" "$@" > "$fixture/output" 2>&1 || status=$?
@@ -193,6 +209,15 @@ while read -r case_name before option arch preflight locale fail_at expected; do
         grep -Fx 'upgrade -to local' "$fixture/server.log" >/dev/null
         grep -Fx 'restart deskway.service' "$fixture/systemctl.log" >/dev/null
       fi
+      grep -Fx "admin-link -if-needed -data $fixture/data/state.json -url https://desk.example.net" "$fixture/server.log" >/dev/null
+      if grep -q '^journalctl ' "$fixture/systemctl.log"; then exit 1; fi
+      if [ "$needs_admin" = yes ]; then
+        grep -Fx 'https://desk.example.net/setup#c=test-link' "$fixture/output" >/dev/null
+        grep -F 'works once and expires in one hour' "$fixture/output" >/dev/null
+        grep -Fx "sudo runuser -u deskway -- $fixture/bin/deskway-server admin-link -data $fixture/data/state.json -url https://desk.example.net" "$fixture/output" >/dev/null
+      elif grep -Fq '/setup#c=' "$fixture/output" || grep -Fq 'sudo runuser -u deskway --' "$fixture/output"; then
+        exit 1
+      fi
       ;;
   esac
   if [ "$expected" != refused ] && [ "$option" = --remote-mcp ]; then
@@ -207,6 +232,8 @@ rerun-enable-on on --remote-mcp amd64 ok zh_TW no on
 rerun-disable on --no-remote-mcp amd64 ok C no off
 rerun-keep-on on keep amd64 ok C no keep
 rerun-keep-off off keep amd64 ok C no keep
+rerun-unfinished-setup off keep amd64 ok C no keep
+rerun-proxy-setup proxy keep amd64 ok C no keep
 new-preflight-failure none --remote-mcp amd64 fail C no preflight
 rerun-preflight-failure off --remote-mcp amd64 fail C no preflight
 refuse-boolean value --remote-mcp amd64 ok C no refused

@@ -66,9 +66,9 @@ input it cannot decrypt. The session toolbar shows which route is in use.
 ### Accounts that stay separate
 
 One server can be shared by a family or a small team. The administrator creates an account for
-each person, and each person sees and controls only their own computers. Every new browser,
-computer and AI client is approved from a device the account already trusts, by checking that
-both show the same confirmation code, so a stolen password alone does not get anyone in. A lost
+each person, and each person sees and controls only their own computers. One-time links set up
+and recover accounts. A new browser signing in with a password, a new computer or a new AI
+client needs approval from a device the account already trusts after comparing confirmation codes. A lost
 phone is removed from **My devices** in one step.
 
 ## Is Deskway right for you?

@@ -14,7 +14,7 @@ this document at the same time.
 | A bug in the network code (WebRTC, TURN, JSON) | Run code as SYSTEM | In service mode the network code runs as a low-privilege virtual account. Only a small SYSTEM agent touches the screen and input |
 | A program running as a normal user on the host | Become SYSTEM through Deskway | Admin-only install folder, private data folder, authenticated pipes, a SYSTEM side that reads no user-controlled files, and process mitigations |
 | Another account on the same server | Reach, watch or slow down another account's computers | Nothing is shared between accounts: a computer is listed, watched and reached only by the account that owns it, and trusts only that account's devices. The relay limits each account's traffic (below) |
-| The admin, who made the account | Use the member's account | The admin is shown only the initial password; the member's first sign-in replaces it with a password and super password the admin never sees. A reset makes a new initial password, which the member replaces at the next sign-in; it does not approve any browser |
+| The admin, who made the account | Use the member's account | The admin can issue and redeem one-time links. Each redemption approves one browser. The member chooses their own password, and computers with device checks on enforce their own device trust |
 | A thief with an unlocked phone | Control a computer | Nothing on the phone: a device key signs without a prompt. **My devices** on another device, or the computer itself, removes the phone; it is signed out of the website at once and computers stop trusting it when they receive the log |
 
 The page's Content Security Policy limits scripts to the server's own files. It allows inline
@@ -57,34 +57,27 @@ The following are not covered:
 
 ### Who makes accounts
 
-The server's first account is its admin, created by `deskway-server admin NAME` while no account
-exists (the command refuses to run otherwise). The admin creates, resets and removes all other
-accounts on the website (`/api/members`, admin only; anyone else gets 403). There is no sign-up
-and nothing is shared between accounts. See docs/accounts.md.
+The server operator issues a link using `deskway-server admin-link` as the service user.
+Redeeming the first link creates the admin. The admin creates members and manages their links
+on the website (`/api/members`). See [Accounts](accounts.md).
 
-### Initial passwords
+### One-time account links
 
-A new account, and an account whose password has been reset, gets a generated initial password:
-four groups of four characters from an alphabet without look-alike characters (about 79 bits,
-from `crypto/rand`). It is returned once to the admin, and only its bcrypt hash is stored. While
-an account's password is an initial one, its approved browser can register its device key
-and choose its new password (`POST /api/initial-password`). Its other signed-in pages and
-actions require the new password and answer with 428 until it is chosen. The new password
-has to differ from the initial one. If the account has no super password yet, it must choose
-one as well.
+The server generates 32 random bytes per link and encodes them in base64url. Its separate links
+file stores the SHA-256 of the code, the intended account when known, the kind of link, the
+issuer and the expiry. The code stays in the URL fragment until the setup page removes it from
+the address bar. The page sends the hash to obtain the form details and sends the code when
+submitting the password. Invalid codes count toward the same per-address limit as wrong passwords.
 
-### The first browser
-
-For an account that has never had an approved browser, signing in with the initial password
-approves that browser immediately: no other device exists that could approve it, and the
-password came from the admin. Like a browser let in with the super password, it joins the device
-log unsigned, so computers that already trust devices still need it to be added at the computer.
-Once any browser of the account has been approved, a new browser waits for approval as usual,
-whether or not the password is an initial one.
+A new link replaces an outstanding link for the same account. A link works once. Member links
+expire after seven days and admin links after one hour. Redeeming a link approves the browser
+that uses it and signs it in. Its registered key joins the device log unsigned. A computer that
+already trusts devices requires its own approval or a signed endorsement from a trusted device
+before accepting that key.
 
 ### An account is its id
 
-An account's computers, browsers, super password and sessions refer to a random id that never
+An account's computers, browsers, account links and sessions refer to a random id that never
 changes. The name the account signs in with is just one field of the account; it is unique, and
 the account page can change it (after the account password is entered). Changing the name signs
 nothing out and moves nothing.
@@ -95,21 +88,6 @@ Signing in from a new browser requires the account password and approval from a 
 already approved. The account page changes the password, and asks for the current password
 first. Computers are not affected, because they use their own tokens. When changing the
 password, the person can also sign out every other browser.
-
-### Super password
-
-Together with the account password, the super password lets a browser in without approval, for
-the case where every signed-in device has been lost. It can be used any number of times.
-
-- The server keeps only a bcrypt hash, in `state.json.super`, under the account's id.
-- The account chooses it at its first sign-in and can change it on the account page, after
-  entering the account password.
-- Wrong guesses count toward the same per-address limit as wrong passwords.
-- It must be at least 8 characters. Anyone holding both passwords can get a browser in, so it
-  should be long and stored offline.
-- It never pairs a computer. A browser it lets in joins the device log unsigned, and computers
-  ignore unsigned entries, so the browser still has to be added at each computer that already
-  trusts devices. Otherwise whoever controls the server could also control the computers.
 
 ### Limits per account
 
@@ -262,10 +240,9 @@ digits. When someone presses **Approve** there, that device signs an endorsement
 The server records the endorsement in the account's device log, and every computer that trusts
 the approving device then trusts the new one as well. No visit to each computer is needed.
 
-Headless computers use this signed approval path. If you signed in with the super password,
-open **My devices**, choose **Sign out** from the menu for **This device**, and sign in again
-with the account password. Compare the six digits and approve the request on a device the
-computer already trusts.
+Headless computers use this signed approval path. A browser signed in through a link can
+request signed approval by signing out from **My devices** and signing in again with its
+password. Approve the request on a device the computer already trusts.
 
 ### The pairing message (QR path)
 
@@ -309,9 +286,8 @@ connects and after every change.
     on the socket only what a session needs. Its offers are always signed with its device key,
     so a computer with device checks off still recognizes it as an AI client. The server
     enforces both rules;
-  - never signs in with the super password, never as the account's first browser, and never with
-    the account password. A new AI client requests access by account name only, and only while a
-    browser of the account has opened AI sign-ins: for 10 minutes after the prompt on **Add an
+  - a new client requests access by account name while a browser of the account has opened
+    AI sign-ins, for 10 minutes after the prompt on **Add an
     AI client** is copied. At any other time the request is refused, and the refusal is the same
     for an unknown name. The client then waits for a browser's approval like any new device. An
     approved client signs in again with its device key over `deskway-ai-login-v1`, with a time
@@ -341,7 +317,7 @@ A computer works out whom it trusts as follows:
    added there again after the removal's time.
 
 Entries signed by nobody (with `by` empty) are ignored. They come from a device that signed in
-with the super password, or that sent the server its key only after it was approved.
+through an account link, or that sent its key to the server only after approval.
 
 What the server can and cannot do:
 
@@ -401,9 +377,8 @@ application in **My devices** invalidates all its credentials, stops its gateway
 its server-side profile. The signed removal also tells computers to stop trusting the key.
 Signing out of the website leaves approved applications connected.
 
-After an administrator resets the password, already-open signaling connections stay up for
-both local AI clients and remote applications, and new connections wait for the member to
-choose a password.
+Issuing or redeeming a password reset link leaves approved local AI clients and remote
+applications connected and able to start new signaling connections.
 
 This section describes what an AI client can do once a computer lets it in. How it works is
 described in [architecture.md](architecture.md), "AI control".
