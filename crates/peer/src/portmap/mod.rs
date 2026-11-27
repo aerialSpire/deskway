@@ -201,6 +201,160 @@ pub(crate) mod tests {
     use super::*;
     use std::net::SocketAddrV4;
 
+    // Run with cargo test -p deskway-peer real_router_lease -- --ignored --nocapture.
+    #[test]
+    #[ignore = "sends UDP to the local router and may open a temporary mapping"]
+    fn real_router_lease() -> anyhow::Result<()> {
+        use crate::{gateway, stun};
+        use std::io::ErrorKind;
+        use std::net::{IpAddr, UdpSocket};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let start = Instant::now();
+        println!("Unix start {:.3}", SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs_f64());
+        let log = |line: &str| println!("+{:.3}s {line}", start.elapsed().as_secs_f64());
+        let send = |socket: &UdpSocket, to: SocketAddr, kind: &str, data: &[u8]| {
+            let result = socket.send_to(data, to);
+            log(&format!("TX {to} {kind} {result:?} {data:02x?}"));
+        };
+        let receive = |socket: &UdpSocket, buffer: &mut [u8]| match socket.recv_from(buffer) {
+            Ok(packet) => Ok(Some(packet)),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => Ok(None),
+            Err(e) if e.kind() == ErrorKind::ConnectionReset => {
+                log(&format!("RX socket error {e:?}"));
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        };
+
+        let ips: std::collections::BTreeSet<_> = if_addrs::get_if_addrs()?
+            .into_iter()
+            .filter_map(|iface| match iface.ip() {
+                IpAddr::V4(ip) if ip.is_private() => Some(ip),
+                _ => None,
+            })
+            .collect();
+        for ip in ips {
+            let gateway = gateway::default_gateway(ip);
+            log(&format!("default_gateway({ip}) = {gateway:?}"));
+            let socket = match UdpSocket::bind((ip, 0)) {
+                Ok(socket) => socket,
+                Err(e) => {
+                    log(&format!("bind {ip}: {e:?}"));
+                    continue;
+                }
+            };
+            let local = socket.local_addr()?;
+            log(&format!("bound {local}"));
+            let Some(gateway) = gateway else { continue };
+            socket.set_read_timeout(Some(Duration::from_millis(50)))?;
+            let mut lease = Lease::new(local, gateway, Instant::now());
+            let show_state = |lease: &Lease| match lease.state {
+                State::Asking { protocol, attempt, .. } => {
+                    let query = match protocol {
+                        Query::Pcp => "PCP MAP",
+                        Query::NatPmpAddress => "NAT-PMP address",
+                        Query::NatPmpMap(_) => "NAT-PMP UDP MAP",
+                    };
+                    log(&format!("state Asking {query}, attempt={attempt}"));
+                }
+                State::Held { external, expires, renew_due, attempt, .. } => log(&format!(
+                    "state Held {external}, expires=+{:.3}s, next renewal=+{:.3}s, attempt={attempt}",
+                    (expires - start).as_secs_f64(), (renew_due - start).as_secs_f64(),
+                )),
+                State::Idle => log("state Idle"),
+            };
+            show_state(&lease);
+            let mut probe: Option<stun::Probe> = None;
+            let mut renewal_deadline = None;
+            let mut gateway_replied = false;
+            let mut buffer = [0; 65536];
+            loop {
+                let now = Instant::now();
+                if renewal_deadline.is_some_and(|deadline| now >= deadline) {
+                    log("renewal response timed out");
+                    break;
+                }
+                if let Some((data, to)) = lease.poll(now) {
+                    let kind = match data[..2] {
+                        [2, 1] => "PCP MAP",
+                        [0, 0] => "NAT-PMP address",
+                        _ => "NAT-PMP UDP MAP",
+                    };
+                    if let State::Held { expires, .. } = lease.state {
+                        renewal_deadline.get_or_insert(now + Duration::from_secs(2).min((expires - now) / 2));
+                        log("poll emitted a renewal");
+                    }
+                    send(&socket, to, kind, &data);
+                    show_state(&lease);
+                } else if lease.due().is_none() {
+                    show_state(&lease);
+                    break;
+                }
+                if let Some((data, to)) = probe.as_mut().and_then(|p| p.poll(now)) {
+                    send(&socket, to, "STUN Binding request", &data);
+                }
+                let Some((n, from)) = receive(&socket, &mut buffer)? else { continue };
+                let data = &buffer[..n];
+                let kind = match data {
+                    [0, 0, 0, 1, ..] => "NAT-PMP unsupported version",
+                    [0, 128, ..] => "NAT-PMP address response",
+                    [0, 129, ..] => "NAT-PMP UDP MAP response",
+                    [_, 129, ..] => "PCP MAP response",
+                    [1, 1, _, _, 0x21, 0x12, 0xa4, 0x42, ..] => "STUN Binding response",
+                    _ => "unrecognized reply",
+                };
+                log(&format!("RX {from} {kind} {data:02x?}"));
+                gateway_replied |= from == (gateway, PORT).into();
+                if let Some(endpoint) = probe.as_mut().and_then(|p| p.answer(from, local, data)) {
+                    log(&format!("STUN endpoint={endpoint}, matches lease={}", lease.endpoint() == Some(endpoint)));
+                }
+                let previous = lease.endpoint();
+                if lease.answer(from, data, Instant::now()).is_none() {
+                    continue;
+                }
+                let pcp = pcp::response(data, local.port(), lease.nonce);
+                let pmp = natpmp::response(data, local.port());
+                log(&format!("Lease::answer accepted, PCP={pcp:?}, NAT-PMP={pmp:?}"));
+                show_state(&lease);
+                if previous.is_none() && lease.endpoint().is_some() {
+                    let server = stun::resolve("stun:stun.l.google.com:19302");
+                    log(&format!("STUN server={server:?}"));
+                    probe = server.map(|server| stun::Probe::new(local, server, Instant::now()));
+                }
+                if renewal_deadline.is_some() && matches!(lease.state, State::Held { attempt: 0, .. }) {
+                    log("renewal accepted");
+                    break;
+                }
+            }
+            if let Some((data, to)) = lease.release(Instant::now()) {
+                let kind = if data[0] == 2 { "PCP MAP delete" } else { "NAT-PMP UDP MAP delete" };
+                send(&socket, to, kind, &data);
+            } else {
+                log("Lease::release returned no datagram");
+            }
+            if !gateway_replied {
+                let target: SocketAddr = "239.255.255.250:1900".parse()?;
+                let search = b"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 3\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n";
+                socket2::SockRef::from(&socket).set_multicast_if_v4(&ip)?;
+                let result = socket.send_to(search, target);
+                log(&format!("TX {target} SSDP IGD v1 M-SEARCH {result:?}"));
+                let until = Instant::now() + Duration::from_secs(5);
+                let mut responders = std::collections::BTreeSet::new();
+                while Instant::now() < until {
+                    if let Some((n, from)) = receive(&socket, &mut buffer)? {
+                        log(&format!("RX {from} SSDP window: {:?}", String::from_utf8_lossy(&buffer[..n])));
+                        if buffer[..n].starts_with(b"HTTP/1.1 200") {
+                            responders.insert(from);
+                        }
+                    }
+                }
+                log(&format!("SSDP responders={responders:?}"));
+            }
+        }
+        Ok(())
+    }
+
     const PUBLIC: [u8; 4] = [198, 51, 100, 5];
 
     pub(crate) fn pcp_response(nonce: [u8; 12], internal: u16, external: SocketAddrV4, lifetime: u32, code: u8) -> Vec<u8> {
