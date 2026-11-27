@@ -44,16 +44,16 @@ The Deskway Host panel opens when installation finishes. To open it later, choos
    address and code. Approve it there, or on the **My devices** page, only if the codes match.
 3. The panel shows **Online**. The computer now appears in the browser's list of computers.
 
-## 4. Allow your phones and other computers
+## 4. Allow the devices you control from
 
 A computer accepts control only from devices that were added to it at the computer itself. The
-first time you open the computer from a phone or another browser, you are asked to add that
+first time you open the computer from another device's browser, you are asked to add that
 device.
 
-- To add a phone or tablet with a camera, click **Add a phone or computer** in the Deskway Host
-  panel, scan the QR code with the phone's camera, and tap **Add** on the phone.
-- To add a computer without a camera, open Deskway in that computer's browser, click this
-  computer and choose **Request control**. Then choose **Allow** at this computer.
+- To add a device that can scan a QR code, click **Add a device** in the Deskway Host
+  panel, scan the code with that device, and choose **Add** on it.
+- To add a device that cannot scan, open Deskway in its browser, click this computer and
+  choose **Request control**. Then choose **Allow** at this computer.
 
 The **Allowed devices** list in the panel shows every device that may control this computer, and
 you can remove devices from it there.
