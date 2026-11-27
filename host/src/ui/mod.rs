@@ -7,11 +7,11 @@
 //! make the page's state; the page's messages are [`PageMessage`]s, and the requests among them
 //! that the host carries out are [`PanelRequest`]s.
 
-use std::collections::BTreeMap;
-use std::sync::mpsc::{self, Receiver};
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
@@ -21,7 +21,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, MouseButton, TrayIconBuilder, TrayIconEvent};
 use wry::{WebContext, WebView, WebViewBuilder};
 
-use crate::discovery::Browse;
+use crate::discovery::{Browse, Change};
 use crate::i18n::{self, t};
 use crate::platform::ui as native;
 use crate::settings::PanelRequest;
@@ -86,7 +86,7 @@ pub enum UiEvent {
     Refresh,
     /// The backend's own events.
     Backend(BackendEvent),
-    LocalServersChanged,
+    LocalServersChanged(Weak<LocalServersSnapshot>),
 }
 
 /// What a page sends (`cmd`).
@@ -215,27 +215,76 @@ fn root_problem(error: Option<&str>) -> Option<String> {
     error.map(|e| crate::i18n::tf("err.root_trust", &[("e", e.to_string())]))
 }
 
+const MAX_LOCAL_SERVERS: usize = 32;
+
+#[derive(Clone, PartialEq, Serialize)]
+struct LocalServer {
+    name: String,
+    address: String,
+}
+
+#[derive(Default)]
+struct LocalServers {
+    by_instance: HashMap<String, LocalServer>,
+    by_name: BTreeSet<(String, String)>,
+}
+
+impl LocalServers {
+    fn update(&mut self, change: Change) -> bool {
+        let Change::Update { instance, server } = change else {
+            let changed = !self.by_instance.is_empty();
+            self.by_instance.clear();
+            self.by_name.clear();
+            return changed;
+        };
+        let next = server.map(|s| LocalServer { name: s.name, address: s.address.saved() });
+        if self.by_instance.get(&instance) == next.as_ref() {
+            return false;
+        }
+        if let Some(old) = self.by_instance.remove(&instance) {
+            self.by_name.remove(&(old.name, instance.clone()));
+        }
+        if let Some(server) = next {
+            self.by_name.insert((server.name.clone(), instance.clone()));
+            self.by_instance.insert(instance, server);
+        }
+        true
+    }
+
+    fn snapshot(&self) -> Vec<LocalServer> {
+        self.by_name.iter().take(MAX_LOCAL_SERVERS)
+            .map(|(_, instance)| self.by_instance[instance].clone())
+            .collect()
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct LocalServersSnapshot(Mutex<Option<Vec<LocalServer>>>);
+
+impl LocalServersSnapshot {
+    /// Only the first update to an empty slot needs to post an event.
+    fn replace(&self, latest: Vec<LocalServer>) -> bool {
+        self.0.lock().unwrap().replace(latest).is_none()
+    }
+
+    fn take(&self) -> Option<Vec<LocalServer>> {
+        self.0.lock().unwrap().take()
+    }
+}
+
 struct LocalDiscovery {
     _browse: Option<Browse>,
-    results: Receiver<Vec<Value>>,
+    results: Arc<LocalServersSnapshot>,
 }
 
 impl LocalDiscovery {
     fn start(proxy: EventLoopProxy<UiEvent>) -> Self {
-        let (tx, results) = mpsc::channel();
-        let mut found = BTreeMap::new();
+        let results = Arc::new(LocalServersSnapshot::default());
+        let slot = results.clone();
+        let mut found = LocalServers::default();
         let browse = Browse::start(move |change| {
-            if let Some(server) = change.server {
-                let result = json!({ "name": server.name, "address": server.address.saved() });
-                if found.get(&change.instance) == Some(&result) {
-                    return;
-                }
-                found.insert(change.instance, result);
-            } else if found.remove(&change.instance).is_none() {
-                return;
-            }
-            if tx.send(found.values().cloned().collect()).is_ok() {
-                let _ = proxy.send_event(UiEvent::LocalServersChanged);
+            if found.update(change) && slot.replace(found.snapshot()) {
+                let _ = proxy.send_event(UiEvent::LocalServersChanged(Arc::downgrade(&slot)));
             }
         }).map_err(|e| eprintln!("cannot browse for local servers: {e:#}")).ok();
         Self { _browse: browse, results }
@@ -435,8 +484,11 @@ pub fn run(at_login: bool) -> Result<()> {
                     *flow = ControlFlow::Exit;
                 }
             }
-            Event::UserEvent(UiEvent::LocalServersChanged) => {
-                if let Some(results) = app.discovery.as_ref().and_then(|d| d.results.try_iter().last()) {
+            Event::UserEvent(UiEvent::LocalServersChanged(source)) => {
+                let results = app.discovery.as_ref()
+                    .filter(|discovery| source.ptr_eq(&Arc::downgrade(&discovery.results)))
+                    .and_then(|discovery| discovery.results.take());
+                if let Some(results) = results {
                     let _ = panel.evaluate_script(&format!("showLocalServers({})", json!(results)));
                 }
             }
@@ -545,6 +597,33 @@ pub fn indicator_test() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_server_updates_keep_one_pending_snapshot_sorted_and_capped() {
+        let mut found = LocalServers::default();
+        let slot = LocalServersSnapshot::default();
+        for i in (0..40).rev() {
+            assert!(found.update(Change::Update {
+                instance: format!("instance-{}", 40 - i),
+                server: Some(crate::discovery::Server {
+                    name: format!("Hub {i:02}"),
+                    address: deskway_server_connection::Address::parse("https://hub.local:18499").unwrap(),
+                }),
+            }));
+            assert_eq!(slot.replace(found.snapshot()), i == 39);
+        }
+        let names: Vec<_> = slot.take().unwrap().into_iter().map(|server| server.name).collect();
+        assert_eq!(names, (0..32).map(|i| format!("Hub {i:02}")).collect::<Vec<_>>());
+        assert!(slot.take().is_none());
+
+        assert!(found.update(Change::Update { instance: "instance-40".into(), server: None }));
+        assert!(slot.replace(found.snapshot()));
+        assert_eq!(slot.take().unwrap().last().unwrap().name, "Hub 32");
+
+        assert!(found.update(Change::Reset));
+        assert!(slot.replace(found.snapshot()));
+        assert!(slot.take().unwrap().is_empty());
+    }
 
     #[test]
     fn every_window_takes_the_design_and_page_code_from_their_one_file() {

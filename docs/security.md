@@ -100,6 +100,8 @@ or credentials, compare the SHA-256 of the returned DER with the pin and save a 
 root as PEM. For that address, HTTP and signaling use native TLS verification of the
 server name and chain with the saved root as the sole trust anchor. Public addresses use system
 roots. The six-digit approval still authenticates the device joining the account.
+A new device still needs approval on the real hub even if an impersonating hub captures the
+account password.
 
 On Windows the panel passes the verified fingerprint to the elevated sign-in. The elevated
 process checks the PEM against that fingerprint and publishes it to the protected enrollment

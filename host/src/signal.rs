@@ -1249,12 +1249,26 @@ impl Host {
     }
 }
 
-fn wake_on_announcement(pin: String, sender: WeakWake<Control>) -> impl FnMut(Change) {
-    move |change| {
-        if change.server.is_some_and(|server| server.address.fingerprint() == Some(&pin)) {
-            if let Some(tx) = sender.upgrade() {
-                let _ = tx.send(Control::ServerAnnounced);
-            }
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+
+struct AnnouncementWake {
+    pin: String,
+    sender: WeakWake<Control>,
+    last_wake: Mutex<Option<Instant>>,
+}
+
+impl AnnouncementWake {
+    fn on_change(&self, change: Change, now: Instant) {
+        let Change::Update { server: Some(server), .. } = change else { return };
+        if server.address.fingerprint() != Some(self.pin.as_str()) {
+            return;
+        }
+        let mut last_wake = self.last_wake.lock().unwrap();
+        if last_wake.is_some_and(|last| now.duration_since(last) < MAX_RETRY_DELAY) {
+            return;
+        }
+        if self.sender.upgrade().is_some_and(|tx| tx.send(Control::ServerAnnounced).is_ok()) {
+            *last_wake = Some(now);
         }
     }
 }
@@ -1263,7 +1277,9 @@ fn wake_on_announcement(pin: String, sender: WeakWake<Control>) -> impl FnMut(Ch
 pub fn run(p: Params, control: Controls) {
     let trust = crate::config::dir().and_then(|d| Trust::open(d, &p.cfg.id, &p.cfg.server)).map_err(|e| eprintln!("trust store unavailable, refusing all sessions: {e:#}")).ok();
     let address = Address::parse(&p.cfg.server).ok();
-    let sender = control.sender.clone();
+    let announcement = address.as_ref().and_then(Address::fingerprint).map(|pin| Arc::new(AnnouncementWake {
+        pin: pin.into(), sender: control.sender.clone(), last_wake: Mutex::new(None),
+    }));
     let (mut host, q) = Host::new(p, trust, control);
     let cfg = host.cfg.clone();
     let view_only = host.view_only;
@@ -1301,17 +1317,16 @@ pub fn run(p: Params, control: Controls) {
                 host.report();
             }
         }
-        // Keep the same browse across retries so each resolution wakes us once, even if
-        // the service advertises before it can accept a connection.
+        // A fresh announcement can shorten a retry wait. Keep its cooldown across reconnects.
         if !host.quit && browse.is_none() {
-            if let Some(pin) = address.as_ref().and_then(Address::fingerprint) {
-                browse = Some(Browse::start(wake_on_announcement(pin.into(), sender.clone()))
-                    .map_err(|e| eprintln!("cannot browse for the local server: {e:#}")).ok());
+            if let Some(announcement) = announcement.clone() {
+                browse = Browse::start(move |change| announcement.on_change(change, Instant::now()))
+                    .map_err(|e| eprintln!("cannot browse for the local server: {e:#}")).ok();
             }
         }
         q.wait_for_retry(&mut host, Instant::now() + delay);
         if !host.waiting {
-            delay = (delay * 2).min(Duration::from_secs(30));
+            delay = (delay * 2).min(MAX_RETRY_DELAY);
         }
     }
     drop(browse);
@@ -1503,25 +1518,32 @@ mod tests {
     fn matching_local_announcement_interrupts_retry_wait() {
         let mut t = Test::new("local-retry", false, false);
         let pin = "ab".repeat(32);
-        let announce = |fingerprint: &str| Change {
-            instance: "hub._deskway._tcp.local.".into(),
+        let announce = |name: &str, fingerprint: &str| Change::Update {
+            instance: format!("{name}._deskway._tcp.local."),
             server: Some(crate::discovery::Server {
-                name: "Hub".into(),
+                name: name.into(),
                 address: Address::parse(&format!("https://hub.local:18499#ca={fingerprint}")).unwrap(),
             }),
         };
-        let mut receive = wake_on_announcement(pin.clone(), t.control.downgrade());
-        receive(Change { instance: announce(&pin).instance, server: None });
-        receive(announce(&"cd".repeat(32)));
+        let wake = AnnouncementWake { pin: pin.clone(), sender: t.control.downgrade(), last_wake: Mutex::new(None) };
+        let now = Instant::now();
+        wake.on_change(Change::Update { instance: "hub._deskway._tcp.local.".into(), server: None }, now);
+        wake.on_change(announce("hub", &"cd".repeat(32)), now);
         assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
 
         // A notification already queued behind other work must still end the wait.
         t.control.send(Control::Report).unwrap();
-        receive(announce(&pin));
+        wake.on_change(announce("hub", &pin), now);
         let deadline = Instant::now() + Duration::from_secs(2);
         t.q.wait_for_retry(&mut t.host, deadline);
         assert!(Instant::now() < deadline);
         assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
+
+        wake.on_change(Change::Reset, now);
+        wake.on_change(announce("renamed-hub", &pin), now + MAX_RETRY_DELAY - Duration::from_millis(1));
+        assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
+        wake.on_change(announce("renamed-hub", &pin), now + MAX_RETRY_DELAY);
+        assert_eq!(t.q.control.try_recv().unwrap(), Control::ServerAnnounced);
     }
 
     #[test]

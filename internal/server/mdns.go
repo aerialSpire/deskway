@@ -86,7 +86,7 @@ type mdnsServiceRecords struct {
 func newMDNSRecords(host, name, fingerprint string, https, guide uint16) mdnsServiceRecords {
 	return mdnsServiceRecords{
 		https: https,
-		txt:   []string{"v=1", "fp=" + fingerprint, "name=" + name, "guide=" + strconv.Itoa(int(guide))},
+		txt:   []string{"v=1", "fp=" + fingerprint, "name=" + strings.TrimSpace(name), "guide=" + strconv.Itoa(int(guide))},
 		host:  dnsmessage.MustNewName(host + ".local."),
 		name:  dnsmessage.MustNewName(host + "." + mdnsService),
 		ptr:   dnsmessage.MustNewName(mdnsService),

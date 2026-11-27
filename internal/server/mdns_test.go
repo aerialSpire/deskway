@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -35,6 +36,12 @@ func TestHostnameLabel(t *testing.T) {
 func TestMDNSAnswers(t *testing.T) {
 	var contract struct {
 		Service string
+		TXT     struct {
+			Fields map[string]struct {
+				Type     string
+				Optional *bool
+			}
+		}
 		Records struct {
 			SRV struct {
 				Host string
@@ -51,7 +58,24 @@ func TestMDNSAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, txt := contract.Records.SRV, contract.Records.TXT
-	records := newMDNSRecords(hostnameLabel("SEAN_ASUS"), txt["name"], txt["fp"], srv.Port, 18498)
+	for key, field := range contract.TXT.Fields {
+		if field.Type != "string" || field.Optional == nil {
+			t.Fatalf("invalid TXT field definition for %q: %+v", key, field)
+		}
+		if _, present := txt[key]; !present && !*field.Optional {
+			t.Fatalf("test vector is missing required TXT field %q", key)
+		}
+	}
+	for key := range txt {
+		if _, defined := contract.TXT.Fields[key]; !defined {
+			t.Fatalf("test vector uses undefined TXT field %q", key)
+		}
+	}
+	guide, err := strconv.ParseUint(txt["guide"], 10, 16)
+	if err != nil || guide == 0 {
+		t.Fatalf("invalid guide port in test vector: %q", txt["guide"])
+	}
+	records := newMDNSRecords(hostnameLabel("SEAN_ASUS"), " "+txt["name"]+" ", txt["fp"], srv.Port, uint16(guide))
 	if got := records.ptr.String(); got != contract.Service {
 		t.Fatalf("service type = %q, want %q", got, contract.Service)
 	}
