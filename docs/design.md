@@ -67,7 +67,7 @@ Every page has the same shape: a top bar, then the page title, then the content,
 top on the page ground. Content is not wrapped in a card; a card is used only for one item of a
 list, such as a computer.
 
-The browser's top bar (`.topbar`) shows `Deskway` on the left. On the right, **Open on your phone**
+The browser's top bar (`.topbar`) shows `Deskway` on the left. On the right, **Scan to open**
 comes first, followed by the language and account menus where shown. The button opens a dialog
 with the site's root address as a QR code and as copyable text. The title (`.heading h1`,
 `--fs-display`) is in the same place on every page. Forms are at most 360 wide and pages at most 1280.

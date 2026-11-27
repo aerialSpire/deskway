@@ -58,7 +58,7 @@ export const statusLine = (d) => {
     update ? h('div', { class: 'computer-update' }, update) : null);
 };
 
-// The top bar of every page: Deskway at the left; "Open on your phone", then the page's menus at the right.
+// The top bar of every page: Deskway at the left; Scan to open, then the page's menus at the right.
 export const topbar = (...end) => h('header', { class: 'topbar' },
   h('div', { class: 'brand' }, 'Deskway'),
   h('div', { class: 'topbar-end' },

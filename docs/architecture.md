@@ -854,7 +854,7 @@ design.css           every design token and shared component (docs/design.md); t
                      the same file into its panel, setup window and in-session bar
 style.css            the client's page and session layout, in those tokens only
 vendor/              upstream xterm.js modules and stylesheet for Terminal, and qrcode-generator
-                     for the "Open on your phone" dialog
+                     for the Scan to open dialog
 ```
 
 ## Tests
