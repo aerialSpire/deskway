@@ -75,7 +75,7 @@ export const area = {
     const before = await b.eval(TITLE_ROW);
     h.check('its page: the way back starts the title row, the status starts where it does, the ⋯ ends the row; no other buttons',
       before.back && Math.abs(before.status - before.back[0]) <= 1 && before.back[1] >= before.name[1] && before.back[2] <= before.name[2]
-        && Math.abs(before.more[1] - before.edge - 12) <= 1 && before.buttons === 0, JSON.stringify(before));
+        && Math.abs(before.more[1] - before.edge) <= 1 && before.buttons === 0, JSON.stringify(before));
     await b.v(`d.serverSays({ type: 'devices', devices: d.devices().map((x) => ({ ...x, controller: { device: false, name: '小林的 Android 手机上的 Chrome 浏览器（一个很长很长的设备名称）', connecting: false } })) })`);
     await sleep(150);
     const busy = await b.eval(TITLE_ROW);

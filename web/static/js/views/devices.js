@@ -12,7 +12,7 @@ import { state } from '../state.js';
 import { dialog, gotIt, nameDialog } from '../dialogs.js';
 import { statusOf, topbar, heading, updateNote, settingRow, aiSupported } from './common.js';
 import { openAiClient } from './ai-client.js';
-import { dropdown } from './menu.js';
+import { dropdown, moreButton } from './menu.js';
 import { PICTURES, picture, setPicture } from '../picture.js';
 import { accountMenu } from './account.js';
 import { computerMenu } from './computer.js';
@@ -67,7 +67,7 @@ export async function renderDevices() {
     const name = (r.device && r.device.name) || r.label;
     const ai = aiDeviceTag(r);
     const label = r.current ? t('devices.signOut') : t('common.remove');
-    const menu = dropdown(`browser:${r.id}`, h('button', { class: 'btn icon more', 'aria-label': t('computer.menu', { name }) }, svg(ICONS.more)),
+    const menu = dropdown(`browser:${r.id}`, moreButton(t('computer.menu', { name })),
       (item) => [
         item(t('common.rename'), () => nameDialog(t('devices.renameTitle'), t('devices.nameLabel'), name, async (n) => {
           const ok = await renameDevice(r.id, r.device, n);
