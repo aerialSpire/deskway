@@ -43,7 +43,7 @@ func TestLocalGuideRoutes(t *testing.T) {
 			}
 			switch {
 			case tt.path == "/" && tt.status == 200:
-				for _, value := range []string{ca.Fingerprint(), `data-https-port="18499"`, `data-certificate-name="Deskway 客廳 &amp; Office"`, "Trust the Deskway certificate", "shown on the hub computer", "data:text/css"} {
+				for _, value := range []string{ca.Fingerprint(), `data-https-port="18499"`, `data-certificate-name="Deskway 客廳 &amp; Office"`, "Trust the Deskway certificate", "shown on the computer running the Deskway server", "data:text/css"} {
 					if !strings.Contains(w.Body.String(), value) {
 						t.Fatalf("missing %q from guide", value)
 					}

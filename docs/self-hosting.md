@@ -28,9 +28,6 @@ before installing it. For the DER certificate, you can use
 `openssl x509 -inform DER -in deskway-ca.crt -noout -fingerprint -sha256`. Follow the guide
 to install the certificate, then choose **Continue** to open Deskway over HTTPS. Keep
 `local-ca/` beside the state file when backing up the server so devices keep trusting it.
-If you tested an earlier build that stored a root key or issued an intermediate without the
-`serverAuth` restriction, move its `local-ca/` directory aside before starting this version.
-Install the newly generated root on devices that connect to the server.
 
 Run `deskway-server admin-link -data FILE -url https://sean-asus.local:18499` with your hub's
 normalized hostname to set up the admin. Once an admin exists, add `-login` to issue a one-time
