@@ -59,18 +59,72 @@ pub fn own_sid() -> Result<String> {
     unsafe {
         let mut token = HANDLE::default();
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
-        let mut buf = vec![0u8; 256];
+        let token = Event(token);
+        token_sid(token.0)
+    }
+}
+
+fn token_sid(token: HANDLE) -> Result<String> {
+    unsafe {
+        let mut buf = [0usize; 32];
         let mut len = 0u32;
-        let r = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr() as _), buf.len() as u32, &mut len);
-        let _ = CloseHandle(token);
-        r?;
+        GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr() as _), size_of_val(&buf) as u32, &mut len)?;
         let user = &*(buf.as_ptr() as *const TOKEN_USER);
         let mut s = PWSTR::null();
         ConvertSidToStringSidW(user.User.Sid, &mut s)?;
-        let out = s.to_string()?;
+        let out = s.to_string();
         let _ = LocalFree(Some(HLOCAL(s.0 as _)));
-        Ok(out)
+        Ok(out?)
     }
+}
+
+fn token_is_admin(token: HANDLE) -> Result<bool> {
+    unsafe {
+        let mut len = 0;
+        let _ = GetTokenInformation(token, TokenGroups, None, 0, &mut len);
+        let mut buf = vec![0usize; (len as usize).div_ceil(size_of::<usize>())];
+        GetTokenInformation(token, TokenGroups, Some(buf.as_mut_ptr() as _), len, &mut len)?;
+        let groups = &*(buf.as_ptr() as *const TOKEN_GROUPS);
+        // A UAC-filtered administrator still belongs to the group (marked deny-only).
+        let groups = std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize);
+        Ok(groups.iter().any(|group| IsWellKnownSid(group.Sid, WinBuiltinAdministratorsSid).as_bool()))
+    }
+}
+
+fn permits_admin_link(owner: Option<&str>, user: &str, admin: bool) -> bool {
+    admin || owner == Some(user)
+}
+
+#[cfg(test)]
+#[test]
+fn admin_link_is_limited_to_the_recorded_user_and_administrators() {
+    assert!(permits_admin_link(Some("S-1-5-21-1001"), "S-1-5-21-1001", false));
+    assert!(permits_admin_link(Some("S-1-5-21-1001"), "S-1-5-21-1002", true));
+    assert!(!permits_admin_link(Some("S-1-5-21-1001"), "S-1-5-21-1002", false));
+    assert!(!permits_admin_link(None, "S-1-5-21-1002", false));
+    assert!(permits_admin_link(None, "S-1-5-21-1002", true));
+}
+
+#[cfg(test)]
+#[test]
+fn admin_link_uses_the_pipe_clients_windows_token() {
+    let sid = own_sid().unwrap();
+    let name = format!(r"\\.\pipe\deskway-ui-auth-test-{}", std::process::id());
+    let server = Pipe::create(&name, &format!("D:P(A;;GA;;;{sid})")).unwrap();
+    let client = std::thread::spawn(move || {
+        let pipe = Pipe::connect(&name).unwrap();
+        pipe.send_json(&"S-1-5-21-1234").unwrap();
+        pipe.recv_json::<bool>().unwrap()
+    });
+    server.accept().unwrap();
+    let forged = server.recv_json::<String>().unwrap();
+    assert!(server.allows_admin_link(Some(&sid)).unwrap());
+    let mut token = Event(HANDLE::default());
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token.0).unwrap(); }
+    let admin = token_is_admin(token.0).unwrap();
+    assert_eq!(server.allows_admin_link(Some(&forged)).unwrap(), admin);
+    server.send_json(&true).unwrap();
+    assert!(client.join().unwrap());
 }
 
 pub fn running_as_system() -> bool {
@@ -302,6 +356,22 @@ impl Pipe {
         let (tag, payload) = self.read_frame()?;
         ensure!(tag == TAG_JSON, "unexpected frame type {tag}");
         serde_json::from_slice(&payload).context("bad message")
+    }
+
+    /// The authenticated identity of the last panel message, never a SID supplied in JSON.
+    pub fn allows_admin_link(&self, owner: Option<&str>) -> Result<bool> {
+        unsafe {
+            ImpersonateNamedPipeClient(self.h)?;
+            let mut token = HANDLE::default();
+            let opened = OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &mut token);
+            // Never continue the service loop under a client's token.
+            if RevertToSelf().is_err() {
+                std::process::abort();
+            }
+            opened?;
+            let token = Event(token);
+            Ok(permits_admin_link(owner, &token_sid(token.0)?, token_is_admin(token.0)?))
+        }
     }
 
     fn send_raw(&self, b: &[u8]) -> Result<()> {

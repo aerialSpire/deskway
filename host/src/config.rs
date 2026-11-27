@@ -183,14 +183,21 @@ impl Config {
     }
 
     #[cfg(desktop_host)]
-    pub fn set_local_service(dir: &Path, local: crate::local_server::Setting) -> Result<()> {
+    pub fn set_local_service(dir: &Path, local: &crate::local_server::Setting) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
         let mut value = host_document(dir)?;
-        value["local_service"] = serde_json::to_value(local)?;
         if local.enabled {
             value["prevent_sleep"] = serde_json::Value::Bool(true);
+        } else if let Some(previous) = local.previous {
+            value["prevent_sleep"] = serde_json::Value::Bool(previous.prevent_sleep);
         }
+        value["local_service"] = serde_json::to_value(local)?;
         write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn prevent_sleep_setting(dir: &Path) -> Result<bool> {
+        Ok(host_document(dir)?["prevent_sleep"].as_bool().unwrap_or_default())
     }
 
     fn sign_in_root_path(&self, dir: &Path) -> PathBuf {
@@ -246,7 +253,7 @@ impl Config {
                 Err(e) => return Err(e),
             };
             write_private(&dir.join(KEPT), &serde_json::to_vec_pretty(&config)?)?;
-            let value = serde_json::json!({ "local_service": local });
+            let value = serde_json::json!({ "local_service": local, "prevent_sleep": config.prevent_sleep });
             return write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?);
         }
         match std::fs::rename(dir.join(FILE), dir.join(KEPT)) {
@@ -318,7 +325,7 @@ impl Config {
         for f in ACCOUNT {
             #[cfg(desktop_host)]
             if *f == FILE {
-                if let Some(local) = local {
+                if let Some(local) = &local {
                     let value = serde_json::json!({ "local_service": local });
                     write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)?;
                     continue;
@@ -467,7 +474,7 @@ mod tests {
         let pem = Address::parse(&address).unwrap().pin_root(root.der()).unwrap();
         std::fs::write(ca.join("ca.crt"), pem).unwrap();
         for enabled in [true, false] {
-            Config::set_local_service(&dir, Setting { https: 18599, guide: 18598, enabled }).unwrap();
+            Config::set_local_service(&dir, &Setting { https: Some(18599), guide: Some(18598), enabled, ..Default::default() }).unwrap();
             assert!(local_server::is_own(&dir, &address));
             assert!(!local_server::is_own(&dir, &address.replace("18599", "18600")));
         }

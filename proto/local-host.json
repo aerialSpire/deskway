@@ -2,11 +2,13 @@
   "version": 1,
   "transport": "UTF-8 lines on the child process's stdin and stdout. Closing stdin requests shutdown.",
   "stdin": {
-    "usage": "usage"
+    "usage": "usage",
+    "usage_excluding_hub": "usage H1"
   },
   "stdout": {
     "ready": { "kind": "ready", "version": 1, "hostname": "desk", "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
     "port": { "kind": "port", "port": 443 },
-    "usage": { "kind": "usage", "computers": 3, "browsers": 2 }
+    "usage": { "kind": "usage", "computers": 3, "browsers": 2 },
+    "usage_excluding_hub": { "kind": "usage", "computers": 2, "browsers": 2 }
   }
 }

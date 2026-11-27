@@ -11,7 +11,7 @@ use tao::event_loop::EventLoopProxy;
 use super::{Backend, PageMessage, UiEvent};
 use crate::config::Config;
 use crate::i18n::t;
-use crate::local_server::{Handle, Reply, Request, State};
+use crate::local_server::{Handle, Preferences, Reply, Request, State};
 use crate::platform;
 use crate::settings::{PanelRequest, Settings};
 use crate::signal::{self, Control, Status};
@@ -21,7 +21,7 @@ pub enum BackendEvent {
     /// Signing in finished: the new config, or why it failed.
     Enrolled(std::result::Result<Config, String>),
     /// Signed out.
-    Left(Result<Option<String>, String>),
+    Left(Result<Option<String>, String>, bool),
     RootChanged(Option<String>),
     /// Ask macOS for a permission (Screen Recording: true), once the panel says it is asked.
     Permission(bool),
@@ -53,7 +53,7 @@ pub struct InProcess {
     permission_request: Option<&'static str>,
     local: super::local::Panel,
     local_handle: Option<Handle>,
-    after_leave: Option<Request>,
+    after_leave: Option<Preferences>,
 }
 
 impl InProcess {
@@ -64,17 +64,22 @@ impl InProcess {
     fn local_request(&mut self, action: Request) {
         let own = self.local.state.as_ref().is_some_and(|s| s.own);
         if action == Request::Start && self.cfg.is_some() && !own {
-            self.after_leave = Some(action);
-            self.leave();
+            match crate::config::dir().and_then(|dir| Preferences::read(&dir, platform::ui::login_status().registered())) {
+                Ok(previous) => {
+                    self.after_leave = Some(previous);
+                    self.leave();
+                }
+                Err(e) => self.local.replied(action, Err(format!("{e:#}"))),
+            }
         } else {
-            self.send_local(action);
+            self.send_local(action, None);
         }
     }
 
-    fn send_local(&mut self, action: Request) {
+    fn send_local(&mut self, action: Request, previous: Option<Preferences>) {
         if let Some(handle) = &self.local_handle {
             let proxy = self.proxy.clone();
-            handle.request(action, move |result| {
+            handle.request(action, previous, move |result| {
                 let result = match result {
                     Ok(Reply::Browser { url, address }) => open_local(&url, &address)
                         .map(|()| Reply::Done).map_err(|e| format!("{e:#}")),
@@ -198,7 +203,7 @@ impl InProcess {
         let signal = self.signal.clone();
         std::thread::spawn(move || {
             let result = crate::config::dir().and_then(|dir| sign_out(&dir, &signal)).map_err(|e| format!("{e:#}"));
-            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Left(result)));
+            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Left(result, false)));
         });
     }
 
@@ -215,7 +220,8 @@ impl Backend for InProcess {
         self.local_handle = crate::config::dir().and_then(|dir| Handle::start(
             dir,
             move |s| { let _ = state.send_event(UiEvent::Backend(BackendEvent::Local(s))); },
-            || platform::ui::set_login(true),
+            platform::ui::set_login,
+            || platform::ui::login_status().registered(),
             move |cfg| {
                 let address = cfg.server.clone();
                 let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::Enrolled(Ok(cfg))));
@@ -224,7 +230,7 @@ impl Backend for InProcess {
             },
             move |dir| {
                 let root_error = sign_out(dir, &signal)?;
-                let _ = left.send_event(UiEvent::Backend(BackendEvent::Left(Ok(root_error.clone()))));
+                let _ = left.send_event(UiEvent::Backend(BackendEvent::Left(Ok(root_error.clone()), true)));
                 root_error.map_or(Ok(()), |error| Err(anyhow::anyhow!(error)))
             },
         )).map_err(|e| eprintln!("{e:#}")).ok();
@@ -329,13 +335,14 @@ impl Backend for InProcess {
                 self.root_problem = error;
                 true
             }
-            BackendEvent::Left(result) => {
+            BackendEvent::Left(result, local_cleanup) => {
                 self.busy = false;
+                let after_leave = self.after_leave.take();
                 self.root_problem = match result {
                     Ok(error) => error,
                     Err(e) => {
-                        if let Some(action) = self.after_leave.take() {
-                            self.local.replied(action, Err(e));
+                        if after_leave.is_some() {
+                            self.local.replied(Request::Start, Err(e));
                         } else {
                             self.error = e;
                         }
@@ -344,16 +351,17 @@ impl Backend for InProcess {
                 };
                 self.cfg = None;
                 self.settings = None;
-                // Signed out: nothing here should start at login or keep the Mac awake.
-                let _ = crate::power::prevent_sleep(false);
-                self.settings_error = platform::ui::set_login(false).with_context(|| t("err.mac_login_off")).err().map(|e| format!("{e:#}")).unwrap_or_default();
+                if !local_cleanup && after_leave.is_none() {
+                    let _ = crate::power::prevent_sleep(false);
+                    self.settings_error = platform::ui::set_login(false).with_context(|| t("err.mac_login_off")).err().map(|e| format!("{e:#}")).unwrap_or_default();
+                }
                 // No host runs now: nothing is shown as controlled.
                 let _ = self.proxy.send_event(UiEvent::Status(None));
-                if let Some(action) = self.after_leave.take() {
+                if let Some(previous) = after_leave {
                     if let Some(error) = &self.root_problem {
-                        self.local.replied(action, Err(error.clone()));
+                        self.local.replied(Request::Start, Err(error.clone()));
                     } else {
-                        self.send_local(action);
+                        self.send_local(Request::Start, Some(previous));
                     }
                 }
                 true

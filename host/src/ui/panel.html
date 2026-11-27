@@ -134,9 +134,10 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
     <div class="hub-row" id="local-status" role="status" hidden>
       <span class="dot ok" id="local-dot" aria-hidden="true"></span><span class="spinner" id="local-spinner" aria-hidden="true"></span>
       <span class="text" id="local-line"></span>
-      <button class="btn compact" type="button" id="local-open"></button>
+      <button class="btn compact" type="button" id="local-open" aria-describedby="local-link-note"></button>
       <button class="btn compact" type="button" id="local-stop" data-i18n="local.stop"></button>
     </div>
+    <p class="note" id="local-link-note" data-i18n="local.link_restricted" hidden></p>
     <div class="problem" id="local-error" role="alert" hidden></div>
     <form id="login" hidden>
       <p class="sub" id="login-help" data-i18n="login.help"></p>
@@ -447,7 +448,7 @@ function finishLocalDialog() {
 }
 
 function renderLocal(s) {
-  const { state, result } = s.local || {};
+  const { state, result, link_allowed } = s.local || {};
   if (result?.id && result.id !== localUi.seen) {
     localUi.seen = result.id;
     const dialog = localUi.dialog;
@@ -467,14 +468,18 @@ function renderLocal(s) {
   const failed = state?.phase === 'failed';
   const starting = state?.phase === 'starting';
   const setup = state?.phase === 'setup';
+  const restricted = visible && !starting && !failed && link_allowed === false;
   $('local-status').hidden = !visible;
   $('local-status').classList.toggle('bad', failed);
   $('local-dot').hidden = failed || starting || !visible;
   $('local-spinner').hidden = !starting;
   $('local-line').textContent = visible ? (failed && state.port ? t('local.port_taken', { port: state.port })
     : failed && state.error ? t('local.failure_reason', { reason: state.error })
+    : state.setup_error ? t('local.setup_error', { reason: state.setup_error })
     : t(failed ? 'local.exited' : starting ? 'local.starting' : setup ? 'local.setup' : 'local.running')) : '';
   $('local-open').hidden = !visible || starting;
+  $('local-open').disabled = restricted;
+  $('local-link-note').hidden = !restricted;
   $('local-open').textContent = t(failed ? 'local.retry' : setup ? 'local.complete_setup' : 'local.view');
   $('local-stop').hidden = !visible || starting || failed;
   $('local-setting').hidden = !state;
@@ -498,9 +503,19 @@ function renderLocal(s) {
   const noteKey = start ? (switching ? 'local.switch_note' : 'local.start_note') : deleting ? '' : 'local.stop_note';
   const count = (key, n) => t(`local.${key}.${n === 1 ? 'one' : 'other'}`, { n });
   $('local-title').textContent = t(switching ? 'local.switch_title' : `local.${action}_title`);
-  $('local-body').textContent = !start && typeof usage?.computers === 'number'
-    ? t('local.stop_usage', { computers: count('computers', usage.computers), browsers: count('browsers', usage.browsers) })
-    : t(bodyKey, { server });
+  let body = t(bodyKey, { server });
+  if (!start && typeof usage?.computers === 'number') {
+    const { computers, browsers } = usage;
+    if (computers && browsers) {
+      body = t('local.stop_usage', { computers: count('computers', computers), browsers: count('browsers', browsers) });
+    } else if (computers || browsers) {
+      const n = computers || browsers;
+      body = t(`local.stop_usage_single.${n === 1 ? 'one' : 'other'}`, { count: count(computers ? 'computers' : 'browsers', n) });
+    } else {
+      body = t('local.stop_usage_none');
+    }
+  }
+  $('local-body').textContent = body;
   $('local-note').hidden = !noteKey;
   $('local-note').textContent = noteKey ? t(noteKey, { server }) : '';
   $('local-stop-options').hidden = start;

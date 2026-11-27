@@ -82,6 +82,14 @@ export const area = {
       await clearSent();
       await p.eval(`$('local-open').click()`);
       h.check(`panel ${lang}: Complete setup asks the Host to open the link`, (await sent()).at(-1)?.action === 'setup');
+      for (const phase of ['setup', 'running']) {
+        await render(base({ local: { ...local(phase), link_allowed: false } }));
+        await clearSent();
+        await p.eval(`$('local-open').click()`);
+        h.check(`panel ${lang}: ${phase} blocks the admin link for an unauthorized user`,
+          (await sent()).length === 0 && await p.eval(`$('local-open').disabled &&
+            !$('local-link-note').hidden && $('local-link-note').textContent === ${lit(localText('link_restricted'))}`));
+      }
       await hubPanel('running');
       h.check(`panel ${lang}: running locks both settings and hides sign-out`, await localLine('running') &&
         await p.eval(`['autostart', 'prevent-sleep'].every(id => $(id).disabled && $(id).getAttribute('aria-checked') === 'true') && $('leave').hidden`));
@@ -89,9 +97,22 @@ export const area = {
       await p.eval(`$('local-open').click(); $('local-stop').click()`);
       h.check(`panel ${lang}: View opens an admin link and the stop dialog requests live counts`,
         (await sent()).slice(-2).map((m) => m.action).join(',') === 'open,usage');
-      await hubPanel('running', {}, { id: 1, action: 'usage', computers: 3, browsers: 2 });
+      const usageCopy = {
+        en: ['2 computers and 1 browser are using it. They will go offline.', '2 computers are using it and will go offline.',
+          '1 browser is using it and will go offline.', 'No other computers or browsers are using it right now.'],
+        'zh-Hans': ['有 2 台电脑和 1 个浏览器正在用它，停止后都会离线。', '有 2 台电脑正在用它，停止后会离线。',
+          '有 1 个浏览器正在用它，停止后会离线。', '现在没有其他电脑或浏览器在用它。'],
+        'zh-Hant': ['有 2 台電腦和 1 個瀏覽器正在用它，停止後都會離線。', '有 2 台電腦正在用它，停止後會離線。',
+          '有 1 個瀏覽器正在用它，停止後會離線。', '現在沒有其他電腦或瀏覽器在用它。'],
+      }[lang];
+      for (const [i, [computers, browsers]] of [[2, 1], [2, 0], [0, 1], [0, 0]].entries()) {
+        await hubPanel('running', {}, { id: 100 + i, action: 'usage', computers, browsers });
+        h.check(`panel ${lang}: stop confirmation with ${computers} computers and ${browsers} browsers`,
+          await p.eval(`$('local-body').textContent === ${lit(usageCopy[i])}`));
+      }
+      await hubPanel('running', {}, { id: 1, action: 'usage', computers: 2, browsers: 1 });
       h.check(`panel ${lang}: stop confirmation shows live counts and defaults to keeping data`, await p.eval(`
-        $('local-body').textContent === ${lit(localText('stop_usage', { computers: localText('computers', { n: 3 }), browsers: localText('browsers', { n: 2 }) }))} &&
+        $('local-body').textContent === ${lit(usageCopy[0])} &&
         $('local-note').textContent === ${lit(localText('stop_note'))} &&
         !$('local-stop-delete').checked &&
         $('local-stop-delete').closest('label').textContent.trim() === ${lit(localText('stop_delete'))} &&

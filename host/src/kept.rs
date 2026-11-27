@@ -72,7 +72,7 @@ impl<C: Child, K: Eq> Kept<C, K> {
     }
 
     fn back_off(&mut self, now: Instant) {
-        self.next_try = now + Duration::from_secs((1 << self.failures.min(6)).min(60));
+        self.next_try = now + retry_delay(self.failures);
         self.failures = self.failures.saturating_add(1);
     }
 
@@ -96,6 +96,15 @@ impl<C: Child, K: Eq> Kept<C, K> {
     pub fn failures(&self) -> u32 {
         self.failures
     }
+
+    #[cfg(desktop_host)]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+}
+
+pub fn retry_delay(failures: u32) -> Duration {
+    Duration::from_secs((1 << failures.min(6)).min(60))
 }
 
 impl<C: Child, K> Drop for Kept<C, K> {

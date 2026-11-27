@@ -48,6 +48,8 @@ pub enum PanelRequest {
     #[cfg(windows)]
     SyncLocalRoot,
     #[cfg(windows)]
+    LocalAccess,
+    #[cfg(windows)]
     DevLeave,
 }
 
@@ -113,7 +115,7 @@ impl Settings {
             #[cfg(desktop_host)]
             PanelRequest::Local(_) => unreachable!("local service requests belong to the local service"),
             #[cfg(windows)]
-            PanelRequest::SyncLocalRoot | PanelRequest::DevLeave => unreachable!("this request belongs to the service"),
+            PanelRequest::SyncLocalRoot | PanelRequest::LocalAccess | PanelRequest::DevLeave => unreachable!("this request belongs to the service"),
         };
         let _ = self.control.send(control);
         Ok(())
@@ -227,8 +229,8 @@ mod tests {
     fn local_service_locks_startup_and_sleep_prevention_until_stopped() {
         let (settings, _, rx, dir) = settings("local");
         for enabled in [true, false] {
-            let local = crate::local_server::Setting { https: 18599, guide: 18598, enabled };
-            Config::set_local_service(&dir, local).unwrap();
+            let local = crate::local_server::Setting { https: Some(18599), guide: Some(18598), enabled, ..Default::default() };
+            Config::set_local_service(&dir, &local).unwrap();
             settings.handle(PanelRequest::AutoStart(false)).unwrap();
             settings.handle(PanelRequest::PreventSleep(false)).unwrap();
             assert_eq!(Config::local_service(&dir).unwrap(), Some(local));

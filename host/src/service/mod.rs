@@ -215,12 +215,28 @@ struct KillJob(HANDLE);
 impl KillJob {
     fn new() -> Result<KillJob> {
         unsafe {
-            let h = CreateJobObjectW(None, None)?;
+            let job = KillJob(CreateJobObjectW(None, None)?);
             let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-            SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as _, size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32)?;
-            Ok(KillJob(h))
+            SetInformationJobObject(job.0, JobObjectExtendedLimitInformation, &info as *const _ as _, size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32)?;
+            Ok(job)
         }
+    }
+
+    /// Put the service in the job before it creates children, so they join at creation.
+    /// Windows closes this non-inheritable handle when the service process exits.
+    fn keep_service_children() -> Result<()> {
+        let job = Self::new()?;
+        unsafe { AssignProcessToJobObject(job.0, GetCurrentProcess()) }
+            .context("assign DeskwayNet to its child process job")?;
+        std::mem::forget(job);
+        Ok(())
+    }
+}
+
+impl Drop for KillJob {
+    fn drop(&mut self) {
+        unsafe { let _ = CloseHandle(self.0); }
     }
 }
 

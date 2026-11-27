@@ -33,6 +33,7 @@ pub enum BackendEvent {
     SignedIn(Result<(), String>),
     RootProblem(Option<String>),
     Local(State),
+    LocalAccess(bool),
     LocalReply(Request, Result<Reply, String>),
     DevLeft(Result<(), String>),
     Disconnected,
@@ -65,7 +66,9 @@ pub struct Service {
 
 impl Service {
     pub fn new(proxy: EventLoopProxy<UiEvent>, at_login: bool, dev: bool) -> Service {
-        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new(), root_problem: None, dev, local: super::local::Panel::default(), after_leave: None, leaving: false }
+        let mut local = super::local::Panel::default();
+        local.link_allowed = Some(false);
+        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new(), root_problem: None, dev, local, after_leave: None, leaving: false }
     }
 
     fn send(&self, r: PanelRequest) -> bool {
@@ -74,17 +77,19 @@ impl Service {
 
     fn local_request(&mut self, action: Request) {
         let own = self.local.state.as_ref().is_some_and(|s| s.own);
-        if action == Request::StopAndDelete && !self.dev {
-            self.admin("stop-and-delete", "stop-local-and-delete");
-        } else if action == Request::Start && !self.signed_out && !own {
+        let switching = action == Request::Start && !self.signed_out && !own;
+        if !self.dev && matches!(action, Request::Start | Request::StopAndDelete) {
+            let args = match action {
+                Request::StopAndDelete => "stop-local-and-delete",
+                _ if switching => "start-local --switch",
+                _ => "start-local",
+            };
+            self.admin_local(action, args);
+        } else if switching {
             self.after_leave = Some(action);
             self.leaving = true;
-            if self.dev {
-                if !self.send(PanelRequest::DevLeave) {
-                    self.finish_leave(Err(t("status.service_down")));
-                }
-            } else {
-                self.admin("local-leave", "sign-out");
+            if !self.send(PanelRequest::DevLeave) {
+                self.finish_leave(Err(t("status.service_down")));
             }
         } else if !self.send(PanelRequest::Local(action)) {
             self.local.replied(action, Err(t("status.service_down")));
@@ -151,6 +156,23 @@ impl Service {
         });
     }
 
+    fn admin_local(&self, action: Request, args: &'static str) {
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let id = wire::crypto::hex(&wire::crypto::random::<16>());
+            let file = std::env::temp_dir().join(format!("deskway-local-{id}.txt"));
+            let result = install::elevate(&format!("{args} --result \"{}\"", file.display()));
+            let reason = std::fs::read_to_string(&file).unwrap_or_default();
+            let _ = std::fs::remove_file(file);
+            let result = match result {
+                Ok(0) => Ok(Reply::Done),
+                Ok(_) if !reason.trim().is_empty() => Err(reason),
+                _ => Err(t("err.not_done")),
+            };
+            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::LocalReply(action, result)));
+        });
+    }
+
     fn start_service(&mut self) {
         self.starting = true;
         self.admin("start", "start");
@@ -199,6 +221,7 @@ impl Backend for Service {
                             ToPanel::Exit => (UiEvent::Backend(BackendEvent::Exit), true),
                             ToPanel::RootProblem(error) => (UiEvent::Backend(BackendEvent::RootProblem(error)), false),
                             ToPanel::Local(state) => (UiEvent::Backend(BackendEvent::Local(state)), false),
+                            ToPanel::LocalAccess(allowed) => (UiEvent::Backend(BackendEvent::LocalAccess(allowed)), false),
                             ToPanel::LocalReply(action, result) => (UiEvent::Backend(BackendEvent::LocalReply(action, result)), false),
                             ToPanel::DevLeft(result) => (UiEvent::Backend(BackendEvent::DevLeft(result)), false),
                         };
@@ -305,12 +328,6 @@ impl Backend for Service {
                         self.error = t("err.not_done");
                     }
                 }
-                if what == "local-leave" {
-                    self.finish_leave(if ok { Ok(()) } else { Err(t("err.not_done")) });
-                }
-                if what == "stop-and-delete" {
-                    self.local.replied(Request::StopAndDelete, if ok { Ok(Reply::Done) } else { Err(t("err.not_done")) });
-                }
                 true
             }
             BackendEvent::SignedOut(kept) => {
@@ -336,6 +353,10 @@ impl Backend for Service {
                 self.continue_local();
                 true
             }
+            BackendEvent::LocalAccess(allowed) => {
+                self.local.link_allowed = Some(allowed);
+                true
+            }
             BackendEvent::LocalReply(action, Ok(Reply::Browser { url, address })) => {
                 self.open_local(action, url, address);
                 true
@@ -354,6 +375,7 @@ impl Backend for Service {
             }
             BackendEvent::Disconnected => {
                 self.local.state = None;
+                self.local.link_allowed = Some(false);
                 true
             }
         }

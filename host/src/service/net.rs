@@ -50,6 +50,7 @@ pub enum ToPanel {
     /// The agent's last browser trust error, if any.
     RootProblem(Option<String>),
     Local(local_server::State),
+    LocalAccess(bool),
     LocalReply(local_server::Request, Result<local_server::Reply, String>),
     DevLeft(Result<(), String>),
 }
@@ -59,6 +60,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     if !dev {
         crate::config::use_dir(crate::service::machine_dir());
         super::harden::network();
+        super::KillJob::keep_service_children()?;
     }
     crate::i18n::from_config();
     let for_panels = Arc::new(Mutex::new(None));
@@ -81,12 +83,18 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     let agent = platform.clone();
     let local = Arc::new(local_server::Handle::start(
         dir.clone(), |state| PANELS.local(state),
-        move || {
-            if !dev {
-                agent.autostart(true);
+        move |on| {
+            if !dev && super::install::autostart() != Some(on) {
+                agent.autostart(on);
+                let until = std::time::Instant::now() + Duration::from_secs(3);
+                while super::install::autostart() != Some(on) {
+                    anyhow::ensure!(std::time::Instant::now() < until, "automatic startup setting was not applied");
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
             Ok(())
         },
+        move || !dev && super::install::autostart().unwrap_or(false),
         |_| {},
         dev_sign_out,
     )?);
@@ -396,13 +404,28 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
             let local = local.clone();
             let agent = agent.clone();
             std::thread::spawn(move || {
+                let admin_link_allowed = || -> Result<bool> {
+                    let owner = if dev {
+                        Some(ipc::own_sid()?)
+                    } else {
+                        Config::local_service(&super::machine_dir())?.and_then(|s| s.owner)
+                    };
+                    pipe.allows_admin_link(owner.as_deref())
+                };
                 while let Ok(r) = pipe.recv_json::<PanelRequest>() {
+                    if r == PanelRequest::LocalAccess {
+                        let _ = pipe.send_json(&ToPanel::LocalAccess(admin_link_allowed().unwrap_or(false)));
+                        continue;
+                    }
                     if let PanelRequest::Local(request) = r {
-                        if request == local_server::Request::StopAndDelete && !dev {
+                        use local_server::Request::*;
+                        if matches!(request, Start | StopAndDelete) && !dev {
                             let _ = pipe.send_json(&ToPanel::LocalReply(request, Err(crate::i18n::t("err.need_admin"))));
+                        } else if matches!(request, Setup | Open) && !admin_link_allowed().unwrap_or(false) {
+                            let _ = pipe.send_json(&ToPanel::LocalReply(request, Err(crate::i18n::t("local.link_restricted"))));
                         } else if let Some(local) = local.upgrade() {
                             let reply = pipe.clone();
-                            local.request(request, move |r| {
+                            local.request(request, None, move |r| {
                                 let _ = reply.send_json(&ToPanel::LocalReply(request, r));
                             });
                         }
@@ -466,6 +489,7 @@ impl UiClient {
                 }
             }
         });
+        pipe.send_json(&PanelRequest::LocalAccess)?;
         Ok((UiClient { pipe }, rx))
     }
 

@@ -52,9 +52,14 @@ machine-wide trusted roots for browsers if it is absent. Signing out or uninstal
 removes a root the Host added.
 
 To serve your own network, choose **Run local service** and then **Complete setup**.
-Windows asks for permission to trust this hub's certificate. The Host joins automatically
+Windows asks for administrator approval to start the local service. Only the Windows account
+that approved the start and members of Administrators can open the **Complete setup** or
+**View** links. Windows also asks for permission to trust this hub's certificate. The Host joins automatically
 after you set the admin password in your browser. The installer allows inbound connections
 to the bundled server on Private networks.
+
+An elevated Host sign-out also turns off the local service and restores the automatic startup
+and sleep prevention settings, just as stopping the local service does.
 
 The stop dialog keeps the hub's data by default. Check **Also delete the local service data**,
 choose **Stop and delete**, and approve the administrator prompt to erase it and sign the

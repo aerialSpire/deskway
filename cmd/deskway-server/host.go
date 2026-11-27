@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"deskway/internal/server"
@@ -41,15 +42,16 @@ func serveHost(s *server.Server, ca *server.LocalCA, stop func()) {
 	hostCommands(os.Stdin, os.Stdout, ca.Hostname(), ca.Fingerprint(), s.LocalUsage)
 }
 
-func hostCommands(input io.Reader, output io.Writer, hostname, fingerprint string, usage func() (int, int)) {
+func hostCommands(input io.Reader, output io.Writer, hostname, fingerprint string, usage func(string) (int, int)) {
 	out := json.NewEncoder(output)
 	if out.Encode(hostReady{"ready", hostControlVersion, hostname, fingerprint}) != nil {
 		return
 	}
 	in := bufio.NewScanner(input)
 	for in.Scan() {
-		if in.Text() == "usage" {
-			computers, browsers := usage()
+		command, own, _ := strings.Cut(in.Text(), " ")
+		if command == "usage" {
+			computers, browsers := usage(own)
 			if out.Encode(hostUsage{"usage", computers, browsers}) != nil {
 				return
 			}

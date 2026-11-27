@@ -162,8 +162,8 @@ func (s *Server) EnableLocalMode(ca *LocalCA) {
 	s.stun = nil
 }
 
-// LocalUsage reports live connections to the supervising Host over its private pipe.
-func (s *Server) LocalUsage() (computers, browsers int) {
+// LocalUsage reports live connections other than the supervising Host.
+func (s *Server) LocalUsage(hub string) (computers, browsers int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	seen := make(map[string]struct{})
@@ -172,7 +172,11 @@ func (s *Server) LocalUsage() (computers, browsers int) {
 			seen[c.browser] = struct{}{}
 		}
 	}
-	return len(s.hosts), len(seen)
+	computers = len(s.hosts)
+	if hub != "" && s.hosts[hub] != nil {
+		computers--
+	}
+	return computers, len(seen)
 }
 
 // Handler returns the HTTP routes.

@@ -123,6 +123,7 @@ that authorized copy for browser trust. DeskwayNet creates and holds the local s
 state and CA under the machine-wide Deskway data directory. SYSTEM, Administrators and the
 DeskwayNet account can access that directory. On macOS, the app keeps the server's data
 under its private per-user data directory and asks for trust in the login keychain.
+The macOS app and its bundled server run as the signed-in user, who can modify that data.
 
 Before installing, compare the fingerprint in the HTTP guide with the startup log on the hub
 computer itself. Verify that the downloaded root certificate also has that fingerprint. On

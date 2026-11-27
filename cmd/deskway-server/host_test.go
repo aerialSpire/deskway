@@ -28,7 +28,17 @@ func TestHostControlContract(t *testing.T) {
 	}
 	var output bytes.Buffer
 	ready := def.Stdout["ready"]
-	hostCommands(strings.NewReader(def.Stdin["usage"]+"\n"), &output, ready["hostname"].(string), ready["fingerprint"].(string), func() (int, int) { return 3, 2 })
+	hostCommands(strings.NewReader(def.Stdin["usage"]+"\n"+def.Stdin["usage_excluding_hub"]+"\n"), &output, ready["hostname"].(string), ready["fingerprint"].(string), func(hub string) (int, int) {
+		switch hub {
+		case "":
+			return 3, 2
+		case "H1":
+			return 2, 2
+		default:
+			t.Fatalf("unexpected hub ID %q", hub)
+			return 0, 0
+		}
+	})
 	listener, err := net.ListenTCP("tcp", &net.TCPAddr{})
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +53,7 @@ func TestHostControlContract(t *testing.T) {
 	}
 	def.Stdout["port"]["port"] = float64(addr.Port)
 	dec := json.NewDecoder(&output)
-	for _, kind := range []string{"ready", "usage", "port"} {
+	for _, kind := range []string{"ready", "usage", "usage_excluding_hub", "port"} {
 		var got map[string]any
 		if err := dec.Decode(&got); err != nil {
 			t.Fatal(err)
