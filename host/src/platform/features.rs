@@ -16,6 +16,8 @@ pub struct DeskParams {
     pub offer: String,
     /// The viewer constraints the offer carried: the picture starts at that size.
     pub view: Option<View>,
+    /// The display requested in the offer.
+    pub display: Option<String>,
     pub platform: Arc<dyn Platform>,
     /// The browser may watch but not control.
     pub view_only: bool,

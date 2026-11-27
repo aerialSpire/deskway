@@ -452,7 +452,7 @@ mod tests {
     fn every_call_and_event_round_trips() {
         let d = DisplayInfo { id: "5f3a9c0e7b12d846".into(), x: -1920, y: 0, w: 1920, h: 1080, primary: false };
         let calls = vec![
-            Call::VideoStart { session: "s1".into(), view: crate::video::Constraints { w: 1170, h: 2532, max_w: 3840, max_h: 2160, fps: 30, level: 31 } },
+            Call::VideoStart { session: "s1".into(), view: crate::video::Constraints { w: 1170, h: 2532, max_w: 3840, max_h: 2160, fps: 30, level: 31 }, display: Some(d.id.clone()) },
             Call::VideoStop { session: "s1".into() },
             Call::Keyframe { session: "s1".into() },
             Call::Bitrate { session: "s1".into(), bps: 16_000_000 },

@@ -56,6 +56,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `clipboard` | no shared clipboard; `clipshare` and `cb*` are not sent |
   | `cursor` | the pointer stays in the video; no `lc` |
   | `displays` | no display switching |
+  | `start-display` | the host starts on the primary display and the browser restores its choice on the control channel if `displays` is supported |
   | `relmouse` | no Pointer Lock mode |
   | `layout` | the on-screen keyboard draws default labels |
   | `chars` | characters with modifiers are not sent as `kc` |
@@ -101,7 +102,8 @@ browser                     server                        host
   |-- challenge{session} ---->|-- challenge{session} ------->|
   |<------ nonce{nonce} ------|<--------- nonce{nonce} ------|   single use, 60 s
   |-- offer{epoch 0,sdp,      |-- offer{epoch 0,sdp,view,    |
-  |         view,auth} ------>|         ice,user,auth} ----->|   auth covers the nonce
+  |         view,display?,   |         display?,ice,user,  |
+  |         auth} ---------->|         auth} ------------->|   auth covers the nonce
   |<-- answer{epoch 0,sdp,auth}<------- answer -------------|   signed: deskway-answer-v1
   |<-> candidate ... ---------|<-> candidate ... ------------|
   |==================== data channels open ===================|
@@ -119,6 +121,12 @@ browser                     server                        host
   Frames are sent once DTLS is connected, starting with a keyframe. The `view` is not signed:
   the first `view` on the control channel confirms it end to end, and receiving the same
   constraints again changes nothing.
+- A picture `offer` can carry `display`, the unsigned string id of the display to capture first.
+  The browser sends it when the device list reports `start-display` and the remembered id is in
+  that computer's display list. The server forwards it unchanged. The host uses the primary
+  display when the field is omitted or the id is no longer attached. If the offer omits `display`,
+  the browser restores its remembered choice via `display{v}` when the control channel is ready
+  and the choice is in the live `displays` list.
 - While building its offer, the browser asks the host for a **nonce** (`challenge`). The host
   generates 16 random bytes (base64url), remembers them for this session for 60 seconds, and
   accepts one offer that uses them. The challenge is idempotent: if it is asked again for the
@@ -493,7 +501,8 @@ design is described in [architecture.md](architecture.md), "AI control".
 input, clipboard, files, power, desktop, service settings) and `PlatformEvent` (displays,
 capture, cursor, thumbnails, input desktop, layout, clipboard, transfer results, indicator
 note). They are sent as length-prefixed bincode frames (`service/ipc.rs`). Both ends come from
-the same build, so there is no version exchange; the HMAC handshake comes first. A new platform
+the same build, so there is no version exchange; the HMAC handshake comes first. `VideoStart`
+carries the viewer's constraints and the optional initial display id. A new platform
 capability needs one call, one event and two implementations. The host's proto tests check the
 `ipc` entries of `proto/messages.json` that are marked current against these enums.
 

@@ -8,6 +8,7 @@ import { connectAuth, answerSigned, pinnedHostKey, pinHostKey } from '../auth.js
 import { PROTOCOL_VERSION, MIN_VERSION, Control } from '../proto.js';
 import { dialog } from '../dialogs.js';
 import { Connection } from './connection.js';
+import { chosenDisplay } from './displays.js';
 import { ConnectionStats } from './connection-stats.js';
 import { ConnectionDetails } from './connection-details.js';
 import { Keyboard } from './keyboard.js';
@@ -81,7 +82,7 @@ export class Session {
   connect(id, dataOnly, force = false) {
     this.connection = new Connection({
       id,
-      device: this.device.id,
+      device: this.device,
       force,
       dataOnly,
       deps: {
@@ -90,6 +91,7 @@ export class Session {
         Peer: RTCPeerConnection,
         sign: connectAuth,
         verify: verifyAnswer,
+        chosenDisplay,
         view: () => this.content.view?.() || { w: 0, h: 0, maxW: 0, maxH: 0, fps: 0 },
         timers: { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) },
       },
@@ -229,8 +231,7 @@ export class Session {
     this.layout();
   }
 
-  // What the computer can do, from its hello; nothing is guessed. The one place the client
-  // reads caps from.
+  // Capabilities for the open session, from the control-channel hello.
   hasCap(cap) { return !!this.caps && this.caps.has(cap); }
 
   updateRemoteControls() {

@@ -3,7 +3,7 @@
 // Everything else in the session reads the state from here and asks this to end.
 //
 // Public surface:
-//   new Connection({ id, device, force, deps })   deps: see `browserDeps` in session.js
+//   new Connection({ id, device, force, deps })   device: the device list entry, deps: see session.js
 //   connection.start()                             challenge, offer, answer; connecting
 //   connection.end(reason)                         this side ends, however (a person, a
 //                                                  deadline, the peer connection or the control
@@ -25,7 +25,7 @@
 // `nokey` (this browser cannot sign), and the computer's identity not confirmed: `keyChanged`
 // (its key is not the one kept) and `forged` (its answer's signature is not its key's). The
 // computer is told those two as `auth` (OWN_REASONS).
-import { Control, Signal, REASONS } from '../proto.js';
+import { CAPS, Control, Signal, REASONS } from '../proto.js';
 import { unb64 } from '../auth-messages.js';
 
 // 30 s to connect (from the challenge) and 30 s to recover (from entering recovering), the same
@@ -43,7 +43,11 @@ const OWN_REASONS = { keyChanged: 'auth', forged: 'auth' };
 export class Connection {
   constructor({ id, device, force = false, dataOnly = false, deps }) {
     this.id = id;
-    this.device = device;
+    this.device = device.id;
+    if (device.caps?.includes(CAPS.START_DISPLAY) && !dataOnly) {
+      const wanted = deps.chosenDisplay(device.id);
+      if (wanted && device.displays?.some((d) => d.id === wanted)) this.display = wanted;
+    }
     this.force = !!force;
     this.dataOnly = dataOnly;
     this.deps = deps;
@@ -160,7 +164,9 @@ export class Connection {
     }
     if (this.ended) return;
     this.authKind = auth ? auth.k : null;
-    this.describe({ type: Signal.OFFER, session: this.id, device: this.device, epoch: 0, sdp: this.offerSdp, view: this.view, force: this.force, auth });
+    const offer = { type: Signal.OFFER, session: this.id, device: this.device, epoch: 0, sdp: this.offerSdp, view: this.view, force: this.force, auth };
+    if (this.display) offer.display = this.display;
+    this.describe(offer);
   }
 
   // Sends this epoch's description, then its candidates found so far.

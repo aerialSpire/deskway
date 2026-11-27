@@ -52,6 +52,8 @@ wire_enum! {
             "ice" ice: Vec<IceServer>,
             "view" view: View,
             #[serde(skip_serializing_if = "Option::is_none")]
+            "display" display: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
             "force" force: Option<bool>,
             "user" user: String,
             #[serde(skip_serializing_if = "Option::is_none")]

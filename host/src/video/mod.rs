@@ -113,8 +113,8 @@ pub trait Encoder: Sized {
 }
 
 pub enum Command {
-    /// A session takes the computer, at the viewer's constraints.
-    Start(Constraints),
+    /// A session takes the computer, with its initial constraints and display selection.
+    Start { view: Constraints, display: Option<String> },
     Stop,
     Keyframe,
     Bitrate(u32),
@@ -372,8 +372,9 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
 
     fn command(&mut self, cmd: Command) {
         match cmd {
-            Command::Start(c) => {
-                self.constraints = c;
+            Command::Start { view, display } => {
+                self.constraints = view;
+                self.selected = display;
                 self.wait_for_display = false;
                 self.active = true;
                 self.no_display = false;
@@ -387,7 +388,9 @@ impl<C: Capturer, E: Encoder<Frame = C::Frame>> Pipeline<C, E> {
                 self.dirty = true;
                 self.refine_left = 0;
                 self.announce = true;
-                if self.cursor.on && C::CURSOR_IN_STREAM {
+                if (self.cursor.on && C::CURSOR_IN_STREAM)
+                    || self.dup.as_ref().is_some_and(|d| crate::display::choose(&C::displays(), self.selected.as_deref()) != Some(d.display()))
+                {
                     self.dup = None;
                 }
                 self.cursor.on = false;
@@ -827,7 +830,7 @@ mod tests {
             }
         };
         assert_eq!(next(), PlatformEvent::DisplaysChanged(Vec::new()), "the displays are reported as it starts, before anything is captured");
-        commands.send(Command::Start(Constraints::default())).unwrap();
+        commands.send(Command::Start { view: Constraints::default(), display: None }).unwrap();
         assert_eq!(next(), PlatformEvent::CaptureAvailable(false));
         // Nothing happens until the system says a display came.
         DISPLAY_ATTACHED.store(true, Ordering::Relaxed);
@@ -841,7 +844,7 @@ mod tests {
         commands.send(Command::Stop).unwrap();
     }
 
-    /// A 640x400 display; records the size each frame is asked at.
+    /// Two 640x400 displays; records the size each frame is asked at.
     struct Wide(DisplayInfo);
     static ASKED: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
 
@@ -849,12 +852,15 @@ mod tests {
         type Frame = ();
         type Context = ();
 
-        fn open(_: Option<&str>, _: bool) -> anyhow::Result<Self> {
-            Ok(Self(DisplayInfo { id: "wide".into(), x: 0, y: 0, w: 640, h: 400, primary: true }))
+        fn open(wanted: Option<&str>, _: bool) -> anyhow::Result<Self> {
+            crate::display::choose(&Self::displays(), wanted).cloned().map(Self).ok_or_else(|| NoDisplay.into())
         }
         fn display(&self) -> &DisplayInfo { &self.0 }
         fn displays() -> Vec<DisplayInfo> {
-            Self::open(None, false).map(|d| vec![d.0]).unwrap_or_default()
+            vec![
+                DisplayInfo { id: "wide".into(), x: 0, y: 0, w: 640, h: 400, primary: true },
+                DisplayInfo { id: "secondary".into(), x: 640, y: 0, w: 640, h: 400, primary: false },
+            ]
         }
         fn pixel_size(&self) -> (usize, usize) { (640, 400) }
         fn wait(&mut self, _: &mut (), timeout: Duration) -> anyhow::Result<CaptureChanges> {
@@ -872,10 +878,27 @@ mod tests {
     }
 
     #[test]
+    fn the_initial_display_replaces_the_open_capture_at_session_start() {
+        let (events, updates) = channel();
+        let mut p = Pipeline::<Wide, TestEncoder>::new(events, crate::input::AppliedInput::default()).unwrap();
+        p.open(); // The overview already opened capture on the primary display.
+        for (display, expected) in [(Some("secondary"), "secondary"), (None, "wide")] {
+            p.command(Command::Start { view: Constraints::default(), display: display.map(str::to_owned) });
+            p.open();
+            assert!(p.capture());
+            let current = updates.try_iter().find_map(|event| match event {
+                PlatformEvent::Capturing { current, .. } => Some(current),
+                _ => None,
+            }).expect("the first capture of the session");
+            assert_eq!(current.id, expected);
+        }
+    }
+
+    #[test]
     fn a_new_view_reconfigures_the_encoder_and_frames_follow() {
         let (events, updates) = channel();
         let commands = spawn::<Wide, TestEncoder>(events, crate::input::AppliedInput::default());
-        commands.send(Command::Start(Constraints::default())).unwrap();
+        commands.send(Command::Start { view: Constraints::default(), display: None }).unwrap();
         let size = || loop {
             if let PlatformEvent::EncodedSize { w, h, max_bitrate } = updates.recv_timeout(Duration::from_secs(5)).unwrap() {
                 break (w, h, max_bitrate);
@@ -927,7 +950,7 @@ mod tests {
     fn input_advances_a_changed_frame_once_and_only_after_backpressure_clears() {
         let (events, updates) = channel();
         let mut p = Pipeline::<Busy, TestEncoder>::new(events, Default::default()).unwrap();
-        p.command(Command::Start(Constraints { fps: SHARP_FPS, ..Default::default() }));
+        p.command(Command::Start { view: Constraints { fps: SHARP_FPS, ..Default::default() }, display: None });
         p.dup = Some(Busy::open(None, false).unwrap());
         p.encode();
         assert!(updates.try_iter().any(|e| matches!(e, PlatformEvent::Frame(_))));
@@ -962,7 +985,7 @@ mod tests {
     fn a_network_that_falls_behind_holds_encoding_until_it_catches_up() {
         let (events, updates) = channel();
         let commands = spawn::<Busy, TestEncoder>(events, crate::input::AppliedInput::default());
-        commands.send(Command::Start(Constraints::default())).unwrap();
+        commands.send(Command::Start { view: Constraints::default(), display: None }).unwrap();
         let frame = |within: Duration| {
             let until = Instant::now() + within;
             while let Some(left) = until.checked_duration_since(Instant::now()) {

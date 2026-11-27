@@ -176,7 +176,7 @@ func (ss *Sessions) FromBrowser(c *conn, m proto.Msg) {
 	}
 	switch m.Type {
 	case proto.TypeOffer:
-		host.send(proto.Msg{Type: m.Type, Session: m.Session, Epoch: m.Epoch, SDP: m.SDP, ICE: ss.ice(r.user, host), View: m.View, Force: m.Force, User: r.user, Auth: m.Auth})
+		host.send(proto.Msg{Type: m.Type, Session: m.Session, Epoch: m.Epoch, SDP: m.SDP, ICE: ss.ice(r.user, host), View: m.View, Display: m.Display, Force: m.Force, User: r.user, Auth: m.Auth})
 	case proto.TypeRestart:
 		host.send(proto.Msg{Type: m.Type, Session: m.Session, Epoch: m.Epoch, SDP: m.SDP})
 	case proto.TypeCandidate:

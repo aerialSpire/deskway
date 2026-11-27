@@ -592,6 +592,7 @@ impl Host {
                     session: session.clone(),
                     offer: sdp,
                     view: serde_json::from_value(m["view"].clone()).ok(),
+                    display: m["display"].as_str().map(str::to_owned),
                     platform: desktop.platform.clone(),
                     view_only: self.view_only,
                     clip_share: self.clip_share,

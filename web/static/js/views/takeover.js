@@ -66,7 +66,7 @@ export function openSession(d, force, view = 'desktop') {
   // Full screen needs a tap; a computer's own window takes it over as it opens, without one:
   // there “Full screen” is pressed by hand.
   const full = !ownComputer || (navigator.userActivation?.isActive ?? true);
-  const s = new Session(d, { force, view, full, onEnd: (end) => ended(s, end) });
+  const s = new Session(live || d, { force, view, full, onEnd: (end) => ended(s, end) });
   setCurrentSession(s);
   // The phone's back gesture (or the browser's back button) ends this session, like “Disconnect”.
   history.pushState({ deskway: 'session', id: s.id }, '');
