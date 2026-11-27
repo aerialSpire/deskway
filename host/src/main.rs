@@ -145,7 +145,7 @@ fn enroll_command(args: &[String]) -> Result<()> {
     let _lock = platform::lock()?;
     let cfg = config::Config::settle(enroll_with(&server, &user, &read_password()?, &name, config::Config::kept().as_ref())?)?;
     #[cfg(target_os = "macos")]
-    if let Err(e) = update_browser_trust(&cfg, true) {
+    if let Err(e) = install_browser_trust(&cfg) {
         eprintln!("{}", tf("err.root_trust", &[("e", format!("{e:#}"))]));
     }
     // A host with no window says how to start it and where its approval code appears.
@@ -155,10 +155,10 @@ fn enroll_command(args: &[String]) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn update_browser_trust(cfg: &config::Config, install: bool) -> Result<()> {
+fn install_browser_trust(cfg: &config::Config) -> Result<()> {
     let address = Address::parse(&cfg.server)?;
     if let Some(fingerprint) = address.fingerprint() {
-        platform::update_server_root(&config::root_path(&config::dir()?), fingerprint, install)?;
+        platform::install_server_root(&config::dir()?, fingerprint)?;
     }
     Ok(())
 }
@@ -233,7 +233,7 @@ fn main() -> Result<()> {
         #[cfg(windows)]
         Some("sign-in") => {
             let from = flag(&args, "--from").with_context(|| tf("cli.need_flag", &[("flag", "--from".to_string())]))?;
-            let r = install::sign_in(std::path::Path::new(&from));
+            let r = install::sign_in(std::path::Path::new(&from), flag(&args, "--ca-pin").as_deref());
             write_result(&args, &r);
             r
         }

@@ -45,6 +45,18 @@ func TestLocalCAReuse(t *testing.T) {
 	if !ca.root.Equal(again.root) || !ca.intermediate.Equal(again.intermediate) || !ca.key.Equal(again.key) {
 		t.Fatal("opening the CA again changed its identity")
 	}
+	if again.Hostname() != "hub" {
+		t.Fatalf("reopened hostname = %q, want hub", again.Hostname())
+	}
+	for _, name := range []string{"hub.local", "new-host.local"} {
+		cert, err := again.getCertificate(localHello(name, "127.0.0.1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cert.Leaf.VerifyHostname(name) == nil; got != (name == "hub.local") {
+			t.Fatalf("reopened CA issues for %s: %t", name, got)
+		}
+	}
 	files, err := os.ReadDir(filepath.Join(dir, "local-ca"))
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +96,8 @@ func TestLocalCANameConstraints(t *testing.T) {
 		ranges = append(ranges, network.String())
 	}
 	if !crt.IsCA || !crt.MaxPathLenZero || crt.CheckSignatureFrom(ca.root) != nil ||
-		!crt.PermittedDNSDomainsCritical || !slices.Equal(crt.PermittedDNSDomains, []string{"local", "localhost"}) ||
+		!crt.PermittedDNSDomainsCritical || !slices.Equal(crt.PermittedDNSDomains, []string{"sean-asus.local", "localhost"}) ||
+		!slices.Equal(crt.ExcludedDNSDomains, []string{".sean-asus.local", ".localhost"}) ||
 		!slices.Equal(ranges, []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "::1/128", "fc00::/7", "fe80::/10"}) {
 		t.Fatalf("intermediate: pathLen=%d critical=%v DNS=%v IP=%v", crt.MaxPathLen, crt.PermittedDNSDomainsCritical, crt.PermittedDNSDomains, ranges)
 	}
@@ -252,12 +265,15 @@ func TestLocalIntermediateRestrictsLeafUsage(t *testing.T) {
 	}
 }
 
-func TestLocalIntermediateRejectsPublicSANs(t *testing.T) {
+func TestLocalIntermediateRejectsOutOfScopeSANs(t *testing.T) {
 	ca := testLocalCA(t)
 	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
 	roots.AddCert(ca.root)
 	intermediates.AddCert(ca.intermediate)
-	for _, san := range []localSAN{{dns: "example.com"}, {ip: netip.MustParseAddr("8.8.8.8")}} {
+	for _, san := range []localSAN{
+		{dns: "example.com"}, {dns: "other.local"}, {dns: "sub.sean-asus.local"}, {dns: "sub.localhost"},
+		{ip: netip.MustParseAddr("8.8.8.8")},
+	} {
 		pair, err := ca.issueLeaf(san, time.Now())
 		if err != nil {
 			t.Fatal(err)
@@ -265,7 +281,7 @@ func TestLocalIntermediateRejectsPublicSANs(t *testing.T) {
 		_, err = pair.Leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates})
 		var invalid x509.CertificateInvalidError
 		if !errors.As(err, &invalid) || invalid.Reason != x509.CANotAuthorizedForThisName {
-			t.Fatalf("public SAN %+v: expected rejection by the intermediate's name constraints, got %v", san, err)
+			t.Fatalf("SAN %+v: expected rejection by the intermediate's name constraints, got %v", san, err)
 		}
 	}
 }

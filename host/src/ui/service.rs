@@ -88,7 +88,9 @@ impl Service {
                 let cfg = crate::enroll_with(&server, &user, &password, "", kept.as_ref()).map_err(|e| e.to_string())?;
                 let mine = crate::config::dir().map_err(|e| e.to_string())?;
                 cfg.save().map_err(|e| e.to_string())?;
-                let ok = install::elevate(&format!("sign-in --from \"{}\"", mine.display())).map(|code| code == 0).unwrap_or(false);
+                let address = deskway_server_connection::Address::parse(&cfg.server).map_err(|e| e.to_string())?;
+                let pin = address.fingerprint().map(|pin| format!(" --ca-pin {pin}")).unwrap_or_default();
+                let ok = install::elevate(&format!("sign-in --from \"{}\"{pin}", mine.display())).map(|code| code == 0).unwrap_or(false);
                 // A computer given back has no new token: there is nothing to withdraw.
                 if !ok && !cfg.token.is_empty() {
                     let _ = crate::withdraw(&cfg);

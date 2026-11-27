@@ -62,7 +62,7 @@ For a [local server](self-hosting.md#local-mode), paste the whole
 `https://name.local:port#ca=<64 hex digits>` address into **Server address**. Use the
 fingerprint from the hub's startup log. To let browsers trust the hub, approve the macOS
 prompt to trust the root for SSL in your login keychain. The Host connects using the
-verified root even if you decline. Signing out removes the certificate from that keychain.
+verified root even if you decline. Signing out removes the root if Deskway Host added it.
 
 ## 4. Allow the devices you control from
 
@@ -137,9 +137,10 @@ Quit Deskway Host (**Quit** in its menu bar menu), download the new release's DM
 
 ## Uninstalling
 
-Remove the Mac on **My devices** in the browser, quit Deskway Host, and move `Deskway.app` from
-Applications to the Trash. (**Sign out** in the panel keeps the Mac on the account: signing in
-again with the same account brings it back as it was.) To remove its settings too, delete `~/Library/Application Support/Deskway`.
+For a local server, click **Sign out** in the Host panel first and approve any macOS prompt to
+remove the root certificate Deskway Host added. Then remove the Mac on **My devices** in the
+browser, quit Deskway Host, and move `Deskway.app` from Applications to the Trash. To remove its
+settings too, delete `~/Library/Application Support/Deskway`.
 
 ## Building from source
 

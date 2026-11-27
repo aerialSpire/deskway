@@ -73,9 +73,12 @@ func TestLocalHTTPSCertificateRoute(t *testing.T) {
 
 func TestMeReportsLocalMode(t *testing.T) {
 	for _, local := range []bool{false, true} {
+		var fingerprint any
 		f := newHTTPFixture(t, func(s *Server) {
 			if local {
-				s.EnableLocalMode(testLocalCA(t))
+				ca := testLocalCA(t)
+				s.EnableLocalMode(ca)
+				fingerprint = ca.Fingerprint()
 			}
 		}, httptest.NewTLSServer)
 		res := f.do(f.signedIn("me"), "GET", "/api/me", nil)
@@ -84,6 +87,9 @@ func TestMeReportsLocalMode(t *testing.T) {
 		f.decode(res, &me)
 		if me["local_mode"] != local {
 			t.Fatalf("local_mode = %v, want %t", me["local_mode"], local)
+		}
+		if me["local_ca_fingerprint"] != fingerprint {
+			t.Fatalf("local_ca_fingerprint = %v, want %v", me["local_ca_fingerprint"], fingerprint)
 		}
 	}
 }

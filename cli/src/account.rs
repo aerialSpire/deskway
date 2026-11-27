@@ -139,11 +139,17 @@ pub fn login(server: &str, user: &str, name: &str, shown: impl Fn(&str)) -> Resu
 fn sign_in(mut a: Account, address: &Address, user: &str, name: &str, key: &DeviceKey, shown: impl Fn(&str)) -> Result<Account> {
     let saved_address = address.saved();
     if a.server != saved_address || a.user != user {
-        let server_root = if a.server == saved_address { a.server_root } else { address.fetch_root()? };
+        let server_root = if a.server == saved_address { a.server_root } else { None };
         a = Account { server: saved_address, server_root, user: user.to_string(), ..Account::default() };
     }
     a.name = name.to_string();
-    let server = a.connection()?;
+    let server = match address.connection(a.server_root.as_deref()) {
+        Err(_) if address.is_pinned() => {
+            a.server_root = address.fetch_root()?;
+            address.connection(a.server_root.as_deref())?
+        }
+        result => result?,
+    };
     let http = agent(&server)?;
     let r = ask(&mut a, &server, &http, key, false)?;
     match r.status() {
@@ -195,6 +201,11 @@ mod tests {
                 &["Set-Cookie: deskway_session=first"], b"");
             tls.reply(&listener, "POST /api/login/ai", "204 No Content",
                 &["Set-Cookie: deskway_session=again"], b"");
+            for _ in 0..2 {
+                tls.reply(&listener, "GET /local/ca.crt", "200 OK", &[], &tls.root);
+                tls.reply(&listener, "POST /api/login/ai", "204 No Content",
+                    &["Set-Cookie: deskway_session=recovered"], b"");
+            }
         });
         let key = DeviceKey::generate().unwrap();
         let no_prompt = |_: &str| panic!("this key is already approved");
@@ -206,7 +217,41 @@ mod tests {
         let profile = serde_json::from_slice(&saved).unwrap();
         let account = sign_in(profile, &address, "me", "Test", &key, no_prompt).unwrap();
         assert_eq!(account.session, "again");
+        for server_root in [None, Some("invalid PEM".into())] {
+            let profile = Account { server_root, ..account.clone() };
+            let recovered = sign_in(profile, &address, "me", "Test", &key, no_prompt).unwrap();
+            assert_eq!(recovered.session, "recovered");
+            assert_eq!(recovered.server_root.as_deref(), Some(expected_root.as_str()));
+        }
         server.join().unwrap();
+    }
+
+    #[test]
+    fn forget_cleans_up_a_profile_with_an_unusable_root() {
+        const CHILD: &str = "DESKWAY_TEST_FORGET_PROFILE";
+        if std::env::var_os(CHILD).is_some() {
+            logout(true).unwrap();
+            assert_eq!(Account::load().unwrap(), Account::default());
+            assert!(!crate::store::dir().unwrap().join("device.json").exists());
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("deskway-forget-{}", hex(&random::<16>())));
+        crate::os::create_private_dir(&dir).unwrap();
+        let account = Account {
+            server: format!("https://hub.local#ca={}", "ab".repeat(32)),
+            session: "signed in".into(),
+            ..Account::default()
+        };
+        std::fs::write(dir.join("account.json"), serde_json::to_vec(&account).unwrap()).unwrap();
+        std::fs::write(dir.join("device.json"), b"unreadable key").unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "account::tests::forget_cleans_up_a_profile_with_an_unusable_root"])
+            .env(CHILD, "1")
+            .env("DESKWAY_CLI_HOME", &dir)
+            .output().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
     }
 }
 
@@ -215,13 +260,18 @@ mod tests {
 pub fn logout(forget: bool) -> Result<()> {
     crate::proxy_client::stop_proxy();
     let mut a = Account::clear()?;
-    if a.signed_in() {
-        let server = a.connection()?;
-        let _ = call(&mut a, agent(&server)?.post(&server.url("/api/logout")), None);
-    }
+    let remote = (|| -> Result<()> {
+        if a.signed_in() {
+            let server = a.connection()?;
+            let _ = call(&mut a, agent(&server)?.post(&server.url("/api/logout")), None);
+        }
+        Ok(())
+    })();
     if forget {
         DeviceKey::forget()?;
         Account::default().save()?;
+    } else {
+        remote?;
     }
     Ok(())
 }

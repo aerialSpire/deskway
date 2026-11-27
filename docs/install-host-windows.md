@@ -47,7 +47,8 @@ The Deskway Host panel opens when installation finishes. To open it later, choos
 For a [local server](self-hosting.md#local-mode), paste the whole
 `https://name.local:port#ca=<64 hex digits>` address into **Server address**. Use the
 fingerprint from the hub's startup log. The agent adds the verified root to Windows'
-machine-wide trusted roots for browsers and removes that certificate when you sign out.
+machine-wide trusted roots for browsers if it is absent. Signing out or uninstalling
+removes a root the Host added.
 
 ## 4. Allow the devices you control from
 

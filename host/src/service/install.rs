@@ -282,17 +282,25 @@ fn create_or_update(m: &ServiceManager, info: &ServiceInfo, description: &str) -
 /// Stops a service and waits until it has. Its recovery actions go first: a version that ends
 /// without reporting Stopped looks crashed, and the service manager would start it again 5 s
 /// later, in the middle of an install or an uninstall. Installing sets them again.
-fn stop_and_wait(m: &ServiceManager, name: &str) {
-    if let Ok(s) = m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::CHANGE_CONFIG) {
-        let _ = s.update_failure_actions(ServiceFailureActions { reset_period: ServiceFailureResetPeriod::Never, reboot_msg: None, command: None, actions: Some(Vec::new()) });
-        let _ = s.stop();
-        for _ in 0..50 {
-            if s.query_status().map(|st| st.current_state == ServiceState::Stopped).unwrap_or(true) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
+fn stop_and_wait(m: &ServiceManager, name: &str) -> Result<()> {
+    let s = match m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::CHANGE_CONFIG) {
+        Ok(s) => s,
+        Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST.0 as i32) => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("open {name}")),
+    };
+    let _ = s.update_failure_actions(ServiceFailureActions { reset_period: ServiceFailureResetPeriod::Never, reboot_msg: None, command: None, actions: Some(Vec::new()) });
+    match s.query_status()?.current_state {
+        ServiceState::Stopped => return Ok(()),
+        ServiceState::StopPending => {}
+        _ => { s.stop().with_context(|| format!("stop {name}"))?; }
     }
+    for _ in 0..50 {
+        if s.query_status()?.current_state == ServiceState::Stopped {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    bail!("{name} did not stop");
 }
 
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Deskway";
@@ -422,11 +430,21 @@ pub fn start_services() -> Result<()> {
 
 /// Starts both services, the network one first, unless one already runs.
 fn run_services(m: &ServiceManager) -> Result<()> {
+    let mut errors = Vec::new();
     for name in [NET_SERVICE, AGENT_SERVICE] {
-        let s = m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
-        if s.query_status()?.current_state != ServiceState::Running {
-            s.start(&[] as &[&str]).with_context(|| format!("start {name}"))?;
+        let start = || -> Result<()> {
+            let s = m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
+            if s.query_status()?.current_state != ServiceState::Running {
+                s.start(&[] as &[&str])?;
+            }
+            Ok(())
+        };
+        if let Err(e) = start() {
+            errors.push(format!("start {name}: {e:#}"));
         }
+    }
+    if !errors.is_empty() {
+        bail!(errors.join("\n"));
     }
     Ok(())
 }
@@ -467,8 +485,8 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
     // The panels first, while the service they listen to still runs.
     close_panels(&m);
-    stop_and_wait(&m, AGENT_SERVICE);
-    stop_and_wait(&m, NET_SERVICE);
+    let _ = stop_and_wait(&m, AGENT_SERVICE);
+    let _ = stop_and_wait(&m, NET_SERVICE);
     std::fs::create_dir_all(&dir)?;
     if src != exe {
         release(&[exe.clone()], keep);
@@ -539,11 +557,12 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
 /// own folder (`from`): it is settled in the service's folder, which the service is waiting on
 /// (`Config::settle_in`: the computer signed out there comes back, or a new one starts clean).
 /// Administrator.
-pub fn sign_in(from: &std::path::Path) -> Result<()> {
+pub fn sign_in(from: &Path, pin: Option<&str>) -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
     let new = crate::config::Config::load_from(from).context("read the sign-in")?;
+    check_sign_in_pin(&new, pin)?;
     let dir = crate::service::machine_dir();
     if new.server_root.is_some() {
         let trust = dir.join(TRUST_DIR);
@@ -553,6 +572,40 @@ pub fn sign_in(from: &std::path::Path) -> Result<()> {
     crate::config::Config::settle_in(&dir, new).map(drop)
 }
 
+fn check_sign_in_pin(cfg: &crate::config::Config, pin: Option<&str>) -> Result<()> {
+    let address = deskway_server_connection::Address::parse(&cfg.server)?;
+    anyhow::ensure!(address.fingerprint() == pin, "server root fingerprint differs from the approved sign-in");
+    if pin.is_some() {
+        let pem = cfg.server_root.as_deref().context("the approved server root is missing")?;
+        address.verified_root(pem)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn elevated_enrollment_requires_the_pin_passed_by_the_panel() {
+    use deskway_server_connection::Address;
+    use wire::crypto::{hex, sha256};
+
+    let params = rcgen::CertificateParams::default();
+    let first = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
+    let other = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
+    let pin = hex(&sha256(first.der()));
+    let address = Address::parse(&format!("https://hub.local#ca={pin}")).unwrap();
+    let mut cfg: crate::config::Config = serde_json::from_value(serde_json::json!({
+        "server": address.saved(), "id": "H1", "token": "token", "name": "Host"
+    })).unwrap();
+    cfg.server_root = Some(address.pin_root(first.der()).unwrap());
+    check_sign_in_pin(&cfg, Some(&pin)).unwrap();
+    assert!(check_sign_in_pin(&cfg, None).is_err());
+
+    let other = Address::parse(&format!("https://hub.local#ca={}", hex(&sha256(other.der())))).unwrap()
+        .pin_root(other.der()).unwrap();
+    cfg.server_root = Some(other);
+    assert!(check_sign_in_pin(&cfg, Some(&pin)).is_err());
+}
+
 /// Signs the installed service out: the services start again, waiting for a sign-in. The
 /// server and the service's folder keep this computer for the same account to take back
 /// (`Config::sign_out`). Administrator.
@@ -560,13 +613,44 @@ pub fn sign_out() -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
-    crate::config::use_dir(crate::service::machine_dir());
+    let dir = crate::service::machine_dir();
+    crate::config::use_dir(dir.clone());
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    stop_and_wait(&m, AGENT_SERVICE);
-    stop_and_wait(&m, NET_SERVICE);
-    crate::platform::retire_server_root(&crate::service::machine_dir())?;
-    crate::config::Config::sign_out()?;
-    run_services(&m)
+    let cleanup = stop_and_remove_root(&m, &dir).and_then(|()| clear_sign_in(&dir));
+    restart_after_cleanup(&m, cleanup)
+}
+
+fn clear_sign_in(dir: &Path) -> Result<()> {
+    let root = crate::config::root_path(dir);
+    let retired = root.with_extension("signed-out");
+    let moved = match std::fs::rename(&root, &retired) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e).context("revoke the local server root"),
+    };
+    if let Err(e) = crate::config::Config::sign_out() {
+        if moved {
+            std::fs::rename(&retired, &root).with_context(|| format!("restore the local server root after sign-out failed: {e:#}"))?;
+        }
+        return Err(e);
+    }
+    if moved {
+        let _ = std::fs::remove_file(retired);
+    }
+    Ok(())
+}
+
+fn stop_and_remove_root(m: &ServiceManager, dir: &Path) -> Result<()> {
+    stop_and_wait(m, AGENT_SERVICE)?;
+    stop_and_wait(m, NET_SERVICE)?;
+    crate::platform::remove_installed_server_root(dir)
+}
+
+fn restart_after_cleanup(m: &ServiceManager, cleanup: Result<()>) -> Result<()> {
+    match (cleanup, run_services(m)) {
+        (Err(cleanup), Err(restart)) => Err(cleanup.context(format!("restart the services: {restart:#}"))),
+        (cleanup, restart) => cleanup.and(restart),
+    }
 }
 
 /// Removes the program folder. Whatever else still uses it is closed first; what cannot go
@@ -589,8 +673,11 @@ pub fn uninstall(purge: bool, keep: Option<u32>) -> Result<()> {
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     // The panels first, while the service they listen to still runs.
     close_panels(&m);
+    let data = crate::service::machine_dir();
+    if let Err(e) = stop_and_remove_root(&m, &data) {
+        return restart_after_cleanup(&m, Err(e));
+    }
     for name in [AGENT_SERVICE, NET_SERVICE] {
-        stop_and_wait(&m, name);
         if let Ok(s) = m.open_service(name, ServiceAccess::DELETE) {
             s.delete()?;
         }
@@ -601,7 +688,6 @@ pub fn uninstall(purge: bool, keep: Option<u32>) -> Result<()> {
     }
     let _ = std::fs::remove_file(start_menu_link());
     remove_program(keep);
-    let data = crate::service::machine_dir();
     let _ = std::fs::remove_dir_all(data.join("service"));
     if purge {
         std::fs::remove_dir_all(&data).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })?;

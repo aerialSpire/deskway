@@ -51,11 +51,12 @@ async function load() {
 const now = () => Math.floor(Date.now() / 1000);
 const label = (f) => `${t(`aiclient.os.${f.os}`)} ${f.os === 'macos' ? t(`aiclient.mac.${f.arch}`) : f.arch === 'x64' ? 'x64' : 'ARM64'}`;
 const url = (f) => `${location.origin}/download/${f.file}`;
+const serverAddress = () => state.me.local_mode ? `${location.origin}#ca=${state.me.local_ca_fingerprint}` : location.origin;
 
 // The prompt, in the page's language: the server, the account, and each program with its hash.
 function prompt() {
   const files = page.files.map((f) => t('aiclient.promptFile', { label: label(f), url: url(f), sha: f.sha256 })).join('\n');
-  return t('aiclient.prompt', { server: location.origin, user: state.me.user, files, windows: PATH.windows, unix: PATH.unix });
+  return t('aiclient.prompt', { server: serverAddress(), user: state.me.user, files, windows: PATH.windows, unix: PATH.unix });
 }
 
 async function copy() {
@@ -152,7 +153,7 @@ function manual() {
       ...page.files.map((f) => copyableCode(`${label(f)}\n${url(f)}\nSHA-256 ${f.sha256}`)),
       ...executable,
       h('h3', {}, t('aiclient.mLogin')),
-      copyableCode(`${path} login --server ${location.origin} --user ${state.me.user} --name "Claude Code"`),
+      copyableCode(`${path} login --server ${serverAddress()} --user ${state.me.user} --name "Claude Code"`),
       h('h3', {}, t('aiclient.mClaude')),
       copyableCode(`claude mcp add deskway -- ${path} mcp`),
       h('h3', {}, t('aiclient.mOther')),

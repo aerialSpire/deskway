@@ -731,10 +731,10 @@ The source of truth is the viewer's constraints.
   the bootstrap certificate against the pin and builds same-server HTTP and signaling
   connections using system roots and that PEM. The CLI keeps the PEM in `account.json`.
   The Host keeps it beside its config. On Windows the administrator-authorized PEM is in
-  the protected `server-trust/` subdirectory, readable by DeskwayNet. Signing out retires
-  the PEM there before the services restart, so the SYSTEM agent can remove the exact root
-  from the machine store and finish the cleanup. On macOS the panel uses the login keychain
-  for browser trust and removes the matching certificate on sign-out.
+  the protected `server-trust/` subdirectory, readable by DeskwayNet. The SYSTEM agent records
+  roots it adds to the machine store. The elevated sign-out and uninstall remove the recorded
+  root while the services are stopped. On macOS the panel uses the login keychain for browser
+  trust and removes a root it added on sign-out.
 - Accounts (docs/accounts.md) are the admin and the members it creates. Each uses only its own
   computers, and nothing is shared between them. An account is stored under a random id; what it
   signs in with is its `name`, which is unique and can be changed (`POST /api/me/name`, after

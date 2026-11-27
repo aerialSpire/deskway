@@ -448,8 +448,11 @@ window.render = (s) => {
     ui.fresh = '';
     for (const overlay of document.querySelectorAll('.overlay')) overlay.hidden = true;
     $('title').textContent = t('login.title');
-    $('foot').hidden = true;
-    ui.leaving = false;
+    if (s.retry_sign_out) renderLeave(s);
+    else {
+      $('foot').hidden = true;
+      ui.leaving = false;
+    }
     $('error').textContent = s.error || '';
     $('submit').disabled = !!s.busy;
     return;

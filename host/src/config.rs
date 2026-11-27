@@ -73,7 +73,7 @@ pub fn write_private(path: &std::path::Path, data: &[u8]) -> Result<()> {
     }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
@@ -91,18 +91,27 @@ pub fn dir() -> Result<PathBuf> {
     if let Some(d) = DIR.get() {
         return Ok(d.clone());
     }
-    let base = std::env::var_os("DESKWAY_HOME")
+    let custom = std::env::var_os("DESKWAY_HOME");
+    let base = custom.as_ref()
         .map(PathBuf::from)
         .or_else(crate::platform::config_dir)
         .context("no config directory")?;
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
     builder.create(&base)?;
+    #[cfg(unix)]
+    if custom.is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::fs::File::open(&base)?;
+        if directory.metadata()?.permissions().mode() & 0o077 != 0 {
+            directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
     Ok(base)
 }
 
@@ -160,6 +169,18 @@ impl Config {
         if address.is_pinned() {
             let root = self.server_root.as_deref().context("the pinned local server root is missing")?;
             address.connection(Some(root))?;
+            #[cfg(windows)]
+            if dir == crate::service::machine_dir() {
+                let path = root_path(dir);
+                let pending = path.with_extension("pending");
+                write_private(&pending, root.as_bytes())?;
+                self.write_to(dir)?;
+                if let Err(e) = std::fs::rename(&pending, &path) {
+                    Self::keep_sign_in(dir).with_context(|| format!("publish the local server root: {e}"))?;
+                    return Err(e).context("publish the local server root");
+                }
+                return Ok(());
+            }
             write_private(&root_path(dir), root.as_bytes())?;
         }
         self.write_to(dir)
@@ -176,6 +197,10 @@ impl Config {
 
     fn sign_out_in(dir: &Path) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
+        Self::keep_sign_in(dir)
+    }
+
+    fn keep_sign_in(dir: &Path) -> Result<()> {
         match std::fs::rename(dir.join(FILE), dir.join(KEPT)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).context("keep the sign-in"),
             _ => Ok(()),
@@ -244,7 +269,15 @@ impl Config {
     }
 
     fn load_from_file(path: &Path) -> Result<Config> {
-        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+        let file = std::fs::File::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if file.metadata()?.permissions().mode() & 0o077 != 0 {
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+        Ok(serde_json::from_reader(std::io::BufReader::new(file))?)
     }
 }
 
@@ -291,6 +324,21 @@ mod tests {
         std::fs::write(d.join(FILE), r#"{"server":"https://s.example","id":"H1","token":"t","name":""}"#).unwrap();
         let c = Config::load_from(&d).unwrap();
         assert!(!c.auto_lock && !c.clip_share && !c.prevent_sleep && c.lang.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sign_in_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp("sign-in-mode");
+        let path = dir.join(FILE);
+        sign_in("H1", "t", "me").write_to(&dir).unwrap();
+        let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(), 0o600);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(Config::load_from(&dir).unwrap().token, "t");
+        assert_eq!(mode(), 0o600);
     }
 
     #[test]

@@ -128,6 +128,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		hostname = ca.Hostname()
 		httpsPort := uint16(https.Addr().(*net.TCPAddr).Port)
 		handler, err := ca.GuideHandler(web.Files(), httpsPort)
 		if err != nil {

@@ -71,8 +71,6 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
             }
         }
     });
-    // A signed-out service also needs the agent, to remove the previous root.
-    platform.sync_server_root();
     serve_agent(dev, platform.clone())?;
     let cfg = signed_in();
     if cfg.server_root.is_some() {
@@ -142,7 +140,10 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
 fn signed_in() -> Config {
     loop {
         if let Ok(cfg) = Config::load() {
-            return cfg;
+            // The elevated sign-in publishes its verified PEM after host.json.
+            if cfg.connection().is_ok() {
+                return cfg;
+            }
         }
         PANELS.signed_out(Config::kept());
         std::thread::sleep(Duration::from_secs(2));

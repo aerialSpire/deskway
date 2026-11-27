@@ -130,10 +130,11 @@ impl Address {
 
     pub fn connection(&self, root: Option<&str>) -> Result<Connection> {
         let tls = if self.is_pinned() {
-            let der = root_der(root.context("the pinned local server root is missing")?)?;
-            self.check_pin(&der)?;
+            let der =
+                self.verified_root(root.context("the pinned local server root is missing")?)?;
             Some(
                 TlsConnector::builder()
+                    .disable_built_in_roots(true)
                     .add_root_certificate(Certificate::from_der(&der)?)
                     .build()?,
             )
@@ -144,6 +145,12 @@ impl Address {
             base: self.base.clone(),
             tls,
         })
+    }
+
+    pub fn verified_root(&self, pem: &str) -> Result<Vec<u8>> {
+        let der = root_der(pem)?;
+        self.check_pin(&der)?;
+        Ok(der)
     }
 }
 
@@ -254,6 +261,79 @@ mod tests {
             http.get(&url).call(),
             Err(ureq::Error::Transport(_))
         ));
+        serve.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinned_connection_refuses_a_system_trusted_ca() {
+        const ADDRESS: &str = "DESKWAY_TEST_PINNED_ADDRESS";
+        const ROOT: &str = "DESKWAY_TEST_PINNED_ROOT";
+
+        if let Ok(saved) = std::env::var(ADDRESS) {
+            let pinned = Address::parse(&saved).unwrap();
+            let public = Address::parse(pinned.base())
+                .unwrap()
+                .connection(None)
+                .unwrap();
+            let check = |c: Connection| {
+                c.http(ureq::builder().timeout(Duration::from_secs(5)))
+                    .unwrap()
+                    .get(&c.url("/check"))
+                    .call()
+            };
+            assert_eq!(
+                check(public).unwrap().into_string().unwrap(),
+                "system trusted"
+            );
+            let connection = pinned
+                .connection(Some(&std::env::var(ROOT).unwrap()))
+                .unwrap();
+            assert!(matches!(check(connection), Err(ureq::Error::Transport(_))));
+            return;
+        }
+
+        let listener = listen();
+        let pinned = TestTls::new();
+        let system = TestTls::new();
+        let saved = pinned.address(&listener);
+        let root = Address::parse(&saved)
+            .unwrap()
+            .pin_root(&pinned.root)
+            .unwrap();
+        let system_root = Address::parse(&system.address(&listener))
+            .unwrap()
+            .pin_root(&system.root)
+            .unwrap();
+        let bundle = std::env::temp_dir().join(format!(
+            "deskway-test-root-{}.pem",
+            hex(&wire::crypto::random::<16>()),
+        ));
+        std::fs::write(&bundle, system_root).unwrap();
+
+        let serve = std::thread::spawn(move || {
+            system.reply(&listener, "GET /check", "200 OK", &[], b"system trusted");
+            if let Ok(mut tls) = system.handshake(&listener) {
+                assert!(!matches!(tls.read(&mut [0]), Ok(1)));
+            }
+        });
+        // OpenSSL probes its default roots once per process.
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::pinned_connection_refuses_a_system_trusted_ca",
+            ])
+            .env("SSL_CERT_FILE", &bundle)
+            .env(ADDRESS, saved)
+            .env(ROOT, root)
+            .output()
+            .unwrap();
+        std::fs::remove_file(bundle).unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
         serve.join().unwrap();
     }
 }

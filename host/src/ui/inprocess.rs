@@ -137,7 +137,7 @@ impl InProcess {
             let local = res.as_ref().ok().filter(|cfg| cfg.server_root.is_some()).cloned();
             let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Enrolled(res)));
             if let Some(cfg) = local {
-                let error = crate::update_browser_trust(&cfg, true).err().map(|e| format!("{e:#}"));
+                let error = crate::install_browser_trust(&cfg).err().map(|e| format!("{e:#}"));
                 let _ = proxy.send_event(UiEvent::Backend(BackendEvent::RootChanged(error)));
             }
         });
@@ -146,7 +146,9 @@ impl InProcess {
     /// Signs out here only: the server keeps this computer, offline, for the same account to
     /// take back (`Config::sign_out`).
     fn leave(&mut self) {
-        let Some(cfg) = self.cfg.clone() else { return };
+        if self.cfg.is_none() && !self.root_cleanup_pending() {
+            return;
+        }
         self.busy = true;
         self.error.clear();
         let proxy = self.proxy.clone();
@@ -156,10 +158,15 @@ impl InProcess {
                 if let Some(control) = control {
                     let _ = control.send(Control::Quit);
                 }
-                crate::update_browser_trust(&cfg, false).err().map(|e| format!("{e:#}"))
+                crate::config::dir().and_then(|dir| platform::remove_installed_server_root(&dir))
+                    .err().map(|e| format!("{e:#}"))
             }).map_err(|e| format!("{e:#}"));
             let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Left(result)));
         });
+    }
+
+    fn root_cleanup_pending(&self) -> bool {
+        crate::config::dir().is_ok_and(|dir| dir.join(platform::INSTALLED_ROOT).exists())
     }
 }
 
@@ -175,6 +182,7 @@ impl Backend for InProcess {
         json!({
             "enrolled": self.cfg.is_some(), "busy": self.busy, "error": self.error,
             "root_problem": super::root_problem(self.root_problem.as_deref()),
+            "retry_sign_out": self.cfg.is_none() && self.root_cleanup_pending(),
             "autostart": login.registered(),
             "mac": {
                 "screen": permissions.screen,

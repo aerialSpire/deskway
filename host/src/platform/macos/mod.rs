@@ -22,7 +22,7 @@ pub use displays::DisplayWatch;
 pub(crate) use desk::workspace_browser;
 pub(crate) mod file_metadata;
 pub use power::{PowerNotifications, PowerRequest};
-pub use server_root::update_server_root;
+pub use server_root::{install_server_root, remove_installed_server_root, INSTALLED_ROOT};
 pub use encoder::Encoder as NativeEncoder;
 pub use files::Files as NativeFiles;
 pub use input::MacInput as NativeInput;
