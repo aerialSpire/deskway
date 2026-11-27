@@ -141,6 +141,9 @@ the computer is signed in, how it starts, the Mac's permissions). Every setting 
 is a `settings::PanelRequest`, which the process running the host carries out in
 `settings::Settings`. The controlling browser's clipboard switch and an administrator's edits to
 host.json also arrive there.
+Opening the panel creates its WebView and renders the current state. Closing the panel leaves the
+host and tray running and releases the WebView after five minutes. The in-session indicator follows
+the host's status independently.
 
 The platform selects the host feature set once at startup. It defines the signaling hello's
 capabilities and AI tool names, which seats can be admitted, and the tool table consulted by the

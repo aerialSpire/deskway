@@ -7,13 +7,15 @@
 //! make the page's state; the page's messages are [`PageMessage`]s, and the requests among them
 //! that the host carries out are [`PanelRequest`]s.
 
-use anyhow::{Context, Result};
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tao::window::WindowBuilder;
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+use tao::window::{Window, WindowBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, MouseButton, TrayIconBuilder, TrayIconEvent};
 use wry::{WebContext, WebView, WebViewBuilder};
@@ -71,8 +73,10 @@ pub(crate) fn page_builder<'a>(ctx: &'a mut WebContext, scheme: &str, html: &'st
 pub enum UiEvent {
     /// The host's status; None while it cannot be reached (the Windows network service).
     Status(Option<Status>),
-    /// A message from one of the pages (the panel, the indicator).
+    /// A message from the indicator or transfer notice.
     Ipc(String),
+    /// Panel messages belong to one instance of the page.
+    PanelIpc(u64, String),
     /// The screens changed: the panel stays on them.
     ScreenChanged,
     TrayOpen,
@@ -209,7 +213,6 @@ struct App {
     backend: HostBackend,
     /// The host's last status; None before the first, or while it cannot be reached.
     status: Option<Status>,
-    panel_ready: bool,
     /// The language the windows show now.
     shown: i18n::Lang,
 }
@@ -220,14 +223,71 @@ impl App {
     }
 }
 
+const PANEL_IDLE: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Default)]
+struct Panel {
+    page: Option<PanelPage>,
+    generation: u64,
+    close_at: Option<Instant>,
+}
+
+struct PanelPage {
+    view: WebView,
+    ready: bool,
+}
+
+impl Panel {
+    fn show(&mut self, window: &Window, ctx: &mut WebContext, proxy: &EventLoopProxy<UiEvent>) {
+        if self.page.is_none() {
+            self.generation += 1;
+            let generation = self.generation;
+            let ipc = proxy.clone();
+            let view = page_builder(ctx, "deskway-panel", designed(&PANEL, PANEL_HTML))
+                .with_ipc_handler(move |r| {
+                    let _ = ipc.send_event(UiEvent::PanelIpc(generation, r.body().to_string()));
+                })
+                .build(window);
+            match view {
+                Ok(view) => self.page = Some(PanelPage { view, ready: false }),
+                Err(e) => {
+                    eprintln!("{}: {e}", t(native::PANEL_ERROR));
+                    return;
+                }
+            }
+        }
+        self.close_at = None;
+        native::show_panel(window);
+    }
+
+    fn hide(&mut self, window: &Window) {
+        native::hide_panel(window);
+        if self.page.is_some() && self.close_at.is_none() {
+            self.close_at = Some(Instant::now() + PANEL_IDLE);
+        }
+    }
+
+    fn relabel(&self) {
+        if let Some(page) = &self.page {
+            let _ = page.view.evaluate_script(&format!("setLang({})", i18n::page_data()));
+        }
+    }
+
+    fn render(&self, app: &App) {
+        if let Some(page) = self.page.as_ref().filter(|page| page.ready) {
+            let _ = page.view.evaluate_script(&format!("render({})", app.state()));
+        }
+    }
+}
+
 /// Shows everything in the language now chosen, if the windows show another: the panel, the
 /// indicator and the tray menu.
-fn follow_language(app: &mut App, panel: &WebView, indicator: &mut Option<Indicator>, open: &MenuItem, quit: &MenuItem) {
+fn follow_language(app: &mut App, panel: &Panel, indicator: &mut Option<Indicator>, open: &MenuItem, quit: &MenuItem) {
     if i18n::current() == app.shown {
         return;
     }
     app.shown = i18n::current();
-    let _ = panel.evaluate_script(&format!("setLang({})", i18n::page_data()));
+    panel.relabel();
     open.set_text(t("tray.open"));
     quit.set_text(t("tray.quit"));
     if let Some(i) = indicator {
@@ -254,13 +314,7 @@ pub fn run(at_login: bool) -> Result<()> {
     })?;
     let data_dir = crate::config::dir()?.join("webview");
     let mut ctx = WebContext::new(Some(data_dir));
-    let ipc = proxy.clone();
-    let panel = page_builder(&mut ctx, "deskway-panel", designed(&PANEL, PANEL_HTML))
-        .with_ipc_handler(move |r| {
-            let _ = ipc.send_event(UiEvent::Ipc(r.body().to_string()));
-        })
-        .build(&window)
-        .with_context(|| t(native::PANEL_ERROR))?;
+    let mut panel = Panel::default();
 
     let open_item = MenuItem::new(t("tray.open"), true, None);
     let quit_item = MenuItem::new(t("tray.quit"), true, None);
@@ -286,7 +340,7 @@ pub fn run(at_login: bool) -> Result<()> {
         let _ = p.send_event(UiEvent::Menu(e.id));
     }));
 
-    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login), status: None, panel_ready: false, shown: i18n::current() };
+    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login), status: None, shown: i18n::current() };
     if app.backend.start() {
         let _ = proxy.send_event(UiEvent::TrayOpen);
     }
@@ -295,17 +349,24 @@ pub fn run(at_login: bool) -> Result<()> {
     let _tray = tray;
 
     event_loop.run(move |event, target, flow| {
-        *flow = ControlFlow::Wait;
-        let render = |app: &App, panel: &WebView| {
-            if app.panel_ready {
-                let _ = panel.evaluate_script(&format!("render({})", app.state()));
+        if panel.close_at.is_some_and(|deadline| Instant::now() >= deadline) {
+            panel.close_at = None;
+            panel.page = None;
+            panel_window.set_region(None);
+        }
+        *flow = panel.close_at.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
+        let event = match event {
+            Event::UserEvent(UiEvent::PanelIpc(generation, text)) => {
+                if panel.page.is_none() || generation != panel.generation { return; }
+                Event::UserEvent(UiEvent::Ipc(text))
             }
+            event => event,
         };
         // The indicator follows who controls this computer: a person, an AI client, or both.
-        let mut show_controller = |app: &App, indicator: &mut Option<Indicator>, target: &tao::event_loop::EventLoopWindowTarget<UiEvent>| {
+        let show_controller = |app: &App, indicator: &mut Option<Indicator>, target: &tao::event_loop::EventLoopWindowTarget<UiEvent>, ctx: &mut WebContext| {
             let s = app.status.clone().unwrap_or_default();
             if indicator.is_none() && (s.controller.is_some() || s.ai_client.is_some()) {
-                match Indicator::new(target, &mut ctx, proxy.clone()) {
+                match Indicator::new(target, ctx, proxy.clone()) {
                     Ok(i) => *indicator = Some(i),
                     Err(e) => eprintln!("cannot show the on-screen indicator: {e}"),
                 }
@@ -328,21 +389,21 @@ pub fn run(at_login: bool) -> Result<()> {
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } if window_id == window.id() => {
                 // Closing the panel never stops the host: it keeps running in the tray.
-                native::hide_panel(&window);
+                panel.hide(&window);
             }
             // Permissions may have changed in System Settings meanwhile.
-            Event::WindowEvent { event: WindowEvent::Focused(true), window_id, .. } if window_id == window.id() => render(&app, &panel),
+            Event::WindowEvent { event: WindowEvent::Focused(true), window_id, .. } if window_id == window.id() => panel.render(&app),
             Event::UserEvent(UiEvent::ScreenChanged) if window.is_visible() => native::fit_panel(&window),
             #[cfg(windows)]
-            Event::UserEvent(UiEvent::Refresh) => render(&app, &panel),
+            Event::UserEvent(UiEvent::Refresh) => panel.render(&app),
             Event::Reopen { .. } | Event::UserEvent(UiEvent::TrayOpen) => {
-                native::show_panel(&window);
-                render(&app, &panel);
+                panel.show(&window, &mut ctx, &proxy);
+                panel.render(&app);
             }
             Event::UserEvent(UiEvent::Menu(id)) => {
                 if id == open_id {
-                    native::show_panel(&window);
-                    render(&app, &panel);
+                    panel.show(&window, &mut ctx, &proxy);
+                    panel.render(&app);
                 } else if id == quit_id {
                     app.backend.quit();
                     // Lets the signaling thread tell the viewer, so it does not keep reconnecting.
@@ -359,17 +420,17 @@ pub fn run(at_login: bool) -> Result<()> {
                     }
                     // Someone at another device is waiting for an answer here.
                     if s.asks.len() > app.status.as_ref().map_or(0, |was| was.asks.len()) {
-                        native::show_panel(&window);
+                        panel.show(&window, &mut ctx, &proxy);
                     }
                 }
                 app.status = st;
                 follow_language(&mut app, &panel, &mut indicator, &open_item, &quit_item);
-                show_controller(&app, &mut indicator, target);
-                render(&app, &panel);
+                show_controller(&app, &mut indicator, target, &mut ctx);
+                panel.render(&app);
             }
             Event::UserEvent(UiEvent::Backend(e)) => {
                 if app.backend.event(e) {
-                    render(&app, &panel);
+                    panel.render(&app);
                 } else {
                     *flow = ControlFlow::Exit;
                 }
@@ -378,10 +439,12 @@ pub fn run(at_login: bool) -> Result<()> {
                 let Ok(m) = serde_json::from_str::<PageMessage>(&text) else { return };
                 match m {
                     PageMessage::Ready => {
-                        app.panel_ready = true;
-                        // A reloaded page may carry the language it was first built with.
-                        let _ = panel.evaluate_script(&format!("setLang({})", i18n::page_data()));
-                        render(&app, &panel);
+                        if let Some(page) = &mut panel.page {
+                            page.ready = true;
+                        }
+                        // The language may have changed while the page was loading.
+                        panel.relabel();
+                        panel.render(&app);
                     }
                     PageMessage::OverlayReady => {
                         if let Some(i) = &mut indicator {
@@ -409,7 +472,7 @@ pub fn run(at_login: bool) -> Result<()> {
                         let _ = window.drag_window();
                     }
                     PageMessage::DragRegion { rect } => panel_window.set_region(rect),
-                    PageMessage::Close => native::hide_panel(&window),
+                    PageMessage::Close => panel.hide(&window),
                     PageMessage::Minimize => native::minimize_panel(&window),
                     // Only the folder the host named; the page cannot choose another.
                     PageMessage::OpenFolder => {
@@ -430,12 +493,15 @@ pub fn run(at_login: bool) -> Result<()> {
                             None => app.backend.page(m),
                         };
                         if redraw {
-                            render(&app, &panel);
+                            panel.render(&app);
                         }
                     }
                 }
             }
             _ => {}
+        }
+        if *flow != ControlFlow::Exit {
+            *flow = panel.close_at.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         }
     })
 }
