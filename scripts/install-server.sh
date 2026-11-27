@@ -3,7 +3,7 @@ set -eu
 
 case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
   zh_TW*|zh_HK*|zh_MO*|zh_Hant*|zh-TW*|zh-HK*|zh-MO*|zh-Hant*)
-    usage='用法：install-server.sh --domain NAME [--admin NAME] [--version TAG] [--remote-mcp|--no-remote-mcp]（首次安裝需要 --admin）'
+    usage='用法：install-server.sh --domain NAME [--version TAG] [--remote-mcp|--no-remote-mcp]'
     root_help='請在使用 systemd 的 Debian 或 Ubuntu 上以 sudo 執行安裝程式。'
     dns_help='請設定網域的 A 記錄，確認可解析為伺服器的公開 IPv4 位址後重試。'
     release_help='請確認 GitHub 可連線且指定的版本含有伺服器安裝檔，然後重試。'
@@ -15,8 +15,8 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     upgrade_help='請修正升級錯誤後重新執行安裝程式。'
     install_binary='安裝伺服器程式'
     install_user='準備 deskway 系統帳號與資料資料夾'
-    create_admin='建立管理員。請保存只顯示一次的初始密碼。'
-    admin_help='請檢查帳號名稱和狀態檔案的錯誤後重試。'
+    link_once='此連結只能使用一次，一小時內有效。若需要新連結，請執行'
+    link_help='請檢查伺服器狀態檔案的權限後重試。'
     install_unit='安裝、啟用並啟動 systemd 服務'
     enable_help='請執行 journalctl -u deskway.service 檢查錯誤，修正後執行 systemctl daemon-reload 與 systemctl enable --now deskway.service。'
     legacy_help='請先依照自架指南手動安裝支援 upgrade 的發布版本。'
@@ -33,7 +33,7 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     mcp_address='請在網頁用戶端的「新增 AI 用戶端」中查看 MCP 位址。'
     ;;
   zh*)
-    usage='用法：install-server.sh --domain NAME [--admin NAME] [--version TAG] [--remote-mcp|--no-remote-mcp]（首次安装需要 --admin）'
+    usage='用法：install-server.sh --domain NAME [--version TAG] [--remote-mcp|--no-remote-mcp]'
     root_help='请在使用 systemd 的 Debian 或 Ubuntu 上以 sudo 运行安装程序。'
     dns_help='请设置域名的 A 记录，确认可解析为服务器的公网 IPv4 地址后重试。'
     release_help='请确认 GitHub 可访问且指定的版本含有服务器安装包，然后重试。'
@@ -45,8 +45,8 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     upgrade_help='请修正升级错误后重新运行安装程序。'
     install_binary='安装服务器程序'
     install_user='准备 deskway 系统账号和数据目录'
-    create_admin='创建管理员。请保存只显示一次的初始密码。'
-    admin_help='请检查账号名称和状态文件的错误后重试。'
+    link_once='此链接只能使用一次，一小时内有效。若需要新链接，请运行'
+    link_help='请检查服务器状态文件的权限后重试。'
     install_unit='安装、启用并启动 systemd 服务'
     enable_help='请运行 journalctl -u deskway.service 检查错误，修正后运行 systemctl daemon-reload 和 systemctl enable --now deskway.service。'
     legacy_help='请先按自建指南手动安装支持 upgrade 的发布版本。'
@@ -63,7 +63,7 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     mcp_address='请在网页客户端的「添加 AI 客户端」中查看 MCP 地址。'
     ;;
   *)
-    usage='Usage: install-server.sh --domain NAME [--admin NAME] [--version TAG] [--remote-mcp|--no-remote-mcp] (--admin is required on first install)'
+    usage='Usage: install-server.sh --domain NAME [--version TAG] [--remote-mcp|--no-remote-mcp]'
     root_help='Run the installer with sudo on Debian or Ubuntu booted with systemd.'
     dns_help="Set the domain's A record to the server's public IPv4 address and retry once it resolves."
     release_help='Check that GitHub is reachable and the selected release has server assets, then retry.'
@@ -75,8 +75,8 @@ case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
     upgrade_help='Fix the upgrade error, then rerun the installer.'
     install_binary='Install the server executable'
     install_user='Prepare the deskway system user and data directory'
-    create_admin='Create the admin. Save the initial password when it appears.'
-    admin_help='Check the account name and state-file error, then retry.'
+    link_once='This link works once and expires in one hour. To get a new link, run'
+    link_help='Check the server state file permissions, then retry.'
     install_unit='Install, enable and start the systemd service'
     enable_help='Check journalctl -u deskway.service, fix the error, then run systemctl daemon-reload and systemctl enable --now deskway.service.'
     legacy_help='Use the by-hand route in the self-hosting guide to install a release that supports upgrade.'
@@ -123,7 +123,6 @@ service_active() {
 }
 
 domain=
-admin=
 version=
 remote_mcp=keep
 while [ "$#" -gt 0 ]; do
@@ -135,11 +134,10 @@ while [ "$#" -gt 0 ]; do
       [ "$remote_mcp" = keep ] || die "$usage"
       remote_mcp=$option
       ;;
-    --domain|--admin|--version)
+    --domain|--version)
       case "${1:-}" in ''|--*) die "$usage" ;; esac
       case "$option" in
         --domain) domain=$1 ;;
-        --admin) admin=$1 ;;
         --version)
           case "$1" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*) die "$usage" ;; esac
           version=$1
@@ -198,6 +196,17 @@ announce_mcp() {
   fi
 }
 
+issue_initial_link() {
+  link_domain=$(sed -nE 's/^[[:space:]]*ExecStart[[:space:]]*=.* -domain[ =]([a-zA-Z0-9.-]+)([[:space:]].*)?$/\1/p' "$unit") || die "$link_help"
+  link_origin="https://${link_domain:-$domain}"
+  link_user=$(systemctl show --property=User --value deskway.service) || die "$link_help"
+  link_user=${link_user:-root}
+  link=$(runuser -u "$link_user" -- "$binary" admin-link -if-needed -data "$data/state.json" -url "$link_origin") || die "$link_help"
+  if [ -n "$link" ]; then
+    printf '%s\n' "$link" "$link_once:" "sudo runuser -u $link_user -- $binary admin-link -data $data/state.json -url $link_origin"
+  fi
+}
+
 if [ -f "$unit" ]; then
   if [ "$remote_mcp" != keep ]; then
     current_start=$(read_exec_start "$unit") || die "$mcp_edit_help"
@@ -234,11 +243,11 @@ if [ -f "$unit" ]; then
   printf '%s\n' "$restart"
   systemctl restart deskway.service || service_failed "$restart_help"
   service_active || service_failed "$restart_help"
+  issue_initial_link
   announce_mcp
   exit 0
 fi
 
-[ -n "$admin" ] || die "$usage"
 public_ip=$(getent -s dns ahostsv4 "${domain%.}." | awk 'NR == 1 {print $1}')
 case "$public_ip" in
   '') die "$domain. $dns_help" ;;
@@ -291,15 +300,11 @@ if [ "$remote_mcp" = --remote-mcp ]; then
   check_mcp deskway
   run "$storage_help" install -d -m 755 -o deskway -g deskway "$data/clients"
 fi
-if [ ! -f "$data/state.json" ]; then
-  printf '%s\n' "$create_admin"
-  run "$admin_help" runuser -u deskway -- "$binary" admin "$admin" -data "$data/state.json"
-fi
-
 printf '%s\n' "$install_unit"
 run "$storage_help" install -m 644 deskway.service "$unit"
 run "$enable_help" systemctl daemon-reload
 systemctl enable --now deskway.service || service_failed "$enable_help"
 service_active || service_failed "$enable_help"
+issue_initial_link
 printf '%s\n' "$ready https://$domain — $first_load" "$firewall"
 announce_mcp

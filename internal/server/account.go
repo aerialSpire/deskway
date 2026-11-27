@@ -6,10 +6,9 @@ import (
 	"strings"
 )
 
-// The account page: the names, the password and the super password. A change to a name or a
+// The account page: the names and the password. A change to a name or a
 // password asks for the current password even though the browser is signed in, so a borrowed
-// unlocked browser cannot take the account over. And the first choice of them, replacing an
-// initial password (handleInitial).
+// unlocked browser cannot take the account over.
 
 // me is what a browser is told about its account: the name it signs in with, the display name,
 // and whether it is the admin (who manages the members, members.go).
@@ -93,58 +92,5 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("server: %s signed out %d other browsers", user, len(removed))
 	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleInitial replaces an initial password with one the account chooses, and sets its super
-// password too when it has none yet (its first sign-in). Signing in with the initial password
-// was the check; the admin who knows that one never learns the new one.
-func (s *Server) handleInitial(w http.ResponseWriter, r *http.Request) {
-	user := userOf(r)
-	var body struct {
-		New   string `json:"new"`
-		Super string `json:"super_password"`
-	}
-	if !decodeBody(w, r, 4096, &body) {
-		return
-	}
-	needSuper := !s.store.HasSuper(user)
-	if !validSecret(body.New) || (needSuper && !validSecret(body.Super)) {
-		http.Error(w, errBadSecret.Error(), http.StatusBadRequest)
-		return
-	}
-	if s.store.PasswordOK(user, body.New) {
-		http.Error(w, "choose a password other than the initial one", http.StatusConflict)
-		return
-	}
-	if needSuper {
-		if err := s.store.SetSuper(user, body.Super); err != nil {
-			storeError(w, err)
-			return
-		}
-	}
-	if err := s.store.SetPassword(user, body.New); err != nil {
-		storeError(w, err)
-		return
-	}
-	log.Printf("server: %s chose its own password from %s", user, clientIP(r))
-	writeJSON(w, s.me(user))
-}
-
-// handleSuper sets the super password, after checking the account password.
-func (s *Server) handleSuper(w http.ResponseWriter, r *http.Request) {
-	user := userOf(r)
-	var body struct {
-		Password string `json:"password"`
-		New      string `json:"new"`
-	}
-	if !decodeBody(w, r, 4096, &body) || !s.checkCurrent(w, r, user, body.Password) {
-		return
-	}
-	if err := s.store.SetSuper(user, body.New); err != nil {
-		storeError(w, err)
-		return
-	}
-	log.Printf("server: %s changed the super password from %s", user, clientIP(r))
 	w.WriteHeader(http.StatusNoContent)
 }

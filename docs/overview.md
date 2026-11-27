@@ -44,11 +44,11 @@ being verified, so it can try them as soon as that answer is applied.
 
 - A server can be shared by several people. The admin creates their accounts in **Members**, and
   each person sees and controls only their own computers.
-- Every new browser, phone, computer and AI client must be approved from a device that is already
-  approved, after you compare a confirmation code. Knowing the password is not enough to sign in.
+- When you sign in to a new browser with a password, or add a computer or AI client, compare the
+  confirmation code and approve it from an approved device.
 - Each computer also keeps its own list of devices allowed to control it, added at the computer
   by QR code or by a request confirmed there.
-- A super password signs you in when no approved device is at hand.
+- One-time links set up an account and recover access. See [Accounts](accounts.md).
 
 ### AI control
 

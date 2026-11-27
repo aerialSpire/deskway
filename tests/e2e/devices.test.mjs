@@ -1,15 +1,15 @@
 // A new device (`c`, its own browser storage): approved and denied on a signed-in device,
-// controlling the computer; my devices; renaming and removing a device; the passwords; a removed device let
+// controlling the computer; my devices; renaming and removing a device; changing the password; a removed device let
 // in again at the computer, by asking there and by its QR code; device checks off and on;
-// removing a device at the computer. Changes the account's passwords and names and puts each
+// removing a device at the computer. Changes the account's password and names and puts each
 // back, so the areas after it sign in as before.
-import { sleep, SCREENS, TAKE_OVER, signIn, superIn, nameThisDevice, t, q, fixed } from './harness.mjs';
+import { sleep, SCREENS, TAKE_OVER, signIn, issueAdminLink, redeemSetup, nameThisDevice, t, q, fixed } from './harness.mjs';
 
 export const area = {
   name: 'devices',
   needs: ['auth'],
   async run(h) {
-    const { user, password, superPassword, url } = h.opts;
+    const { user, password, url, serverExe, serverState } = h.opts;
     const b = await h.secondPage();
     await h.freeComputer(b);
     await b.v(`d.show('detail', d.devices()[0].id)`);
@@ -133,7 +133,7 @@ export const area = {
     await removeOther();
     h.check('removing a device takes it off the list', true);
 
-    // ---- changing the password and the super password ----
+    // ---- changing the password ----
     const fillForm = (values) => b.eval(`(() => { const f = [...document.querySelectorAll('.dialog.form input[type=password]')]; ${JSON.stringify(values)}.forEach((v, i) => { f[i].value = v; }); document.querySelector('.dialog.form button[type=submit]').click(); })()`);
     const checkboxLine = `(() => {
       const l = document.querySelector('.dialog.form label.check'), box = l.querySelector('input').getBoundingClientRect(), field = document.querySelector('.dialog.form input[type=password]').getBoundingClientRect();
@@ -153,6 +153,10 @@ export const area = {
     await fillForm([password, 'brand new password 1', 'different']);
     await b.until(`document.querySelector('.dialog.form .error')?.textContent.includes(${q('pw.mismatch')})`, 'mismatch message');
     h.check('change password: the two new passwords must match', true);
+    const longPassword = '界'.repeat(25);
+    await fillForm([password, longPassword, longPassword]);
+    await b.until(`document.querySelector('.dialog.form .error')?.textContent.includes(${q('pw.tooLong')})`, 'password too long message');
+    h.check('change password: a password over 72 bytes shows the length limit', true);
     await fillForm([password, 'brand new password 1', 'brand new password 1']);
     await b.until(`document.querySelector('.dialog h2')?.textContent === ${q('pw.doneTitle')}`, 'password changed');
     await b.clickText('.dialog button', t('common.gotIt'));
@@ -162,14 +166,6 @@ export const area = {
     await b.until(`document.querySelector('.dialog h2')?.textContent === ${q('pw.doneTitle')}`, 'password changed back');
     await b.clickText('.dialog button', t('common.gotIt'));
     h.check('change password: the new password is required next time, and it can be changed back', true);
-    await change(b, t('account.super'));
-    await fillForm(['wrong account password', superPassword, superPassword]);
-    await b.until(`document.querySelector('.dialog.form .error')?.textContent.includes(${q('super.wrongAccount')})`, 'wrong account password message');
-    await fillForm([password, superPassword, superPassword]);
-    await b.until(`document.querySelector('.dialog h2')?.textContent === ${q('super.doneTitle')}`, 'super password changed');
-    await b.clickText('.dialog button', t('common.gotIt'));
-    h.check('change super password: needs the account password', true);
-
     // ---- the display name and the sign-in name ----
     const display = await b.v(`d.me().display`);
     const fill = (name, pw) => b.eval(`(() => { const f = document.querySelector('.dialog.form'); f.querySelector('input:not([type=password])').value = ${JSON.stringify(name)}; const p = f.querySelector('input[type=password]'); if (p) p.value = ${JSON.stringify(pw || '')}; f.querySelector('button[type=submit]').click(); })()`);
@@ -210,18 +206,29 @@ export const area = {
     await b.until(`document.querySelector('.dialog h2')?.textContent.includes(${JSON.stringify(fixed('approve.deviceTitle'))})`, 'asked after removal');
     await b.clickText('.dialog button', t('common.deny'));
 
-    // The removed device gets back in with the super password, but the computer heard about the
-    // removal: it must be let in at the computer again. This time by asking the person there.
-    const inWithSuper = async (label) => {
+    const recover = async () => {
+      if (await b.v(`d.me().admin`)) {
+        return redeemSetup(c, await issueAdminLink(serverExe, serverState, url), { password });
+      }
+      // Approve the member's browser without endorsing its key so it still needs the computer's approval.
       await signIn(c, { user, password });
-      await c.until(`!!document.querySelector('.wait-step')`, label);
-      await superIn(c, superPassword);
-      await c.until(`!!document.querySelector('.card')`, `${label}: in with the super password`);
+      await b.until(`!!document.querySelector('[data-approval] .code')`, 'member browser approval');
+      const approved = await b.eval(`(async () => {
+        const id = document.querySelector('[data-approval]').dataset.approval;
+        const res = await fetch('/api/approvals', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ kind: 'browser', id, allow: true }),
+        });
+        return res.ok;
+      })()`);
+      if (!approved) throw new Error('could not approve the member browser');
+      await c.until(`!!document.querySelector('.card')`, 'member browser signed in');
     };
     await c.until(`document.querySelector('.error')?.textContent.includes(${q('wait.rejected')})`, 'removed browser denied');
-    await inWithSuper('waiting again');
+    await recover();
+    await c.until(`!!document.querySelector('.card')`, 'list after recovery');
     await c.eval(`document.querySelector('.card-open').click()`);
-    await c.until(SCREENS, 'detail after super password');
+    await c.until(SCREENS, 'detail after recovery');
     // Let the browser enter full screen before delivering the real refusal.
     await c.v(`d.interceptSignals((m) => {
       if (m.type !== 'bye' || m.reason !== 'unpaired') return m;
@@ -259,7 +266,7 @@ export const area = {
     await c.eval(`location.reload()`);
     await sleep(800);
     await c.until(`!!document.querySelector('form.login')`, 'signed out again');
-    await inWithSuper('waiting once more');
+    await recover();
     const pairingCode = h.pairCode();
     await c.eval(`location.href = ${JSON.stringify(url)} + '/#pair=' + ${JSON.stringify(h.hostId)} + '.' + ${JSON.stringify(pairingCode.replace(/-/g, ''))}`);
     await c.eval(`location.reload()`);

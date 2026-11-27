@@ -26,17 +26,17 @@ var (
 
 const (
 	minSecret = 8
-	maxSecret = 128
+	maxSecret = 72 // bcrypt's byte limit
 )
 
 var (
 	errNoUser    = errors.New("no such account")
 	errBadName   = errors.New("an account name is 2 to 32 letters, digits, '.', '_' or '-'")
 	errNameTaken = errors.New("that account name is taken")
-	errBadSecret = fmt.Errorf("a password or super password has %d to %d characters", minSecret, maxSecret)
+	errBadSecret = fmt.Errorf("a password has %d to %d bytes", minSecret, maxSecret)
 )
 
-// validSecret: what a password or a super password may be.
+// validSecret: what a password may be.
 func validSecret(p string) bool { return len(p) >= minSecret && len(p) <= maxSecret }
 
 // ValidAccountName: what an account may sign in as. 2 to 32 ASCII letters, digits, '.', '_'
@@ -102,11 +102,11 @@ func (s *Store) Rename(user, name string) error {
 	return s.saveLocked()
 }
 
-// UserCount is the number of accounts.
-func (s *Store) UserCount() int {
+// HasAdmin reports whether the server has an administrator.
+func (s *Store) HasAdmin() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.Users)
+	return adminID(s.Users) != ""
 }
 
 // Display is the account's display name, or the name it signs in with.
@@ -144,14 +144,6 @@ func (s *Store) IsAdmin(user string) bool {
 	return u != nil && u.Admin
 }
 
-// MustChange says whether the account's password is an initial one.
-func (s *Store) MustChange(user string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u := s.Users[user]
-	return u != nil && u.MustChange
-}
-
 // Member is a member account as the admin sees it: of its computers, only how many.
 type Member struct {
 	ID         string `json:"id"`
@@ -160,16 +152,26 @@ type Member struct {
 	Created    int64  `json:"created"`
 	LastActive int64  `json:"last_active,omitempty"` // the latest any of its browsers was seen
 	Computers  int    `json:"computers"`
+	NeedsSetup bool   `json:"needs_setup,omitempty"`
+	LinkKind   string `json:"link_kind,omitempty"`
+	LinkExpiry int64  `json:"link_expiry,omitempty"`
 }
 
 // Members lists every account but the admin, by sign-in name.
-func (s *Store) Members() []Member {
+func (s *Store) Members() ([]Member, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	links, err := openLinks(s.path)
+	if err != nil {
+		return nil, err
+	}
+	defer links.Close()
 	byID := map[string]*Member{}
 	for id, u := range s.Users {
 		if !u.Admin {
-			byID[id] = &Member{ID: id, Name: u.Name, Display: u.Display, Created: u.Created}
+			link := links.records[id]
+			byID[id] = &Member{ID: id, Name: u.Name, Display: u.Display, Created: u.Created,
+				NeedsSetup: u.Hash == "", LinkKind: link.Kind, LinkExpiry: link.Expires}
 		}
 	}
 	for _, b := range s.Browsers {
@@ -187,7 +189,7 @@ func (s *Store) Members() []Member {
 		list = append(list, *m)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
-	return list
+	return list, nil
 }
 
 // ---- relay nodes ----
@@ -569,43 +571,12 @@ func (s *Store) AIClient(id, user string) (key *proto.BrowserKey, approved, aske
 	return rec.Key, rec.Approved, true
 }
 
-// ApproveWithSuper lets the browser in with the super password: it joins the device list,
-// unsigned, if its key is known.
-func (s *Store) ApproveWithSuper(id, user, label, ip string, now int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.letInLocked(id, user, label, ip, now)
-}
-
-// ApproveFirst lets the account's first browser in with the initial password alone: there is
-// no other device to approve it, and the password came from the admin (docs/accounts.md, First
-// sign-in). False, changing nothing, once the account has had an approved browser or has its
-// own password.
-func (s *Store) ApproveFirst(id, user, label, ip string, now int64) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u := s.Users[user]
-	if u == nil || !u.MustChange || u.HadBrowser {
-		return false, nil
-	}
-	return true, s.letInLocked(id, user, label, ip, now)
-}
-
 // letInLocked approves the browser on the spot, with no other device.
-func (s *Store) letInLocked(id, user, label, ip string, now int64) error {
-	rec := s.Browsers[id]
-	if rec == nil || rec.Owner != user {
-		rec = &BrowserRecord{Owner: user, Label: label, IP: ip, Created: now}
-		s.Browsers[id] = rec
-	}
-	if !rec.Approved && rec.Key != nil {
-		s.appendLogLocked(user, rec.Key.AddEntry(proto.Proof{TS: now}))
+func (s *Store) letInLocked(rec *BrowserRecord, newKey bool, now int64) {
+	if !rec.Approved || newKey {
+		s.appendLogLocked(rec.Owner, rec.Key.AddEntry(proto.Proof{TS: now}))
 	}
 	rec.Approved, rec.Pickup, rec.Code, rec.LastSeen = true, false, "", now
-	if u := s.Users[user]; u != nil {
-		u.HadBrowser = true
-	}
-	return s.saveLocked()
 }
 
 // AskApproval records that the browser (an AI client for RoleAI) waits for approval and returns
@@ -709,9 +680,6 @@ func (s *Store) Approve(user, kind, id string, allow bool, endorse *proto.Proof,
 			found = time.Since(time.Unix(b.Created, 0)) <= ttl
 			if found && allow {
 				b.Approved, b.Pickup, b.Code = true, true, ""
-				if u := s.Users[user]; u != nil {
-					u.HadBrowser = true
-				}
 				if b.Key != nil && endorse.Valid() {
 					s.appendLogLocked(user, b.Key.AddEntry(*endorse))
 				}

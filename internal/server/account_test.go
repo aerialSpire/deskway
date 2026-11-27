@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The account page: password, super password and the name the account signs in with.
+// The account page: password and the name the account signs in with.
 
 func TestChangePasswordNeedsTheCurrentOne(t *testing.T) {
 	f := newFixture(t)
@@ -23,21 +23,10 @@ func TestChangePasswordNeedsTheCurrentOne(t *testing.T) {
 func TestChangePasswordCanSignOutOthers(t *testing.T) {
 	f := newFixture(t)
 	a := f.signedIn("me")
-	b := f.browser()
-	want(t, "second in", f.login(b, map[string]string{"super_password": testSuper}).StatusCode, http.StatusNoContent)
+	b := f.signedIn("me")
 	want(t, "changed", f.status(a, "POST", "/api/password", map[string]any{"current": testPassword, "new": "brand new password", "sign_out_others": true}), http.StatusNoContent)
 	want(t, "this browser stays", f.status(a, "GET", "/api/me", nil), http.StatusOK)
 	want(t, "the other is out", f.status(b, "GET", "/api/me", nil), http.StatusUnauthorized)
-}
-
-func TestChangeSuperPassword(t *testing.T) {
-	f := newFixture(t)
-	a := f.signedIn("me")
-	want(t, "wrong account password", f.status(a, "POST", "/api/super-password", map[string]any{"password": "nope", "new": "another super one"}), http.StatusForbidden)
-	want(t, "changed", f.status(a, "POST", "/api/super-password", map[string]any{"password": testPassword, "new": "another super one"}), http.StatusNoContent)
-	if f.s.store.CheckSuper(f.id("me"), testSuper) || !f.s.store.CheckSuper(f.id("me"), "another super one") {
-		t.Fatal("super password not changed")
-	}
 }
 
 func TestTheAccountNameChangesAndNothingElse(t *testing.T) {
@@ -60,9 +49,6 @@ func TestTheAccountNameChangesAndNothingElse(t *testing.T) {
 	want(t, "the new name does", f.status(f.browser(), "POST", "/api/login", map[string]string{"user": "xiaolin", "password": testPassword}), http.StatusAccepted)
 	if n := len(f.s.deviceList(&conn{user: f.id("me")})); n != 1 {
 		t.Fatalf("the account's computers stay with it: %d", n)
-	}
-	if !f.s.store.CheckSuper(f.id("me"), testSuper) {
-		t.Fatal("the super password stays with the account")
 	}
 	want(t, "still signed in", f.status(a, "GET", "/api/me", nil), http.StatusOK)
 	want(t, "the same name again is fine", rename("xiaolin", testPassword), http.StatusOK)

@@ -40,22 +40,21 @@ Push-Location (Join-Path $root 'host')
 cargo build --release --quiet 2>$null
 Pop-Location
 
-# The admin account is made once, while the server is stopped (the admin command needs the
-# state file to itself). It prints "Admin: me  Initial password: …".
-$password = $null
-if (-not (Test-Path $state)) {
-    $created = (& $server admin me -data $state) -join ' '
-    if ($created -cmatch 'Admin: \S+\s+Initial password: (\S+)') {
-        $password = $Matches[1]
-    } else {
-        throw "Unexpected output from admin: $created"
-    }
-}
-
 $listen = if ($Lan) { "0.0.0.0:$Port" } else { "127.0.0.1:$Port" }
-Start-Process -FilePath $server -ArgumentList '-listen', $listen, '-data', $state `
-    -RedirectStandardError (Join-Path $DataDir 'server.log') -RedirectStandardOutput (Join-Path $DataDir 'server.out') -WindowStyle Hidden
-Start-Sleep -Seconds 1
+$origin = "http://127.0.0.1:$Port"
+$serverLog = Join-Path $DataDir 'server.log'
+$serverProcess = Start-Process -FilePath $server -ArgumentList '-listen', $listen, '-data', $state `
+    -RedirectStandardError $serverLog -RedirectStandardOutput (Join-Path $DataDir 'server.out') -WindowStyle Hidden -PassThru
+$deadline = (Get-Date).AddSeconds(10)
+do {
+    if ($serverProcess.HasExited -or (Get-Date) -ge $deadline) { throw "Server did not start. See $serverLog." }
+    try {
+        Invoke-WebRequest -Uri $origin -Method Head -UseBasicParsing -TimeoutSec 1 | Out-Null
+        break
+    } catch {
+        Start-Sleep -Milliseconds 200
+    }
+} while ($true)
 
 $env:DESKWAY_HOME = $DataDir
 # Earlier versions kept the host's settings one folder deeper.
@@ -65,10 +64,26 @@ if ((Test-Path $oldConfig) -and -not (Test-Path $config)) {
     Move-Item $oldConfig $config
     Remove-Item (Join-Path $DataDir 'Deskway') -ErrorAction SilentlyContinue
 }
-if ($password) {
-    $env:DESKWAY_PASSWORD = $password
-    & $hostExe enroll --server "http://127.0.0.1:$Port" --user me --name $env:COMPUTERNAME
-    Remove-Item Env:DESKWAY_PASSWORD
+$link = & $server admin-link -if-needed -data $state -url $origin
+if ($LASTEXITCODE -ne 0) { throw 'Could not issue an admin link.' }
+if ($link) {
+    Write-Host $link
+}
+$needsEnrollment = (-not (Test-Path -LiteralPath $config -PathType Leaf)) -or $link
+if ($needsEnrollment) {
+    $account = if ($link) {
+        Read-Host 'Open this one-time link and set up the account, then enter its sign-in name here'
+    } else {
+        Read-Host 'Account sign-in name'
+    }
+    $password = Read-Host 'Account password' -AsSecureString
+    $env:DESKWAY_PASSWORD = [System.Net.NetworkCredential]::new('', $password).Password
+    try {
+        & $hostExe enroll --server $origin --user $account --name $env:COMPUTERNAME
+        if ($LASTEXITCODE -ne 0) { throw 'Could not enroll this computer.' }
+    } finally {
+        Remove-Item Env:DESKWAY_PASSWORD
+    }
 }
 # The same two processes as the installed services, in development mode: they share this data
 # folder and pipe names of their own, so they never meet an installed copy.
@@ -81,16 +96,13 @@ Start-Process -FilePath $hostExe -ArgumentList 'agent', '--dev' -WindowStyle Hid
     -RedirectStandardError (Join-Path $DataDir 'agent.log') -RedirectStandardOutput (Join-Path $DataDir 'agent.out')
 
 Write-Output ''
-Write-Output "Open: http://127.0.0.1:$Port"
+Write-Output "Open: $origin"
 if ($Lan) {
     Get-NetIPAddress -AddressFamily IPv4 -AddressState Preferred |
         Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
         ForEach-Object { Write-Output "On your network: http://$($_.IPAddress):$Port" }
 }
-if ($password) {
-    Write-Output "Account: me   Initial password: $password   (shown only once)"
-    Write-Output 'Sign in with it in the browser, choose your own password and super password, then approve this computer when the browser asks.'
-} else {
-    Write-Output 'Account: me   Password: the one you chose at the first sign-in'
+if ($needsEnrollment) {
+    Write-Output 'Approve this computer when the browser asks.'
 }
 Write-Output "Stop with: .\scripts\try-local.ps1 -Stop"

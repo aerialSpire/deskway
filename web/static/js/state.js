@@ -1,6 +1,6 @@
 // What the page knows (the account, its computers) and which view is showing. The pages that
 // follow the server (list, detail, devices) and the account's own (account, members) register here
-// and are redrawn by `render`; the other views ('login', 'waiting', 'choose', 'session') draw themselves.
+// and are redrawn by `render`; the other views ('login', 'waiting', 'setup', 'session') draw themselves.
 import { socket } from './net.js';
 import { dialogOpen } from './dialogs.js';
 import { Signal } from './proto.js';

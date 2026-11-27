@@ -1,14 +1,14 @@
-// Signing in a new browser: a wrong password, naming it, the waiting screen with its code, the super
-// password, approving the new computer; then the list with its thumbnail. Every other area
+// Signing in a new browser: a wrong password, naming it, the waiting screen with its code, account recovery,
+// approving the new computer; then the list with its thumbnail. Every other area
 // needs what it leaves: `h.a`, the account's first device, signed in on the list, and
 // `h.hostId`, the test computer.
-import { sleep, signIn, superIn, nameThisDevice, t, q } from './harness.mjs';
+import { sleep, signIn, issueAdminLink, redeemSetup, nameThisDevice, t, q } from './harness.mjs';
 
 export const area = {
   name: 'auth',
   needs: [],
   async run(h) {
-    const { user, password, superPassword } = h.opts;
+    const { url, user, password, setupLink, serverExe, serverState } = h.opts;
     const a = await h.newPage();
     h.a = a;
     await a.addAuthenticator();
@@ -29,12 +29,10 @@ export const area = {
     await a.shot('waiting-wide', 1440, 900);
     await a.shot('waiting-portrait', 390, 844);
     await a.metrics(1440, 900);
-    await superIn(a, 'not-the-super-password');
-    await a.until(`document.querySelector('.error')?.textContent.includes(${q('wait.superWrong')})`, 'wrong super password message');
-    h.check('a wrong super password is rejected', true);
-    await superIn(a, superPassword);
+    const link = setupLink || await issueAdminLink(serverExe, serverState, url);
+    await redeemSetup(a, link, { password });
     await a.until(`document.querySelector('.dialog h2')?.textContent.includes(${q('approve.computerTitle')})`, 'computer approval dialog');
-    h.check('the super password signs in, and the new computer asks for approval', await a.eval(`!document.querySelector('.card')`));
+    h.check('the account link signs in, and the new computer asks for approval', await a.eval(`!document.querySelector('.card')`));
     await a.shot('approve-computer', 1440, 900);
     await a.clickText('.dialog button', t('common.approve'));
     await a.until(`!!document.querySelector('.card')`, 'device card');

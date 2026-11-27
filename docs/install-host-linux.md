@@ -62,9 +62,7 @@ sends to the journal.
 The service runs headless.
 
 To use another browser, sign in there and approve its six-digit request from a browser the
-Linux computer already trusts. If you used the super password, choose **Sign out** for
-**This device** in **My devices**, then sign in again with the account password to request
-approval. See [Adding a device](security.md#adding-a-device).
+Linux computer already trusts. See [Adding a device](security.md#adding-a-device).
 
 Approved AI clients can also run commands, work with files and open tunnels. You approve
 the computer and manage its AI access in the browser.

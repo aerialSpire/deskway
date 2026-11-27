@@ -1,5 +1,5 @@
 // The account: its menu under the name in the top bar, and its page (Account) where the display
-// name, the sign-in name and the two passwords are changed, each in the same kind of dialog.
+// name, the sign-in name and password are changed, each in the same kind of dialog.
 import { $app, h, svg, ICONS } from '../dom.js';
 import { standalone } from '../env.js';
 import { t } from '../i18n.js';
@@ -57,8 +57,7 @@ export function renderAccount() {
     h('div', { class: 'setting-list' },
       row(t('account.display'), state.me.display, showChangeDisplay),
       row(t('account.name'), state.me.user, showChangeName),
-      row(t('account.password'), t('account.passwordSub'), showChangePassword),
-      row(t('account.super'), t('account.superSub'), showChangeSuper))));
+      row(t('account.password'), t('account.passwordSub'), showChangePassword))));
 }
 
 // The account as the server now has it: the top bar and the page show it at once.
@@ -114,21 +113,9 @@ function showChangePassword() {
   formDialog(t('pw.title'), t('pw.intro'),
     [current, next, again, h('label', { class: 'check' }, others, t('pw.signOutOthers'))], t('common.save'), async () => {
       if (next.value.length < 8) throw shownError('pw.tooShort');
+      if (new TextEncoder().encode(next.value).length > 72) throw shownError('pw.tooLong');
       if (next.value !== again.value) throw shownError('pw.mismatch');
       await secretResult(await api('POST', '/api/password', { current: current.value, new: next.value, sign_out_others: others.checked }), 'pw.wrongCurrent');
       return { title: t('pw.doneTitle'), text: others.checked ? t('pw.doneOthers') : t('pw.doneNext') };
-    });
-}
-
-function showChangeSuper() {
-  const password = secretInput(t('super.account'), 'current-password');
-  const next = secretInput(t('super.new'), 'new-password');
-  const again = secretInput(t('super.again'), 'new-password');
-  formDialog(t('super.title'), t('super.intro'),
-    [password, next, again], t('common.save'), async () => {
-      if (next.value.length < 8) throw shownError('super.tooShort');
-      if (next.value !== again.value) throw shownError('super.mismatch');
-      await secretResult(await api('POST', '/api/super-password', { password: password.value, new: next.value }), 'super.wrongAccount');
-      return { title: t('super.doneTitle'), text: t('super.doneText') };
     });
 }

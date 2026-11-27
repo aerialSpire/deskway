@@ -1,7 +1,4 @@
-// Members: the admin's members (docs/accounts.md), opened from the menu under the admin's name.
-// The list (names, when made, when last active, how many computers), Create user, and under each
-// member's ⋯ resetting its password and removing it. A new or reset password is shown once, in
-// a dialog whose one “Copy” copies the message to send the member.
+// Members and their account links. A new link is shown once with a message to copy.
 import { $app, h, svg, ICONS, loading } from '../dom.js';
 import { t, agoText, dateText } from '../i18n.js';
 import { api, signedOut } from '../net.js';
@@ -37,16 +34,26 @@ export async function renderMembers() {
     list.length ? h('div', { class: 'device-list' }, list.map(row)) : h('p', { class: 'hint members-empty' }, t('members.empty')));
 }
 
+function linkStatus(m) {
+  if (!m.link_expiry) return m.needs_setup ? t('members.needsLink') : '';
+  const days = Math.ceil((m.link_expiry - Date.now() / 1000) / 86400);
+  if (!m.link_kind || days <= 0) return t('members.expired');
+  const kind = m.link_kind === 'reset' ? t('members.unusedReset') : t('members.unusedInvite');
+  return [kind, t('members.expiresIn', { n: days })].join(' · ');
+}
+
 function row(m) {
   const sub = [
     t('account.signsInAs', { name: m.name }),
     t('members.created', { date: dateText(m.created) }),
     m.last_active ? agoText(m.last_active) : t('members.neverActive'),
     t('members.computers', { n: m.computers }),
-  ].join(' · ');
+    linkStatus(m),
+  ].filter(Boolean).join(' · ');
   const button = h('button', { class: 'btn icon more', 'aria-label': t('members.menu', { name: m.display }) }, svg(ICONS.more));
   const menu = dropdown(`member:${m.id}`, button, (item) => [
-    item(t('members.reset'), () => confirmReset(m)),
+    item(t('members.newLink'), () => updateLink(m, 'POST')),
+    m.link_kind && item(t('members.revokeLink'), () => updateLink(m, 'DELETE')),
     menuSeparator(),
     item(t('members.remove'), () => confirmRemove(m), { danger: true }),
   ]);
@@ -73,26 +80,22 @@ function showCreate() {
     if (!res.ok) throw shownError('err.notSaved');
     const made = await res.json();
     renderMembers();
-    return () => showPassword(t('members.createdTitle'), made.name, made.password);
+    return () => showLink(t('members.createdTitle'), made.name, made.link);
   });
 }
 
-function confirmReset(m) {
-  dialog(t('members.resetTitle', { name: m.display }), t('members.resetText', { name: m.display }), [
-    { label: t('common.cancel') },
-    { label: t('members.resetGo'), primary: true, run: async () => {
-      let done;
-      try {
-        const res = await api('POST', `/api/members/${m.id}/password`);
-        if (!res.ok) throw new Error(String(res.status));
-        done = await res.json();
-      } catch (e) {
-        if (!signedOut(e)) gotIt(t('members.notReset'), t('err.checkNetwork'));
-        return;
-      }
-      showPassword(t('members.resetDoneTitle'), done.name, done.password);
-    } },
-  ]);
+async function updateLink(m, method) {
+  try {
+    const res = await api(method, '/api/members/' + m.id + '/link');
+    if (!res.ok) throw new Error(String(res.status));
+    if (method === 'POST') {
+      const { name, link } = await res.json();
+      showLink(t('members.newLink'), name, link);
+    }
+    renderMembers();
+  } catch (e) {
+    if (!signedOut(e)) gotIt(t('err.notSaved'), t('err.checkNetwork'));
+  }
 }
 
 function confirmRemove(m) {
@@ -111,27 +114,21 @@ function confirmRemove(m) {
   ]);
 }
 
-// The message the admin sends the member, in the admin's language: where, who, the password.
-const passwordMessage = (name, password) => t('members.message', { link: `${location.origin}/`, name, password });
-
-// A new initial password, shown this once: the link, the account and the password, and the one
-// button that copies them as one message. If the browser does not let the page copy, the
-// dialog comes back saying so, to be written down instead.
-function showPassword(title, name, password, copyFailed = false) {
+function showLink(title, name, path, copyFailed = false) {
+  const link = new URL(path, location.origin).href;
   const line = (label, value) => h('div', { class: 'setting-row' }, h('div', { class: 'device-sub' }, label), h('div', { class: 'credential' }, value));
   const body = h('div', {},
     h('p', {}, t('members.onceText')),
     h('div', { class: 'credentials' },
-      line(t('members.link'), `${location.origin}/`),
-      line(t('members.account'), name),
-      line(t('members.password'), password)),
+      line(t('members.link'), link),
+      line(t('members.account'), name)),
     copyFailed ? h('div', { class: 'error', role: 'alert' }, t('members.copyFailed')) : null);
   dialog(title, body, [
     { label: t('common.close') },
     { label: t('members.copy'), primary: true, run: () => {
-      navigator.clipboard.writeText(passwordMessage(name, password))
+      navigator.clipboard.writeText(t('members.message', { link, name }))
         .then(() => gotIt(t('members.copiedTitle'), t('members.copiedText')))
-        .catch(() => showPassword(title, name, password, true));
+        .catch(() => showLink(title, name, path, true));
     } },
   ]);
 }

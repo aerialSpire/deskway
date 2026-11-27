@@ -117,8 +117,8 @@ The result is `target\release\deskway-host.exe`. Copy or rename it to `DeskwayHo
 it. When the program's file name contains "setup", it opens the installer.
 
 To try Deskway without installing the service, run `scripts\try-local.ps1`. It builds and starts
-a server and the host on one Windows computer, as described in the comments at the top of the
-script.
+a server and the host on one Windows computer. On the first run, open the link it prints and
+set up the admin account, then use that account to enroll the trial host.
 
 ## Troubleshooting
 
@@ -126,7 +126,7 @@ script.
 |---|---|
 | "You clicked “No” in the Windows prompt" | Run the installer again and click **Yes** when Windows asks |
 | **Can't reach the server** | The server address is right and opens in a browser on this computer |
-| Sign-in fails with a wrong password | Use the account's password, not the super password |
+| Sign-in fails with a wrong password | Use the password chosen when setting up or recovering the account |
 | Stays at **Waiting for approval on a signed-in device** | Approve the computer from an already approved browser, on **My devices** |
 | The account can't add more computers | Each account can have up to 10 computers. Remove unused ones on **My devices** |
 | The browser shows "This computer needs an update" | Update Deskway Host to the server's version |

@@ -6,9 +6,6 @@ import (
 	"strings"
 )
 
-// Members: the admin makes, resets and removes the other accounts (docs/accounts.md). A new or
-// reset password is generated here and answered once; only its hash is kept.
-
 // requireAdmin lets only the admin's signed-in browsers through.
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireLogin(func(w http.ResponseWriter, r *http.Request) {
@@ -23,11 +20,16 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 // handleMembers lists the members: names, when made, when last active, how many computers.
 func (s *Server) handleMembers(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, s.store.Members())
+	members, err := s.store.Members()
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	writeJSON(w, members)
 }
 
 // handleMemberCreate makes a member with a sign-in name and a display name (the sign-in name
-// when empty) and answers its initial password.
+// when empty) and answers its setup link.
 func (s *Server) handleMemberCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name    string `json:"name"`
@@ -44,27 +46,35 @@ func (s *Server) handleMemberCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid name", http.StatusBadRequest)
 		return
 	}
-	id, password, err := s.store.CreateMember(name, display)
+	id, link, err := s.store.createMember(name, display, userOf(r))
 	if err != nil {
 		storeError(w, err)
 		return
 	}
 	log.Printf("server: the admin made member %s (%q)", id, name)
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, map[string]string{"id": id, "name": name, "password": password})
+	writeJSON(w, map[string]string{"id": id, "name": name, "link": link})
 }
 
-// handleMemberReset gives a member a new initial password and answers it.
-func (s *Server) handleMemberReset(w http.ResponseWriter, r *http.Request) {
+// handleMemberLink issues a fresh setup or reset link for a member.
+func (s *Server) handleMemberLink(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	password, err := s.store.ResetPassword(id)
+	name, link, err := s.store.issueMemberLink(id, userOf(r))
 	if err != nil {
 		storeError(w, err)
 		return
 	}
-	log.Printf("server: the admin reset the password of member %s", id)
+	log.Printf("server: the admin issued an account link for member %s", id)
 	w.Header().Set("Cache-Control", "no-store")
-	writeJSON(w, map[string]string{"name": s.store.Name(id), "password": password})
+	writeJSON(w, map[string]string{"name": name, "link": link})
+}
+
+func (s *Server) handleMemberRevoke(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.revokeMemberLink(r.PathValue("id")); err != nil {
+		storeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleMemberRemove removes a member with its browsers and computers: its pages are signed

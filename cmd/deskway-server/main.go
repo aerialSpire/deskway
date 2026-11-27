@@ -8,9 +8,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -27,9 +29,8 @@ import (
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "admin":
-			adminCommand(os.Args[2:])
-			return
+		case "admin-link":
+			os.Exit(adminLinkCommand(os.Args[2:], os.Stdout))
 		case "-supports-upgrade":
 			// The installer probes with a flag so older servers exit without starting.
 			return
@@ -45,7 +46,7 @@ func main() {
 	}
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Usage: deskway-server [flags]")
-		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin NAME [-data FILE]")
+		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin-link [-if-needed] [-data FILE] -url ORIGIN")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server remote-mcp-check [-data FILE] [-clients DIR]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+upgradeUsage)
@@ -70,19 +71,22 @@ func main() {
 		relayMbps = flag.Int("relay-account-mbps", 30, "each account's share of the TURN relay, both directions together, in Mbit/s")
 	)
 	flag.Parse()
+	if flag.NArg() != 0 {
+		flag.Usage()
+		os.Exit(2)
+	}
 
 	// The server holds the state file for as long as it runs.
 	store, err := server.OpenStore(*dataPath)
 	if errors.Is(err, server.ErrLocked) {
-		log.Fatalf("%s is in use: another deskway-server, or its admin command, is running", *dataPath)
+		log.Fatalf("%s is in use: another deskway-server is running", *dataPath)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
-	if store.UserCount() == 0 {
-		// The admin's initial password is printed only by the admin command: a service's output ends up in logs.
-		log.Printf("no accounts yet; stop the server and make the admin with: deskway-server admin NAME -data %s", *dataPath)
+	if !store.HasAdmin() {
+		log.Printf("no admin yet, run admin-link as the service user, e.g. sudo -u deskway deskway-server admin-link -data %q -url https://YOUR_DOMAIN", *dataPath)
 	}
 
 	var tlsConfig *tls.Config
@@ -272,30 +276,36 @@ func remoteMCPCheckCommand(args []string) int {
 	return 0
 }
 
-// adminCommand makes the server's first account, the admin (docs/accounts.md):
-//
-//	admin NAME -data FILE
-//
-// It refuses once any account exists; the admin makes the others on the website. It prints the
-// initial password once. The admin signs in with it and then chooses their own password and
-// super password. It opens the store, which a running server holds, so it refuses to run until
-// the server stops.
-func adminCommand(args []string) {
-	fs := flag.NewFlagSet("admin", flag.ExitOnError)
-	dataPath := fs.String("data", "deskway-data/state.json", "state file")
-	if len(args) < 1 || strings.HasPrefix(args[0], "-") {
-		log.Fatal("usage: deskway-server admin NAME -data FILE")
+// adminLinkCommand takes only the account links lock, so it can run while the server
+// holds the state lock. Use the public origin, including any non-default port.
+func adminLinkCommand(args []string, out io.Writer) int {
+	flags := flag.NewFlagSet("admin-link", flag.ExitOnError)
+	dataPath := flags.String("data", "deskway-data/state.json", "state file")
+	origin := flags.String("url", "", "public HTTPS origin (HTTP is allowed on loopback)")
+	ifNeeded := flags.Bool("if-needed", false, "issue a link only when the admin needs a password")
+	flags.Parse(args)
+	u, err := url.Parse(*origin)
+	if flags.NArg() != 0 || err != nil || u.Hostname() == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.ForceQuery || u.RawQuery != "" || strings.Contains(*origin, "#") {
+		flags.Usage()
+		return 2
 	}
-	name := args[0]
-	if err := fs.Parse(args[1:]); err != nil {
-		log.Fatal(err)
+	ip := net.ParseIP(u.Hostname())
+	if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || ip.IsLoopback())) {
+		flags.Usage()
+		return 2
 	}
-	password, err := server.CreateAdmin(*dataPath, name)
-	if errors.Is(err, server.ErrLocked) {
-		log.Fatal("the server is running; stop it first")
+	issue := server.IssueAdminLink
+	if *ifNeeded {
+		issue = server.IssueAdminLinkIfNeeded
 	}
+	link, err := issue(*dataPath)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 1
 	}
-	fmt.Printf("Admin: %s  Initial password: %s\nSign in with it once; the website then asks for a password and a super password of your own.\n", name, password)
+	if link != "" {
+		fmt.Fprintln(out, u.Scheme+"://"+u.Host+link)
+	}
+	return 0
 }

@@ -18,10 +18,7 @@ import (
 // The fixture every server test runs on: a server on a fresh state file, the admin "me" (with
 // a password of its own, the test password), and browsers as HTTP clients with their own cookies.
 
-const (
-	testPassword = "correct horse"
-	testSuper    = "super secret 1"
-)
+const testPassword = "correct horse"
 
 type fixture struct {
 	t    *testing.T
@@ -34,24 +31,22 @@ type fixture struct {
 // id is the id of the test account that signs in as name.
 func (f *fixture) id(name string) string { return f.ids[name] }
 
-// addAccount creates a member signing in as name that has chosen the test password.
-func (f *fixture) addAccount(name string) string {
+// seedAccount gives tests a user with a password and no browser records.
+func (f *fixture) seedAccount(name string, admin bool) string {
 	f.t.Helper()
-	id, _, err := f.s.store.CreateMember(name, name)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	f.ids[name] = id
-	f.choose(id)
-	return id
-}
-
-// choose gives the account the test password, as if it had chosen it.
-func (f *fixture) choose(id string) {
-	f.t.Helper()
+	id := randomHex(16)
+	f.s.store.mu.Lock()
+	f.s.store.Users[id] = &User{Name: name, Display: name, Admin: admin, Created: time.Now().Unix()}
+	f.s.store.mu.Unlock()
 	if err := f.s.store.SetPassword(id, testPassword); err != nil {
 		f.t.Fatal(err)
 	}
+	f.ids[name] = id
+	return id
+}
+
+func (f *fixture) addAccount(name string) string {
+	return f.seedAccount(name, false)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -65,6 +60,13 @@ func newFixtureWithServer(t *testing.T, configure func(*Server)) *fixture {
 }
 
 func newHTTPFixture(t *testing.T, configure func(*Server), listen func(http.Handler) *httptest.Server) *fixture {
+	t.Helper()
+	f := emptyFixture(t, configure, listen)
+	f.seedAccount("me", true)
+	return f
+}
+
+func emptyFixture(t *testing.T, configure func(*Server), listen func(http.Handler) *httptest.Server) *fixture {
 	t.Helper()
 	data := filepath.Join(t.TempDir(), "state.json")
 	store, err := OpenStore(data)
@@ -83,13 +85,7 @@ func newHTTPFixture(t *testing.T, configure func(*Server), listen func(http.Hand
 		srv.Close()
 		s.Shutdown()
 	})
-	f := &fixture{t: t, srv: srv, s: s, data: data, ids: map[string]string{}}
-	if _, err := store.CreateAdmin("me"); err != nil {
-		t.Fatal(err)
-	}
-	f.ids["me"] = store.ID("me")
-	f.choose(f.id("me"))
-	return f
+	return &fixture{t: t, srv: srv, s: s, data: data, ids: map[string]string{}}
 }
 
 // browser is an HTTP client with its own cookies, like a separate browser.
@@ -98,21 +94,33 @@ func (f *fixture) browser() *http.Client {
 	return &http.Client{Jar: jar, Transport: f.srv.Client().Transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-// signedIn is a browser of `user` (created if needed), let in with that account's super
-// password.
+// signedIn seeds a signed-in browser. Tests can attach their own key afterwards.
 func (f *fixture) signedIn(user string) *http.Client {
 	f.t.Helper()
 	if f.id(user) == "" {
 		f.addAccount(user)
 	}
-	if err := f.s.store.SetSuper(f.id(user), testSuper); err != nil {
+	token := randomHex(32)
+	browser := hashToken(token)
+	s := f.s.store
+	s.mu.Lock()
+	s.Browsers[browser] = &BrowserRecord{Owner: f.id(user), Approved: true, Created: time.Now().Unix()}
+	err := s.saveLocked()
+	s.mu.Unlock()
+	if err != nil {
 		f.t.Fatal(err)
 	}
+	req := httptest.NewRequest("GET", f.srv.URL, nil)
+	res := httptest.NewRecorder()
+	f.s.setBrowserCookie(res, req, token)
+	f.s.issueSession(res, req, browser)
 	c := f.browser()
-	if got := f.do(c, "POST", "/api/login", map[string]string{"user": user, "password": testPassword, "super_password": testSuper}).StatusCode; got != http.StatusNoContent {
-		f.t.Fatalf("login %s: %d", user, got)
-	}
+	c.Jar.SetCookies(req.URL, res.Result().Cookies())
 	return c
+}
+
+func setupCode(link string) string {
+	return mustURL(link).Fragment[len("c="):]
 }
 
 func (f *fixture) do(c *http.Client, method, path string, body any) *http.Response {
@@ -125,6 +133,9 @@ func (f *fixture) do(c *http.Client, method, path string, body any) *http.Respon
 	req, err := http.NewRequest(method, f.srv.URL+path, r)
 	if err != nil {
 		f.t.Fatal(err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	res, err := c.Do(req)
 	if err != nil {
@@ -139,14 +150,10 @@ func (f *fixture) status(c *http.Client, method, path string, body any) int {
 	return f.do(c, method, path, body).StatusCode
 }
 
-// login signs in as "me" with the test password and any extra fields.
-func (f *fixture) login(c *http.Client, extra map[string]string) *http.Response {
+// login signs in as "me" with the test password.
+func (f *fixture) login(c *http.Client) *http.Response {
 	f.t.Helper()
-	body := map[string]string{"user": "me", "password": testPassword}
-	for k, v := range extra {
-		body[k] = v
-	}
-	return f.do(c, "POST", "/api/login", body)
+	return f.do(c, "POST", "/api/login", map[string]string{"user": "me", "password": testPassword})
 }
 
 // pending is what waits for the approval of "me".

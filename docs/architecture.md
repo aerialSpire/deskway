@@ -657,9 +657,10 @@ The source of truth is the viewer's constraints.
   | File | Responsibility |
   |---|---|
   | `server.go` | connections, routes, request helpers |
-  | `auth.go` | cookies, sessions, the failure limiter, sign-in, the initial-password gate |
-  | `account.go` | names and passwords, and choosing them the first time |
-  | `members.go` | the admin's members: list, create, reset, remove |
+  | `auth.go` | cookies, sessions, sign-in and the failure limiter |
+  | `account.go` | account names and password changes |
+  | `members.go` | members and their links: list, create, issue, revoke, remove |
+  | `setup.go`, `links.go` | one-time account link issuance, expiry and redemption |
   | `browsers.go` | approvals, browser keys, the device log, the device-check policy |
   | `aiclients.go` | AI clients' sign-in without the password and the 10-minute window in which an account accepts new ones |
   | `clientprograms.go` | AI client program lookup, cache and HTTP responses |
@@ -698,15 +699,16 @@ The source of truth is the viewer's constraints.
   of its stderr tail and waits five seconds before allowing the same profile to start again.
   A gateway that reports loss of its sign-in retires the grant.
 - The state file belongs to a single process. The store holds an OS lock on `state.json.lock`
-  while it is open and rewrites the whole file from memory. `deskway-server admin NAME`, which
-  creates the server's first account (docs/accounts.md), also opens the store, so it refuses to
-  run while the server is running. Every other account is created by the admin on the website.
-  Super password hashes are kept in `state.json.super`, which is read on every check.
+  while it is open and rewrites the whole file from memory. Account links live in
+  `state.json.links` with a separate OS lock held for each operation. `deskway-server admin-link`
+  writes the fixed admin link record under the links lock. The server resolves that record to
+  first setup or admin recovery under the store lock. Link redemption commits the account
+  password, browser key, device log and browser approval in one state save.
 - Accounts (docs/accounts.md) are the admin and the members it creates. Each uses only its own
   computers, and nothing is shared between them. An account is stored under a random id; what it
   signs in with is its `name`, which is unique and can be changed (`POST /api/me/name`, after
   entering the password). Everything else refers to the id: the owners of computers and browsers,
-  the super password, sessions, and the `user` that a host is given and reports.
+  account links, sessions, and the `user` that a host is given and reports.
 - The host's signaling thread waits for socket readability, a notification from its local
   queues, or the next ping, silence or browser-transfer deadline. It drains buffered WebSocket
   and TLS data before waiting. It sends a ping every 15 seconds and reconnects after 45 seconds
@@ -817,7 +819,7 @@ js/browser-sign-in.js  device key registration for a waiting or signed-in browse
 js/pwa.js            the offline shell's worker and the browser's install prompt
 js/windows.js        each computer in a window of its own, when the device chose so (?computer=
                      <id>; the windows find each other over a BroadcastChannel)
-js/views/            login (with choosing an initial password's replacement), list, detail,
+js/views/            login, setup (one-time account links), list, detail,
                      devices, menu, account (with installing), members (**Members**), relays
                      (**Relays**), computer, approvals, pairing, takeover (opening a browser
                      session and mapping end reasons to messages); common.js holds shared pieces

@@ -96,27 +96,20 @@ func (s *Server) issueSession(w http.ResponseWriter, r *http.Request, browser st
 	})
 }
 
-// requireLogin lets only signed-in browsers through; userOf and browserOf name them. An account
-// whose password is an initial one gets nothing but mustChoose until it has chosen its own.
+// requireLogin lets only signed-in browsers through; userOf and browserOf name them.
 // An AI client's login is refused: it approves, removes and changes nothing.
 func (s *Server) requireLogin(next http.HandlerFunc) http.HandlerFunc {
-	return s.signedIn(next, false, false)
+	return s.signedIn(next, false)
 }
 
 // requireClient is requireLogin for what an AI client's login may use too: who it is, the
 // account's devices, and the signaling socket (docs/architecture.md, "Rules the server
 // enforces").
 func (s *Server) requireClient(next http.HandlerFunc) http.HandlerFunc {
-	return s.signedIn(next, false, true)
+	return s.signedIn(next, true)
 }
 
-// requireInitial is requireLogin for the one request an account with an initial password
-// makes: choosing its own (handleInitial).
-func (s *Server) requireInitial(next http.HandlerFunc) http.HandlerFunc {
-	return s.signedIn(next, true, false)
-}
-
-func (s *Server) signedIn(next http.HandlerFunc, choosing, ai bool) http.HandlerFunc {
+func (s *Server) signedIn(next http.HandlerFunc, ai bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, browser := s.sessionOf(r)
 		if user == "" {
@@ -127,28 +120,9 @@ func (s *Server) signedIn(next http.HandlerFunc, choosing, ai bool) http.Handler
 			http.Error(w, "not for an AI client", http.StatusForbidden)
 			return
 		}
-		must := s.store.MustChange(user)
-		if must && !choosing {
-			s.mustChoose(w, user)
-			return
-		}
-		if !must && choosing {
-			http.Error(w, "the password is the account's own already", http.StatusConflict)
-			return
-		}
 		ctx := context.WithValue(context.WithValue(r.Context(), userKey{}, user), browserKey{}, browser)
 		next(w, r.WithContext(ctx))
 	}
-}
-
-// mustChoose answers a request of an account whose password is an initial one: 428, and
-// whether it must choose its super password too (it has none yet). The page shows the view
-// that chooses them (docs/accounts.md, First sign-in).
-func (s *Server) mustChoose(w http.ResponseWriter, user string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusPreconditionRequired)
-	_ = json.NewEncoder(w).Encode(map[string]bool{"super": !s.store.HasSuper(user)})
 }
 
 func (s *Server) setBrowserCookie(w http.ResponseWriter, r *http.Request, token string) {
@@ -321,16 +295,12 @@ func browserLabel(ua string) string {
 	return browser + " · " + osName
 }
 
-// handleLogin signs a browser in with the account password. An approved browser gets its
-// session at once; so does the account's first browser, signing in with its initial password
-// (docs/accounts.md, First sign-in); with the super password a new one is approved on the spot;
-// any other waits for approval (browsers.go) and gets the code to compare. An AI client's
-// deskway signs in without the password (aiclients.go).
+// handleLogin signs an approved browser in with the account password. A new browser waits for
+// approval and gets the code to compare. An AI client signs in through aiclients.go.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		User     string `json:"user"`
 		Password string `json:"password"`
-		Super    string `json:"super_password"`
 	}
 	if !decodeBody(w, r, 4096, &body) {
 		return
@@ -358,38 +328,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		token = randomHex(32)
 		id = hashToken(token)
 	}
-	// Let in on the spot: the browser joins the account, gets its cookie and its session.
-	letIn := func(how string) {
-		log.Printf("server: browser approved %s for %s from %s", how, user, clientIP(r))
-		s.sendDeviceLog(user)
-		if token != "" {
-			s.setBrowserCookie(w, r, token)
-		}
-		s.issueSession(w, r, id)
-		s.sendApprovals(user)
-		w.WriteHeader(http.StatusNoContent)
-	}
-	first, err := s.store.ApproveFirst(id, user, browserLabel(r.UserAgent()), clientIP(r), now)
-	if err != nil {
-		storeError(w, err)
-		return
-	}
-	if first {
-		letIn("as the account's first, with its initial password")
-		return
-	}
-	if body.Super != "" {
-		if !s.attempt(w, r, http.StatusForbidden, "wrong super password", func() bool { return s.store.CheckSuper(user, body.Super) }) {
-			return
-		}
-		if err := s.store.ApproveWithSuper(id, user, browserLabel(r.UserAgent()), clientIP(r), now); err != nil {
-			storeError(w, err)
-			return
-		}
-		letIn("with the super password")
-		return
-	}
-
 	s.askApproval(w, r, id, token, user, "", now)
 }
 

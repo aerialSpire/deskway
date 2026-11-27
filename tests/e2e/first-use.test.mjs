@@ -4,14 +4,13 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { SCREENS, TAKE_OVER, lit, q, signIn, sleep, t } from './harness.mjs';
+import { SCREENS, TAKE_OVER, lit, q, issueAdminLink, openSetup, submitSetup, sleep, t } from './harness.mjs';
 
 const runCommand = promisify(execFile);
 const title = `document.querySelector('.dialog h2')?.textContent`;
 const connected = `s?.info().state === 'active' && s.info().connection === 'connected' && s.info().input === 'open'`;
 const user = 'first-use';
 const password = 'first-use own password';
-const superPassword = 'first-use super password';
 const digitsOnly = (code) => code.replace(/\D/g, '');
 
 async function waitFor(read, label) {
@@ -123,22 +122,29 @@ export const area = {
     };
 
     try {
-      const initial = (await command(serverExe, ['admin', user, '-data', stateFile])).match(/Initial password: (\S+)/)?.[1];
-      if (!initial) throw new Error('admin did not print an initial password');
       const server = start(serverExe, ['-listen', `127.0.0.1:${address.port}`, '-data', stateFile]);
       await waitFor(async () => server.log.includes('listening on') && (await fetch(url, { signal: AbortSignal.timeout(1000) }).catch(() => null))?.ok, 'the fresh server');
 
       let p = await h.newPage();
       let offers = await observeOffers(p);
-      await p.until(`!!document.querySelector('form.login')`, 'the fresh browser’s login form');
-      await signIn(p, { user, password: initial });
-      await p.until(`!!document.querySelector('form.choose')`, 'choosing the account passwords');
+      await openSetup(p, await issueAdminLink(serverExe, stateFile, url));
+      h.check('the setup link opens in a browser with no device key', await p.eval(`!localStorage.getItem('deskway.passkey')`));
       await p.eval(`(() => {
-        const inputs = document.querySelectorAll('form.choose input');
-        ${JSON.stringify([password, password, superPassword, superPassword])}.forEach((value, i) => { inputs[i].value = value; });
-        document.querySelector('form.choose button[type="submit"]').click();
+        const fetch = window.fetch;
+        window.fetch = (path, options) => {
+          if (path === '/api/setup' && options?.method === 'POST') {
+            window.__setupCred = JSON.parse(localStorage.getItem('deskway.passkey'))?.cred;
+            window.fetch = fetch;
+          }
+          return fetch(path, options);
+        };
       })()`);
-      await p.until(`!!document.querySelector('.page .name-btn')`, 'the signed-in browser');
+      await submitSetup(p, { user, password });
+      await p.until(`!!document.querySelector('.page .name-btn')`, 'signed in through the account link');
+      h.check('the key prepared before redemption is registered on the account', await p.eval(`(async () => {
+        const devices = await (await fetch('/api/devices')).json();
+        return !!window.__setupCred && devices.find((d) => d.current)?.device?.cred === window.__setupCred;
+      })()`));
 
       for (let i = 1; i <= 3; i++) {
         if (i === 3) {

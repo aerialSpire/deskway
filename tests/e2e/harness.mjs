@@ -2,12 +2,13 @@
 // DevTools Protocol, pages of the client, the test host's tools, and the checks' results.
 // Tests read and drive the client through `window.__deskway` (web/static/js/test-api.js) and
 // its elements. Reports video metrics only; it never saves screen frames.
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { connect as pipeConnect } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -74,11 +75,11 @@ export function options(argv = process.argv) {
     url: need('url').replace(/\/$/, ''),
     user: arg('user'),
     password: arg('password-file') ? readFileSync(arg('password-file'), 'utf8').trim() : undefined,
-    superPassword: arg('super-file') ? readFileSync(arg('super-file'), 'utf8').trim() : undefined,
+    setupLink: arg('setup-link-file') ? readFileSync(arg('setup-link-file'), 'utf8').trim() : undefined,
     hostExe: arg('host-exe'),
     hostHome: arg('home'),
     outDir: arg('out'),
-    // Optional: the server's executable and data file, for restarting it during a session.
+    // Optional: the server's executable and data file, for issuing admin links and restarting during a session.
     serverExe: arg('server-exe'),
     serverState: arg('server-state'),
     relayTLS: argv.includes('--relay-tls'),
@@ -289,11 +290,39 @@ export async function nameThisDevice(p, name) {
   })()`);
 }
 
-// The waiting screen of `p`: "No other signed-in device?" opens the super password's form (once),
-// then `superPassword` is typed and sent.
-export async function superIn(p, superPassword) {
-  if (await p.eval(`document.querySelector('.setup').hidden`)) await p.clickText('button', t('wait.noOther'));
-  await p.eval(`(() => { document.querySelector('.setup input').value = ${lit(superPassword)}; document.querySelector('.setup button').click(); })()`);
+const runCommand = promisify(execFile);
+
+export async function issueAdminLink(exe, state, origin) {
+  if (!exe || !state) throw new Error('issuing an admin link requires --server-exe and --server-state');
+  const { stdout } = await runCommand(exe, ['admin-link', '-data', state, '-url', origin], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  const url = new URL(stdout.trim());
+  if (url.origin !== new URL(origin).origin || url.pathname !== '/setup' || !url.hash.startsWith('#c=')) {
+    throw new Error('admin-link did not print an account link for this server');
+  }
+  return url.href;
+}
+
+export async function openSetup(p, url) {
+  await p.send('Page.navigate', { url });
+  await p.until("!!document.querySelector('form.setup input[type=password]')", 'account setup form');
+}
+
+export async function submitSetup(p, { user, password, again = password }) {
+  await p.eval(`(() => {
+    const form = document.querySelector('form.setup');
+    const name = form.querySelector('input[autocomplete=username]');
+    if (!name.readOnly) name.value = ${lit(user ?? '')};
+    const [pass, again] = form.querySelectorAll('input[type=password]');
+    pass.value = ${lit(password)};
+    again.value = ${lit(again)};
+    form.requestSubmit();
+  })()`);
+}
+
+export async function redeemSetup(p, url, account) {
+  await openSetup(p, url);
+  await submitSetup(p, account);
+  await p.until("!!document.querySelector('.page .name-btn')", 'signed in through the account link');
 }
 
 // ---- test doubles in the page, for the session open on `p` ----

@@ -9,7 +9,7 @@ export function browserSignIn({ getSession, ensurePasskey, reportPasskey, keyCod
   return {
     async current() {
       const res = await getSession();
-      if (res.ok || res.status === 428) await prepare();
+      if (res.ok) await prepare();
       return res;
     },
     async waiting(name, fallback) {

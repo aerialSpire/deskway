@@ -1,17 +1,15 @@
 // The relay alone carries a session: the browser may only use relay candidates, and the host
 // (started with DESKWAY_TEST_RELAY) offers only relays. For TLS, silently drop the
 // host's traffic to the server's UDP and TCP TURN port. Opt-in, and run alone
-// (`--areas relay`): it needs a fresh member account, made by the admin (POST /api/members) and
-// never signed in, given as --user with its initial password, and a host enrolled with that
-// password and started for it. Its page has its own storage, as a new device: let in by the
-// initial password, it chooses its own passwords first.
-import { sleep, SCREENS, TAKE_OVER, lit, signIn, t } from './harness.mjs';
+// (`--areas relay`): set up a member with a password, enroll the host, and have the admin
+// issue a fresh reset link. Pass the link and password in files.
+import { sleep, SCREENS, TAKE_OVER, lit, redeemSetup, t } from './harness.mjs';
 
 export const area = {
   name: 'relay',
   needs: [],
   async run(h) {
-    const { url, user, password, relayTLS } = h.opts;
+    const { url, setupLink, password, relayTLS } = h.opts;
     const address = new URL(url);
     if (relayTLS && address.protocol !== 'https:') throw new Error('--relay-tls needs an HTTPS --url');
     const tlsURL = relayTLS ? `turns:${address.hostname}:${address.port || 443}?transport=tcp` : null;
@@ -33,12 +31,8 @@ export const area = {
       };
       window.RTCPeerConnection.prototype = P.prototype;
     }` });
-    await p.send('Page.navigate', { url });
-    await p.until(`!!document.querySelector('form.login')`, 'login form');
-    await signIn(p, { user, password });
-    await p.until(`!!document.querySelector('.page[data-page="choose"]')`, 'choosing its passwords');
-    const passwords = ['relay own password', 'relay own password', 'relay super password', 'relay super password'];
-    await p.eval(`(() => { const ins = document.querySelectorAll('.choose input'); ${lit(passwords)}.forEach((v, i) => { ins[i].value = v; }); document.querySelector('.choose button[type="submit"]').click(); })()`);
+    if (!setupLink) throw new Error('relay requires --setup-link-file for its member account');
+    await redeemSetup(p, setupLink, { password });
     await p.until(`document.querySelector('.dialog h2')?.textContent.includes(${lit(t('approve.computerTitle'))})`, 'computer approval');
     await p.clickText('.dialog button', t('common.approve'));
     await p.until(`!!document.querySelector('.card')`, 'card');
