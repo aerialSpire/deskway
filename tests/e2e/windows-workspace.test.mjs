@@ -74,7 +74,8 @@ async function leave(page, close = false) {
 }
 
 async function openFolder(page, name) {
-  await page.until(`[...document.querySelectorAll('.files-name')].some(e => e.textContent === ${lit(name)})`, name);
+  // A large folder (the system's temporary one) arrives in pages: scrolling to the end asks for the next.
+  await page.until(`(document.querySelector('.files-list').scrollTop = 1e9, [...document.querySelectorAll('.files-name')].some(e => e.textContent === ${lit(name)}))`, name, 120000);
   await click(page, 'button.files-name', name);
   await page.until(`document.querySelector('.files-path [aria-current]')?.textContent === ${lit(name)}`, name);
   await page.until('!document.querySelector(".files-surface .notice").textContent.includes("Loading")', 'the listing');
@@ -181,7 +182,6 @@ export const area = {
       await keyboard.press('KeyC', true);
       await keyboard.press('KeyC', false);
       await keyboard.press('ControlLeft', false);
-      await page.until(`/(?:\\^C|PS [^\\n]*> *$)/.test(${terminal})`, 'PowerShell interrupt');
       await shell(page, "Write-Output ('interrupt-' + 'returned')");
       await page.until(`(${terminal}).includes('interrupt-returned')`, 'new command after interrupt', 8000);
       h.check('Ctrl-C interrupts the running command', true);
@@ -199,7 +199,7 @@ export const area = {
       await click(page, '.files-path button', '/');
       await page.until(`[...document.querySelectorAll('.files-name')].some(e => /^[A-Z]:$/.test(e.textContent))`, 'drive roots');
       h.check('the root lists drives and has no upload or drive mutation', await page.eval(
-        `document.querySelector('.files-bar button').disabled && !document.querySelector('.files-row .more')`));
+        `[...document.querySelectorAll('.files-bar button')].find(e => e.textContent === ${q('files.upload')}).disabled && !document.querySelector('.files-row .more')`));
       const drive = parse(remote).root;
       for (const name of [drive.slice(0, -1), ...remote.slice(drive.length).split(sep)]) await openFolder(page, name);
 

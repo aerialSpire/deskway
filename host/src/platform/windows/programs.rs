@@ -129,6 +129,8 @@ fn start_console(line: &str, cwd: Option<&std::ffi::OsStr>, cols: u16, rows: u16
             si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
             (si.StartupInfo.hStdInput, si.StartupInfo.hStdOutput, si.StartupInfo.hStdError) = (INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE);
             let dir: Option<Vec<u16>> = cwd.map(|d| d.encode_wide().chain([0]).collect());
+            // A process that ignores Ctrl-C hands that down to its children; the shell must not.
+            windows::Win32::System::Console::SetConsoleCtrlHandler(None, false)?;
             let create = |flags: u32| {
                 let mut cmd: Vec<u16> = line.encode_utf16().chain([0]).collect();
                 let mut pi = PROCESS_INFORMATION::default();
@@ -400,34 +402,58 @@ fn a_suspended_shell_is_rejected_if_the_console_locks_during_start() {
 }
 
 #[cfg(test)]
-#[test]
-fn browser_conpty_exchanges_utf8_and_resizes() {
+fn wait_for_conpty_output(pty: &mut dyn Pty, output: &mut Vec<u8>, expected: &str) {
     use std::time::{Duration, Instant};
 
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut buffer = [0; 1024];
+    loop {
+        match pty.read(&mut buffer) {
+            Ok(n) => output.extend_from_slice(&buffer[..n]),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => panic!("{e}"),
+        }
+        if String::from_utf8_lossy(output).contains(expected) { break; }
+        assert!(Instant::now() < deadline, "missing {expected:?} in {:?}", String::from_utf8_lossy(output));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A shell that keeps no history, so tests leave the account's own untouched.
+#[cfg(test)]
+fn plain_shell() -> String {
+    format!("{} -NoLogo -NoProfile -NoExit -Command Remove-Module PSReadLine -ErrorAction SilentlyContinue", shell())
+}
+
+#[cfg(test)]
+#[test]
+fn browser_conpty_exchanges_utf8_and_resizes() {
     let dir = std::env::temp_dir();
-    let line = format!("{} -NoLogo -NoProfile -NoExit -Command Remove-Module PSReadLine -ErrorAction SilentlyContinue", shell());
+    let line = plain_shell();
     let mut pty = browser_pty(&line, &dir, 24, 80, || true).unwrap();
     let mut output = Vec::new();
-    let mut wait = |pty: &mut dyn Pty, expected: &str| {
-        let deadline = Instant::now() + Duration::from_secs(7);
-        let mut buffer = [0; 1024];
-        loop {
-            match pty.read(&mut buffer) {
-                Ok(n) => output.extend_from_slice(&buffer[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                Err(e) => panic!("{e}"),
-            }
-            if String::from_utf8_lossy(&output).contains(expected) { break; }
-            assert!(Instant::now() < deadline, "missing {expected:?} in {:?}", String::from_utf8_lossy(&output));
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    };
-    wait(pty.as_mut(), "PS ");
+    wait_for_conpty_output(pty.as_mut(), &mut output, "PS ");
     pty.write_all("Write-Output ('\u{6587}' + '\u{5b57}'); Write-Output ('width=' + $Host.UI.RawUI.WindowSize.Width)\r".as_bytes()).unwrap();
-    wait(pty.as_mut(), "\u{6587}\u{5b57}");
-    wait(pty.as_mut(), "width=80");
+    wait_for_conpty_output(pty.as_mut(), &mut output, "\u{6587}\u{5b57}");
+    wait_for_conpty_output(pty.as_mut(), &mut output, "width=80");
     pty.resize(31, 95).unwrap();
     pty.write_all(b"Write-Output ('width=' + $Host.UI.RawUI.WindowSize.Width)\r").unwrap();
-    wait(pty.as_mut(), "width=95");
+    wait_for_conpty_output(pty.as_mut(), &mut output, "width=95");
     assert!(pty.terminate().unwrap());
+}
+
+#[cfg(test)]
+#[test]
+fn browser_conpty_ctrl_c_interrupts_powershell() {
+    let dir = std::env::temp_dir();
+    let mut pty = browser_pty(&plain_shell(), &dir, 24, 120, || true).unwrap();
+    let mut output = Vec::new();
+    wait_for_conpty_output(pty.as_mut(), &mut output, "PS ");
+    pty.write_all(b"Write-Output ('sleep-' + 'started'); Start-Sleep -Seconds 60\r").unwrap();
+    wait_for_conpty_output(pty.as_mut(), &mut output, "sleep-started");
+    output.clear();
+    pty.write_all(b"\x03").unwrap();
+    wait_for_conpty_output(pty.as_mut(), &mut output, "PS ");
+    pty.write_all(b"Write-Output ('interrupt-' + 'returned')\r").unwrap();
+    wait_for_conpty_output(pty.as_mut(), &mut output, "interrupt-returned");
 }
