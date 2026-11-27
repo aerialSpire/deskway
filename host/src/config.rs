@@ -132,7 +132,7 @@ impl Config {
     pub fn load_from(dir: &Path) -> Result<Config> {
         let mut config = Config::load_from_file(&dir.join(FILE))?;
         if Address::parse(&config.server)?.is_pinned() {
-            match std::fs::read_to_string(config.sign_in_root_path(dir)) {
+            match std::fs::read_to_string(root_path(dir)) {
                 Ok(root) => config.server_root = Some(root),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e).context("read the local server root"),
@@ -186,13 +186,48 @@ impl Config {
     pub fn set_local_service(dir: &Path, local: &crate::local_server::Setting) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
         let mut value = host_document(dir)?;
-        if local.enabled {
-            value["prevent_sleep"] = serde_json::Value::Bool(true);
-        } else if let Some(previous) = local.previous {
-            value["prevent_sleep"] = serde_json::Value::Bool(previous.prevent_sleep);
-        }
-        value["local_service"] = serde_json::to_value(local)?;
+        set_local_service_value(&mut value, local)?;
         write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn local_snapshot(dir: &Path) -> Result<(Option<crate::local_server::Setting>, Option<Self>, bool)> {
+        let value = host_document(dir)?;
+        let local = serde_json::from_value(value["local_service"].clone())?;
+        let awake = value["prevent_sleep"].as_bool().unwrap_or_default();
+        let config = value.get("server").is_some().then(|| serde_json::from_value(value)).transpose()?;
+        Ok((local, config, awake))
+    }
+
+    #[cfg(desktop_host)]
+    pub fn retire_local_data(dir: &Path, rename: impl FnOnce() -> std::io::Result<()>) -> Result<bool> {
+        use crate::local_server::{is_own_with_setting, localized};
+
+        let _write = CONFIG_WRITE.lock().unwrap();
+        let path = dir.join(FILE);
+        let save = |value: &serde_json::Value| write_private(&path, &serde_json::to_vec_pretty(value)?);
+        let (before, after, own) = localized((|| {
+            let before = host_document(dir)?;
+            let mut local: crate::local_server::Setting =
+                serde_json::from_value::<Option<_>>(before["local_service"].clone())?.unwrap_or_default();
+            let own = before["server"].as_str().is_none_or(|address|
+                is_own_with_setting(dir, address, Some(&local)));
+            local.enabled = false;
+            let mut after = if own {
+                serde_json::json!({ "prevent_sleep": before["prevent_sleep"].as_bool().unwrap_or_default() })
+            } else {
+                before.clone()
+            };
+            set_local_service_value(&mut after, &local)?;
+            Ok((before, after, own))
+        })(), "local.delete_save_failed")?;
+        // The off switch and sign-out take effect together, before the data can disappear.
+        localized(save(&after), "local.delete_save_failed")?;
+        if let Err(error) = rename() {
+            localized(save(&before), "local.delete_restore_failed")?;
+            return localized(Err(error.into()), "local.delete_move_failed");
+        }
+        Ok(own)
     }
 
     #[cfg(desktop_host)]
@@ -200,32 +235,12 @@ impl Config {
         Ok(host_document(dir)?["prevent_sleep"].as_bool().unwrap_or_default())
     }
 
-    fn sign_in_root_path(&self, dir: &Path) -> PathBuf {
-        #[cfg(windows)]
-        if dir == crate::service::machine_dir() && crate::local_server::is_own(dir, &self.server) {
-            return crate::local_server::data_dir(dir).join(ROOT_FILE);
-        }
-        root_path(dir)
-    }
-
     fn write_sign_in(&self, dir: &Path) -> Result<()> {
         let address = Address::parse(&self.server)?;
         if address.is_pinned() {
             let root = self.server_root.as_deref().context("the pinned local server root is missing")?;
             address.connection(Some(root))?;
-            let path = self.sign_in_root_path(dir);
-            #[cfg(windows)]
-            if dir == crate::service::machine_dir() && path == root_path(dir) {
-                let pending = path.with_extension("pending");
-                write_private(&pending, root.as_bytes())?;
-                self.write_to(dir)?;
-                if let Err(e) = std::fs::rename(&pending, &path) {
-                    Self::keep_sign_in(dir).with_context(|| format!("publish the local server root: {e}"))?;
-                    return Err(e).context("publish the local server root");
-                }
-                return Ok(());
-            }
-            write_private(&path, root.as_bytes())?;
+            write_private(&root_path(dir), root.as_bytes())?;
         }
         self.write_to(dir)
     }
@@ -358,6 +373,17 @@ impl Config {
 }
 
 #[cfg(desktop_host)]
+fn set_local_service_value(value: &mut serde_json::Value, local: &crate::local_server::Setting) -> Result<()> {
+    if local.enabled {
+        value["prevent_sleep"] = serde_json::Value::Bool(true);
+    } else if let Some(previous) = local.previous {
+        value["prevent_sleep"] = serde_json::Value::Bool(previous.prevent_sleep);
+    }
+    value["local_service"] = serde_json::to_value(local)?;
+    Ok(())
+}
+
+#[cfg(desktop_host)]
 fn host_document(dir: &Path) -> Result<serde_json::Value> {
     match std::fs::File::open(dir.join(FILE)) {
         Ok(file) => {
@@ -388,10 +414,6 @@ const KEPT: &str = "signed-out.json";
 const ACCOUNT: &[&str] = &[FILE, KEPT, "host-key", "controllers.json", "blocked.json", "adopted", "pairing.json", "ai.json", "audit.jsonl", "audit.old.jsonl"];
 
 pub fn root_path(dir: &Path) -> PathBuf {
-    #[cfg(windows)]
-    if dir == crate::service::machine_dir() {
-        return dir.join(crate::service::install::TRUST_DIR).join(ROOT_FILE);
-    }
     dir.join(ROOT_FILE)
 }
 

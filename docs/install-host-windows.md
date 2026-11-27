@@ -47,14 +47,14 @@ The Deskway Host panel opens when installation finishes. To open it later, choos
 For a [local server](self-hosting.md#local-mode), choose it under **Found on this network**
 to fill **Server address**. A single result is selected automatically. You can also paste the
 whole `https://name.local:port#ca=<64 hex digits>` address using the fingerprint from the
-hub's startup log. The agent adds the verified root to Windows'
-machine-wide trusted roots for browsers if it is absent. Signing out or uninstalling
-removes a root the Host added.
+hub's startup log. The Host uses the verified root for its own connections. To open that hub
+in a browser on this computer, follow the hub's [certificate guide](self-hosting.md#local-mode).
 
 To serve your own network, choose **Run local service** and then **Complete setup**.
 Windows asks for administrator approval to start the local service. Only the Windows account
-that approved the start and members of Administrators can open the **Complete setup** or
-**View** links. Windows also asks for permission to trust this hub's certificate. The Host joins automatically
+whose panel requested the start and members of Administrators can open the **Complete setup** or
+**View** links. Windows asks for permission to add this hub's root to machine-wide browser
+trust. Signing out or uninstalling removes a root the Host added. The Host joins automatically
 after you set the admin password in your browser. The installer allows inbound connections
 to the bundled server on Private networks.
 

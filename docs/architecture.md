@@ -234,7 +234,7 @@ The trait offers the capabilities a session needs, at the level at which a sessi
 - `desktop`: locking, and the input desktop (on Windows the input desktop itself; on macOS the
   session's lock state).
 - `language`: the language of notes shown at the computer.
-- `sync_server_root`: the Windows agent applies enrollment's browser trust and reports an
+- `sync_server_root`: the Windows agent applies browser trust for its own hub and reports an
   error through `ServerRootSynced`.
 
 Keep-awake is not a `Platform` call. `power.rs` is called by the process that knows the reason
@@ -732,8 +732,9 @@ The source of truth is the viewer's constraints.
   current interface addresses and withdraws its records on orderly shutdown. It joins interfaces
   at startup. The server and Host check their records against `proto/local-discovery.json`.
   In local mode, `/api/me` supplies the plain HTTP guide address for the browser's **Scan to
-  open** dialog. It uses the request's private IPv4 host or a current private IPv4 address
-  from mDNS, and omits the URL when neither is available.
+  open** dialog. The dialog refreshes the URL each time it opens. The endpoint uses the
+  request's private IPv4 host or a current private IPv4 address from mDNS, and omits the URL
+  when neither is available.
   The desktop panel browses while its sign-in form is visible. It collects the first results for
   two seconds, then updates the list as announcements arrive or expire.
   On Windows, DeskwayNet runs and supervises the bundled server under its own account.
@@ -741,31 +742,37 @@ The source of truth is the viewer's constraints.
   `local-server/` in the Host's data directory. The switch and assigned listener ports live in
   `host.json`, including while the Host is signed out. The first start tries 443/80 and then
   the first available pair starting at 8443/8080. Once assigned, the ports stay fixed.
-  The supervisor waits for the child to report readiness on its stdout. The same private
-  pipe returns live connection counts on request. Closing the child's stdin stops it.
-  Both sides check their control messages against `proto/local-host.json`.
-  The stop dialog keeps the server data by default. Its deletion option stops the child and
-  atomically renames `local-server/` to a sibling `local-server.deleting-<n>` before saving the
-  off switch, signing the Host out of its own hub, and removing the pinned root. If the rename
-  fails, the data and settings stay intact. After sign-out the Host deletes the renamed folder
-  and retries any leftover cleanup at startup. On installed Windows hosts the checked action
-  runs elevated and restarts the Windows Host services.
+  Settings changes, child output and child exit wake the supervisor. It reads `host.json` once
+  per settings notification and waits without a timer while the switch is off. The child's
+  stdout reports readiness and returns live connection counts on request. Closing its stdin
+  stops it. Both sides check their control messages against `proto/local-host.json`.
+  The stop dialog keeps the server data by default. With deletion selected, the Host stops
+  the child and atomically saves the off switch and clears its own hub enrollment before
+  renaming `local-server/` to `local-server.deleting-<n>`. If the rename fails, the previous
+  configuration is restored. After the rename the Host removes its hub's browser trust,
+  deletes the renamed folder and retries leftover deletions at startup. On installed Windows
+  hosts the checked action runs elevated and restarts the Windows Host services.
   The Host polls for the admin password every two seconds during first setup. Until then,
   the panel opens the one-time setup link. The Host redeems a separate ten-minute enrollment
   token to join the admin's account already approved, using its pinned localhost address.
+  If enrollment fails after the password is set, the panel shows the error and links to the
+  hub's admin sign-in.
 - The Host and CLI keep the full sign-in address including `#ca=`. `crates/server` verifies
-  the bootstrap certificate against the pin and builds same-server HTTP and signaling
-  connections using system roots and that PEM. The CLI keeps the PEM in `account.json`.
-  The Host keeps it beside its config. On Windows the administrator-authorized PEM is in
-  the protected `server-trust/` subdirectory, readable by DeskwayNet. The SYSTEM agent records
-  roots it adds to the machine store. The elevated sign-out and uninstall remove the recorded
-  root while the services are stopped. On macOS the panel uses the login keychain for browser
-  trust and removes a root it added on sign-out.
+  the bootstrap certificate against the pin. Pinned HTTP and signaling connections trust only
+  the pinned root, with built-in roots disabled. Public addresses use system roots. The CLI
+  keeps the PEM in `account.json` and the Host keeps it beside its config. A Host that joins
+  another hub uses the pin for its own connections. Browsers use that hub's certificate guide.
+  Only the Host running a hub can add that hub's root to OS trust. On Windows the SYSTEM
+  agent installs the authorized DER from the protected `server-trust/` directory. The elevated
+  sign-out and uninstall remove the root it added while the services are stopped. On macOS the
+  panel uses the login keychain and removes a root it added on sign-out.
 - Accounts (docs/accounts.md) are the admin and the members it creates. Each uses only its own
   computers, and nothing is shared between them. An account is stored under a random id; what it
   signs in with is its `name`, which is unique and can be changed (`POST /api/me/name`, after
   entering the password). Everything else refers to the id: the owners of computers and browsers,
   account links, sessions, and the `user` that a host is given and reports.
+- The Host bounds signaling TCP, TLS and WebSocket connection setup with a single deadline.
+  Its control queue can interrupt connection setup on quit.
 - The host's signaling thread waits for socket readability, a notification from its local
   queues, or the next ping, silence or browser-transfer deadline. It drains buffered WebSocket
   and TLS data before waiting. It sends a ping every 15 seconds and reconnects after 45 seconds

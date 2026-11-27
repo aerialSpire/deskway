@@ -70,6 +70,17 @@ impl Setting {
         Config::set_local_service(dir, self)
     }
 
+    #[cfg(windows)]
+    pub fn enable_for_panel(
+        &mut self,
+        dir: &Path,
+        previous: Preferences,
+        owner: String,
+    ) -> Result<()> {
+        self.owner = Some(owner);
+        self.enable(dir, previous)
+    }
+
     pub fn disable(
         &mut self,
         dir: &Path,
@@ -144,6 +155,7 @@ pub struct State {
     port: Option<u16>,
     error: Option<String>,
     setup_error: Option<String>,
+    admin_ready: bool,
 }
 
 impl State {
@@ -167,6 +179,8 @@ type Respond = Box<dyn FnOnce(Result<Reply, String>) + Send>;
 
 enum Message {
     Request(Request, Option<Preferences>, Respond),
+    Changed,
+    Child,
     Shutdown,
 }
 
@@ -183,32 +197,49 @@ impl Handle {
         read_autostart: impl Fn() -> bool + Send + 'static,
         enrolled: impl Fn(Config) + Send + 'static,
         sign_out: impl Fn(&Path) -> Result<()> + Send + 'static,
+        settings_changed: impl Fn(Option<&Config>) + Send + 'static,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
+        let child_wake = tx.clone();
         let thread = std::thread::Builder::new()
             .name("local-server".into())
             .spawn(move || {
                 let mut server = Server::new(dir);
                 let mut last = None;
+                let mut message = None;
                 loop {
-                    let request = match rx.recv_timeout(Duration::from_millis(100)) {
-                        Ok(Message::Request(request, previous, reply)) => {
-                            Some((request, previous, reply))
-                        }
-                        Ok(Message::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                        Err(mpsc::RecvTimeoutError::Timeout) => None,
-                    };
-                    let complete = request.and_then(|(request, previous, reply)| {
-                        server.request(
+                    let complete = match message {
+                        Some(Message::Request(request, previous, reply)) => server.request(
                             request,
                             previous,
                             reply,
                             &autostart,
                             &read_autostart,
                             &sign_out,
-                        )
-                    });
-                    server.tick(&autostart, &enrolled);
+                        ),
+                        Some(Message::Changed) => {
+                            let was_enabled = server.setting.as_ref().is_some_and(|s| s.enabled);
+                            match server.reload() {
+                                Ok(()) => {
+                                    let enabled =
+                                        server.setting.as_ref().is_some_and(|s| s.enabled);
+                                    if enabled && !was_enabled {
+                                        server.force = true;
+                                    } else if was_enabled && !enabled {
+                                        if let Err(e) = server.stop(&autostart) {
+                                            eprintln!("stop local service: {e:#}");
+                                        }
+                                    }
+                                    settings_changed(server.config.as_ref());
+                                }
+                                Err(e) => eprintln!("read local service setting: {e:#}"),
+                            }
+                            None
+                        }
+                        Some(Message::Shutdown) => break,
+                        _ => None,
+                    };
+                    server.tick(&autostart, &enrolled, &child_wake);
                     let state = server.state();
                     if last.as_ref() != Some(&state) {
                         publish(state.clone());
@@ -222,12 +253,29 @@ impl Handle {
                             reply(Ok(Reply::Done));
                         }
                     }
+                    message = match server.deadline() {
+                        Some(deadline) => match rx
+                            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        {
+                            Ok(message) => Some(message),
+                            Err(mpsc::RecvTimeoutError::Timeout) => None,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        },
+                        None => match rx.recv() {
+                            Ok(message) => Some(message),
+                            Err(_) => break,
+                        },
+                    };
                 }
             })?;
         Ok(Self {
             tx,
             thread: Some(thread),
         })
+    }
+
+    pub fn changed(&self) {
+        let _ = self.tx.send(Message::Changed);
     }
 
     pub fn request(
@@ -260,7 +308,16 @@ pub fn data_dir(dir: &Path) -> PathBuf {
 
 #[cfg(windows)]
 pub fn remove_data(dir: &Path) -> Result<()> {
-    remove_tree(&data_dir(dir))
+    let live = remove_tree(&data_dir(dir));
+    live.and(sweep_deleted_data(dir))
+}
+
+pub fn localized<T>(result: Result<T>, key: &str) -> Result<T> {
+    result.map_err(|e| {
+        let message = crate::i18n::t(key);
+        eprintln!("{message} ({e:#})");
+        anyhow::anyhow!(message)
+    })
 }
 
 fn remove_tree(path: &Path) -> Result<()> {
@@ -272,97 +329,75 @@ fn remove_tree(path: &Path) -> Result<()> {
     }
 }
 
-fn sweep_deleted_data(dir: &Path) {
+fn sweep_deleted_data(dir: &Path) -> Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(e) => {
-            eprintln!("find local service data awaiting deletion: {e}");
-            return;
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
     };
+    let mut result = Ok(());
     for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                eprintln!("read local service data directory entry: {e}");
-                continue;
+        result = result.and((|| {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(DELETING_PREFIX)
+                && entry.file_type()?.is_dir()
+            {
+                remove_tree(&entry.path())?;
             }
-        };
-        if entry.file_name().to_str().is_some_and(|name| {
-            name.strip_prefix(DELETING_PREFIX)
-                .is_some_and(|suffix| suffix.parse::<u64>().is_ok())
-        }) && entry.file_type().is_ok_and(|kind| kind.is_dir())
-        {
-            finish_deleting(&entry.path());
-        }
+            Ok(())
+        })());
     }
+    result
 }
 
-fn finish_deleting(path: &Path) {
-    if let Err(e) = remove_tree(path) {
-        eprintln!("{e:#}; will retry at startup");
-    }
-}
-
-/// With the child stopped, retire the live tree before saving the off switch or clearing trust.
-/// Keep the tree intact if those steps fail so the command can be retried.
-pub fn delete_stopped_data(
-    dir: &Path,
-    disable: impl FnOnce() -> Result<()>,
-    sign_out: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    use crate::platform::file_metadata::rename_new;
-    use std::io::ErrorKind::NotFound;
-
-    let clear = match Config::load_from(dir) {
-        Ok(cfg) => is_own(dir, &cfg.server),
-        Err(e)
-            if e.downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == NotFound) =>
-        {
-            true
-        }
-        Err(e) => return Err(e),
-    };
-    let stop_and_clear = || {
-        disable()?;
-        if clear {
-            sign_out()?;
-        }
-        Ok(())
-    };
+/// The caller stops the child before retiring its data. Cleanup runs only after retirement.
+pub fn delete_stopped_data(dir: &Path, cleanup: impl FnOnce(bool) -> Result<()>) -> Result<()> {
     let live = data_dir(dir);
     let n = u64::from_ne_bytes(wire::crypto::random());
     let retired = dir.join(format!("{DELETING_PREFIX}{n}"));
-    match rename_new(&live, &retired) {
-        Err(e) if e.kind() == NotFound => return stop_and_clear(),
-        result => result.context("move the local service data aside")?,
-    }
-    if let Err(e) = stop_and_clear() {
-        rename_new(&retired, &live).with_context(|| {
-            format!("restore the local service data after stopping failed: {e:#}")
+    let own =
+        Config::retire_local_data(dir, || {
+            match crate::platform::file_metadata::rename_new(&live, &retired) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !live.exists() => Ok(()),
+                result => result,
+            }
         })?;
-        return Err(e);
+    let result = localized(cleanup(own), "local.delete_cleanup_failed");
+    if let Err(e) = remove_tree(&retired) {
+        eprintln!("{e:#}; will retry at startup");
     }
-    finish_deleting(&retired);
-    Ok(())
+    result
 }
 
 pub fn is_own(dir: &Path, address: &str) -> bool {
-    if let Ok(Some(setting)) = Config::local_service(dir) {
-        if let Some((port, pin)) = setting.https.zip(setting.fingerprint.as_deref()) {
-            return loopback(port, pin).is_ok_and(|own| own.saved() == address);
-        }
-    }
-    own_address(dir).is_ok_and(|own| own.saved() == address)
+    is_own_with_setting(
+        dir,
+        address,
+        Config::local_service(dir).ok().flatten().as_ref(),
+    )
 }
 
-pub fn own_address(dir: &Path) -> Result<Address> {
-    let (https, _) = Config::local_service(dir)?
-        .and_then(|setting| setting.ports())
-        .context("local service has no assigned ports")?;
-    let pem = fs::read_to_string(data_dir(dir).join("local-ca").join("ca.crt"))?;
+pub fn is_own_with_setting(dir: &Path, address: &str, setting: Option<&Setting>) -> bool {
+    let Some(setting) = setting else { return false };
+    let Some(port) = setting.https else {
+        return false;
+    };
+    match setting.fingerprint.as_deref() {
+        Some(pin) => loopback(port, pin),
+        None => root_address(dir, port),
+    }
+    .is_ok_and(|own| own.saved() == address)
+}
+
+pub fn own_root_path(dir: &Path) -> PathBuf {
+    data_dir(dir).join("local-ca").join("ca.crt")
+}
+
+fn root_address(dir: &Path, https: u16) -> Result<Address> {
+    let pem = fs::read_to_string(own_root_path(dir))?;
     let der = root_der(&pem)?;
     loopback(https, &hex(&sha256(&der)))
 }
@@ -394,6 +429,8 @@ struct Server {
     dir: PathBuf,
     exe: Option<PathBuf>,
     setting: Option<Setting>,
+    config: Option<Config>,
+    awake: bool,
     candidate: Option<(u16, u16)>,
     kept: Kept<Process>,
     phase: Phase,
@@ -402,6 +439,7 @@ struct Server {
     ready: Option<Ready>,
     next_setup: Option<Instant>,
     setup_error: Option<String>,
+    admin_ready: bool,
     setup_failures: u32,
     force: bool,
     starting: Option<Respond>,
@@ -425,15 +463,15 @@ fn browser_origin(hostname: &str, port: u16, resolves: impl Fn(&str, u16) -> boo
 
 impl Server {
     fn new(dir: PathBuf) -> Self {
-        sweep_deleted_data(&dir);
-        let setting = Config::local_service(&dir).unwrap_or_else(|e| {
+        if let Err(e) = sweep_deleted_data(&dir) {
+            eprintln!("remove local service data awaiting deletion: {e:#}");
+        }
+        let (setting, config, awake) = Config::local_snapshot(&dir).unwrap_or_else(|e| {
             eprintln!("read local service setting: {e:#}");
-            None
+            Default::default()
         });
         if setting.as_ref().is_some_and(|s| !s.enabled) {
-            if let Err(e) =
-                Config::prevent_sleep_setting(&dir).and_then(crate::platform::prevent_sleep)
-            {
+            if let Err(e) = crate::platform::prevent_sleep(awake) {
                 eprintln!("restore sleep prevention: {e:#}");
             }
         }
@@ -444,6 +482,8 @@ impl Server {
                 .map(|p| p.with_file_name(SERVER_EXE))
                 .filter(|p| p.is_file()),
             setting,
+            config,
+            awake,
             candidate: None,
             kept: Kept::new("local service"),
             phase: Phase::Off,
@@ -452,6 +492,7 @@ impl Server {
             ready: None,
             next_setup: None,
             setup_error: None,
+            admin_ready: false,
             setup_failures: 0,
             force: true,
             starting: None,
@@ -459,11 +500,46 @@ impl Server {
         }
     }
 
+    fn own(&self) -> bool {
+        self.config
+            .as_ref()
+            .is_some_and(|cfg| is_own_with_setting(&self.dir, &cfg.server, self.setting.as_ref()))
+    }
+
+    fn reload(&mut self) -> Result<()> {
+        let (setting, config, awake) = Config::local_snapshot(&self.dir)?;
+        self.setting = setting;
+        self.config = config;
+        self.awake = awake;
+        Ok(())
+    }
+
+    fn deadline(&mut self) -> Option<Instant> {
+        if !self.setting.as_ref().is_some_and(|s| s.enabled) {
+            return None;
+        }
+        let process = if self.error.is_some() || self.port.is_some() || self.exe.is_none() {
+            None
+        } else if let Some(child) = self.kept.child() {
+            (self.ready.is_none() && !child.killed).then(|| child.started + START_TIMEOUT)
+        } else {
+            self.kept.next_retry()
+        };
+        [
+            process,
+            self.next_setup,
+            self.usage.as_ref().map(|(at, _)| *at),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
     fn state(&self) -> State {
         State {
             available: self.exe.is_some(),
             enabled: self.setting.as_ref().is_some_and(|s| s.enabled),
-            own: Config::load_from(&self.dir).is_ok_and(|c| is_own(&self.dir, &c.server)),
+            own: self.own(),
             has_data: data_dir(&self.dir).is_dir(),
             phase: self.phase,
             port: self.port,
@@ -472,6 +548,7 @@ impl Server {
                 .clone()
                 .or_else(|| self.kept.last_error().map(str::to_owned)),
             setup_error: self.setup_error.clone(),
+            admin_ready: self.admin_ready,
         }
     }
 
@@ -491,15 +568,11 @@ impl Server {
             Request::StopAndDelete => self.delete(autostart, sign_out).map(|()| Reply::Done),
             Request::Setup | Request::Open => self.link(request),
             Request::Usage => {
+                let own = self
+                    .own()
+                    .then(|| self.config.as_ref().unwrap().id.as_str());
                 if let Some(process) = self.kept.child() {
-                    let own = Config::load_from(&self.dir)
-                        .ok()
-                        .filter(|c| is_own(&self.dir, &c.server));
-                    if self.usage.is_none()
-                        && process
-                            .ask_usage(own.as_ref().map(|c| c.id.as_str()))
-                            .is_ok()
-                    {
+                    if self.usage.is_none() && process.ask_usage(own).is_ok() {
                         self.usage = Some((Instant::now() + Duration::from_secs(2), reply));
                         return None;
                     }
@@ -542,17 +615,20 @@ impl Server {
     ) -> Result<Reply> {
         ensure!(self.exe.is_some(), crate::i18n::t("local.unavailable"));
         ensure!(
-            !Config::load_from(&self.dir).is_ok_and(|c| !is_own(&self.dir, &c.server)),
+            self.config.is_none() || self.own(),
             crate::i18n::t("local.leave_first")
         );
-        sweep_deleted_data(&self.dir);
         let mut setting = self.setting.clone().unwrap_or_default();
         let previous = match previous {
             Some(previous) => previous,
-            None => Preferences::read(&self.dir, read_autostart())?,
+            None => Preferences {
+                autostart: read_autostart(),
+                prevent_sleep: self.awake,
+            },
         };
         setting.enable(&self.dir, previous)?;
         self.setting = Some(setting);
+        self.awake = true;
         if self.ready.is_none() {
             self.phase = Phase::Starting;
         }
@@ -576,11 +652,8 @@ impl Server {
         if let Some((_, reply)) = self.usage.take() {
             reply(Ok(Reply::Done));
         }
-        let awake = previous.map_or_else(
-            || Config::load_from(&self.dir).is_ok_and(|cfg| cfg.prevent_sleep),
-            |prior| prior.prevent_sleep,
-        );
-        let sleep = crate::platform::prevent_sleep(awake);
+        self.awake = previous.map_or(self.awake, |prior| prior.prevent_sleep);
+        let sleep = crate::platform::prevent_sleep(self.awake);
         disabled.and(sleep)
     }
 
@@ -589,7 +662,6 @@ impl Server {
         autostart: &impl Fn(bool) -> Result<()>,
         sign_out: &impl Fn(&Path) -> Result<()>,
     ) -> Result<()> {
-        // A failed rename leaves the saved switch alone. The next tick restarts a running child.
         if self.kept.child().is_some() {
             self.kept.stop();
             self.ready = None;
@@ -597,7 +669,11 @@ impl Server {
             self.phase = Phase::Starting;
         }
         let dir = self.dir.clone();
-        delete_stopped_data(&dir, || self.stop(autostart), || sign_out(&dir))
+        delete_stopped_data(&dir, |own| {
+            let signed_out = if own { sign_out(&dir) } else { Ok(()) };
+            let restored = self.reload().and_then(|()| self.stop(autostart));
+            signed_out.and(restored)
+        })
     }
 
     fn admin_link(&self, origin: &str, args: &[&str]) -> Result<String> {
@@ -623,7 +699,7 @@ impl Server {
             .ready
             .as_ref()
             .context(crate::i18n::t("local.failed"))?;
-        let mode = if request == Request::Setup {
+        let mode = if request == Request::Setup && !self.admin_ready {
             "-if-needed"
         } else {
             "-login"
@@ -663,12 +739,17 @@ impl Server {
         }
     }
 
-    fn tick(&mut self, autostart: &impl Fn(bool) -> Result<()>, enrolled: &impl Fn(Config)) {
+    fn tick(
+        &mut self,
+        autostart: &impl Fn(bool) -> Result<()>,
+        enrolled: &impl Fn(Config),
+        wake: &Sender<Message>,
+    ) {
         if !self.setting.as_ref().is_some_and(|s| s.enabled) {
             return;
         }
         self.apply(autostart);
-        if let Err(e) = self.tick_once() {
+        if let Err(e) = self.tick_once(wake) {
             self.kept.stop();
             self.ready = None;
             self.reset_setup();
@@ -709,9 +790,10 @@ impl Server {
         self.next_setup = None;
         self.setup_error = None;
         self.setup_failures = 0;
+        self.admin_ready = false;
     }
 
-    fn tick_once(&mut self) -> Result<()> {
+    fn tick_once(&mut self, wake: &Sender<Message>) -> Result<()> {
         if self.port.is_some() || self.error.is_some() {
             return Ok(());
         }
@@ -767,7 +849,8 @@ impl Server {
                 }
             }
         }
-        self.kept.keep((), || Process::spawn(exe, &dir, ports));
+        self.kept
+            .keep((), || Process::spawn(exe, &dir, ports, wake.clone()));
         if self.kept.child().is_none() {
             self.ready = None;
             self.reset_setup();
@@ -781,7 +864,8 @@ impl Server {
         }
         if self.ready.is_none() {
             if let Some(child) = self.kept.child() {
-                if child.started.elapsed() > Duration::from_secs(12) {
+                if !child.killed && child.started.elapsed() >= START_TIMEOUT {
+                    child.killed = true;
                     let _ = child.process.kill();
                 }
             }
@@ -791,29 +875,24 @@ impl Server {
 
     fn check_setup(&mut self, enrolled: &impl Fn(Config)) -> Result<()> {
         let ready = self.ready.as_ref().unwrap();
-        match Config::load_from(&self.dir) {
-            Ok(cfg) => {
-                ensure!(
-                    cfg.server == ready.address.saved(),
-                    crate::i18n::t("local.leave_first")
-                );
-                cfg.connection()?;
-                self.phase = Phase::Running;
-                return Ok(());
-            }
-            Err(e)
-                if e.downcast_ref::<std::io::Error>()
-                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
-            Err(e) => return Err(e),
+        if let Some(cfg) = &self.config {
+            ensure!(
+                cfg.server == ready.address.saved(),
+                crate::i18n::t("local.leave_first")
+            );
+            let pem = fs::read_to_string(crate::config::root_path(&self.dir))?;
+            ready.address.connection(Some(&pem))?;
+            self.phase = Phase::Running;
+            return Ok(());
         }
         let origin = format!(
             "https://localhost:{}",
             self.setting.as_ref().unwrap().https.unwrap()
         );
-        if !self
+        self.admin_ready = self
             .admin_link(&origin, &["-if-needed", "-check"])?
-            .is_empty()
-        {
+            .is_empty();
+        if !self.admin_ready {
             self.phase = Phase::Setup;
             self.next_setup = Some(Instant::now() + Duration::from_secs(2));
             return Ok(());
@@ -836,6 +915,7 @@ impl Server {
                 return Err(e);
             }
         };
+        self.config = Some(cfg.clone());
         enrolled(cfg);
         self.phase = Phase::Running;
         Ok(())
@@ -867,12 +947,16 @@ enum Output {
     },
 }
 
+const START_TIMEOUT: Duration = Duration::from_secs(12);
+
 struct Process {
     process: std::process::Child,
     input: Option<ChildStdin>,
     output: Receiver<Output>,
     read: Option<std::thread::JoinHandle<()>>,
     started: Instant,
+    exited: bool,
+    killed: bool,
 }
 
 fn check_program(exe: &Path) -> Result<()> {
@@ -895,7 +979,12 @@ fn command(exe: &Path) -> Command {
 }
 
 impl Process {
-    fn spawn(exe: &Path, dir: &Path, (https, guide): (u16, u16)) -> Result<Self> {
+    fn spawn(
+        exe: &Path,
+        dir: &Path,
+        (https, guide): (u16, u16),
+        wake: Sender<Message>,
+    ) -> Result<Self> {
         check_program(exe)?;
         let mut builder = fs::DirBuilder::new();
         builder.recursive(true);
@@ -931,11 +1020,13 @@ impl Process {
         let read = std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Ok(message) = serde_json::from_str(&line) {
-                    if tx.send(message).is_err() {
+                    if tx.send(message).is_err() || wake.send(Message::Child).is_err() {
                         break;
                     }
                 }
             }
+            drop(tx);
+            let _ = wake.send(Message::Child);
         });
         Ok(Self {
             process,
@@ -943,6 +1034,8 @@ impl Process {
             output,
             read: Some(read),
             started: Instant::now(),
+            exited: false,
+            killed: false,
         })
     }
 
@@ -950,7 +1043,18 @@ impl Process {
         if !self.running() {
             self.finish_reading();
         }
-        self.output.try_iter().collect()
+        let mut messages = Vec::new();
+        loop {
+            match self.output.try_recv() {
+                Ok(message) => messages.push(message),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.exited = true;
+                    break;
+                }
+            }
+        }
+        messages
     }
 
     fn ask_usage(&mut self, own: Option<&str>) -> Result<()> {
@@ -971,17 +1075,17 @@ impl Process {
 
 impl Child for Process {
     fn running(&mut self) -> bool {
-        matches!(self.process.try_wait(), Ok(None))
+        !self.exited && matches!(self.process.try_wait(), Ok(None))
     }
 
     fn stop(&mut self) {
         // Closing stdin lets the server withdraw mDNS and close its connections.
         let deadline = Instant::now() + Duration::from_secs(5);
         self.input.take();
-        while self.running() && Instant::now() < deadline {
+        while matches!(self.process.try_wait(), Ok(None)) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        if self.running() {
+        if matches!(self.process.try_wait(), Ok(None)) {
             let _ = self.process.kill();
         }
         let _ = self.process.wait();
@@ -1130,38 +1234,7 @@ mod tests {
         assert!(server.setup_error.is_none());
     }
 
-    #[test]
-    fn failed_sign_out_restores_the_live_data_for_retry() {
-        let (dir, data) = deletion_fixture();
-        let result = delete_stopped_data(
-            &dir,
-            || Ok(()),
-            || {
-                assert!(!data.exists());
-                anyhow::bail!("cannot remove the pinned root")
-            },
-        );
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "cannot remove the pinned root"
-        );
-        assert_eq!(
-            fs::read_to_string(data.join("state.json")).unwrap(),
-            "state"
-        );
-        delete_stopped_data(
-            &dir,
-            || Ok(()),
-            || {
-                assert!(!data.exists());
-                Ok(())
-            },
-        )
-        .unwrap();
-        fs::remove_dir(dir).unwrap();
-    }
-
-    fn deletion_fixture() -> (PathBuf, PathBuf) {
+    fn deletion_fixture() -> (PathBuf, PathBuf, String) {
         let dir = std::env::temp_dir().join(format!(
             "deskway-test-delete-{}",
             hex(&wire::crypto::random::<8>())
@@ -1169,69 +1242,90 @@ mod tests {
         let data = data_dir(&dir);
         fs::create_dir_all(&data).unwrap();
         fs::write(data.join("state.json"), "state").unwrap();
-        (dir, data)
+        let pin = "aa".repeat(32);
+        let address = loopback(8443, &pin).unwrap().saved();
+        let config = serde_json::json!({
+            "server": address, "id": "H1", "token": "token", "name": "Host",
+            "prevent_sleep": true, "local_service": {
+                "https": 8443, "guide": 8080, "fingerprint": pin, "enabled": true,
+                "previous": { "autostart": false, "prevent_sleep": false }
+            }
+        });
+        fs::write(dir.join("host.json"), config.to_string()).unwrap();
+        (dir, data, address)
+    }
+
+    #[test]
+    fn deletion_saves_off_and_sign_out_before_rename_and_rolls_back_on_failure() {
+        let (dir, data, address) = deletion_fixture();
+        let error = Config::retire_local_data(&dir, || {
+            assert!(data.is_dir());
+            let (setting, config, awake) = Config::local_snapshot(&dir).unwrap();
+            assert!(!setting.unwrap().enabled);
+            assert!(config.is_none());
+            assert!(!awake);
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            crate::i18n::t("local.delete_move_failed")
+        );
+        let (setting, config, awake) = Config::local_snapshot(&dir).unwrap();
+        assert!(setting.unwrap().enabled);
+        assert_eq!(config.unwrap().server, address);
+        assert!(awake);
+        assert!(data.join("state.json").is_file());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn startup_finishes_an_interrupted_delete_without_reviving_enrollment() {
+        let (dir, data, _) = deletion_fixture();
+        let retired = dir.join(format!("{DELETING_PREFIX}123"));
+        assert!(Config::retire_local_data(&dir, || {
+            crate::platform::file_metadata::rename_new(&data, &retired)
+        })
+        .unwrap());
+        assert!(retired.join("state.json").is_file());
+        let mut server = Server::new(dir.clone());
+        assert!(!retired.exists());
+        assert!(!data.exists());
+        assert!(server.config.is_none());
+        assert!(!server.state().enabled);
+        assert!(server.deadline().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_stopped_hub_preserves_a_joined_hub_enrollment() {
+        let (dir, data, _) = deletion_fixture();
+        let address = "https://other.example";
+        Config::update_in(&dir, |cfg| cfg.server = address.into()).unwrap();
+        delete_stopped_data(&dir, |own| {
+            assert!(!own);
+            assert!(!data.exists());
+            Ok(())
+        })
+        .unwrap();
+        let (setting, config, _) = Config::local_snapshot(&dir).unwrap();
+        assert!(!setting.unwrap().enabled);
+        assert_eq!(config.unwrap().server, address);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(windows)]
     #[test]
-    fn deletion_waits_for_an_atomic_move_and_retries_retired_data_at_startup() {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
-
-        let (dir, data) = deletion_fixture();
-        let locked_dir = fs::OpenOptions::new()
-            .read(true)
-            .share_mode(0)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
-            .open(&data)
-            .unwrap();
-        let err = delete_stopped_data(
-            &dir,
-            || panic!("changed settings before the move"),
-            || panic!("cleared trust before the move"),
-        )
-        .unwrap_err();
-        assert_eq!(err.to_string(), "move the local service data aside");
-        drop(locked_dir);
-        assert_eq!(
-            fs::read_to_string(data.join("state.json")).unwrap(),
-            "state"
-        );
-
-        let mut locked_file = None;
-        let mut retired = None;
-        delete_stopped_data(
-            &dir,
-            || Ok(()),
-            || {
-                assert!(!data.exists());
-                let entry = fs::read_dir(&dir).unwrap().next().unwrap().unwrap();
-                assert!(entry
-                    .file_name()
-                    .to_str()
-                    .unwrap()
-                    .starts_with(DELETING_PREFIX));
-                let path = entry.path();
-                let state = path.join("state.json");
-                assert_eq!(fs::read_to_string(&state).unwrap(), "state");
-                locked_file = Some(
-                    fs::OpenOptions::new()
-                        .read(true)
-                        .share_mode(0)
-                        .open(state)?,
-                );
-                retired = Some(path);
-                Ok(())
-            },
-        )
-        .unwrap();
-        let retired = retired.unwrap();
-        assert!(retired.is_dir());
-        assert!(!data.exists());
-        drop(locked_file);
-        Server::new(dir.clone());
-        assert!(!retired.exists());
-        fs::remove_dir(dir).unwrap();
+    fn uninstall_removes_live_and_retired_hub_data() {
+        let (dir, data, _) = deletion_fixture();
+        let retired = dir.join(format!("{DELETING_PREFIX}123"));
+        fs::create_dir(&retired).unwrap();
+        let unrelated = dir.join("other");
+        fs::create_dir(&unrelated).unwrap();
+        remove_data(&dir).unwrap();
+        remove_data(&dir).unwrap();
+        assert!(!data.exists() && !retired.exists() && unrelated.is_dir());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

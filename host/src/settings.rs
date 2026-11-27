@@ -50,6 +50,8 @@ pub enum PanelRequest {
     #[cfg(windows)]
     LocalAccess,
     #[cfg(windows)]
+    LocalOwner,
+    #[cfg(windows)]
     DevLeave,
 }
 
@@ -115,7 +117,7 @@ impl Settings {
             #[cfg(desktop_host)]
             PanelRequest::Local(_) => unreachable!("local service requests belong to the local service"),
             #[cfg(windows)]
-            PanelRequest::SyncLocalRoot | PanelRequest::LocalAccess | PanelRequest::DevLeave => unreachable!("this request belongs to the service"),
+            PanelRequest::SyncLocalRoot | PanelRequest::LocalAccess | PanelRequest::LocalOwner | PanelRequest::DevLeave => unreachable!("this request belongs to the service"),
         };
         let _ = self.control.send(control);
         Ok(())
@@ -137,9 +139,14 @@ impl Settings {
     }
 
     /// The config file changed (the installer's language).
-    #[cfg(any(desktop_host, test))]
+    #[cfg(any(target_os = "macos", test))]
     pub fn reload(&self) -> Result<()> {
-        self.apply(Applied::of(&self.load()?))
+        self.apply_saved(&self.load()?)
+    }
+
+    #[cfg(any(desktop_host, test))]
+    pub(crate) fn apply_saved(&self, config: &Config) -> Result<()> {
+        self.apply(Applied::of(config))
     }
 
     fn change(&self, f: impl FnOnce(&mut Config)) -> Result<()> {

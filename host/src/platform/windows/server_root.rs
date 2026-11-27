@@ -1,11 +1,10 @@
-//! Browser trust is authorized by the elevated sign-in and applied by the SYSTEM agent.
+//! Browser trust for the hub on this computer, authorized by its panel.
 
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use deskway_server_connection::Address;
 use windows::core::{w, Error};
 use windows::Win32::Foundation::{CRYPT_E_EXISTS, CRYPT_E_NOT_FOUND};
 use windows::Win32::Security::Cryptography::*;
@@ -22,15 +21,15 @@ pub fn browser_trusts(der: &[u8]) -> Result<bool> {
 
 pub fn sync_dev_browser_root(dir: &Path, der: Option<&[u8]>) -> Result<()> {
     let marker = dir.join(DEV_ROOT);
-    let store = Store::open(false, false)?;
     if let Some(previous) = read_installed(&marker)? {
         if Some(previous.as_slice()) == der {
             return Ok(());
         }
-        store.remove(&previous)?;
+        Store::open(false, false)?.remove(&previous)?;
         fs::remove_file(&marker)?;
     }
     if let Some(der) = der {
+        let store = Store::open(false, false)?;
         if !browser_trusts(der)? && store.add(der)? {
             if let Err(e) = config::write_private(&marker, der) {
                 store.remove(der)?;
@@ -51,10 +50,9 @@ fn read_installed(path: &Path) -> Result<Option<Vec<u8>>> {
 
 /// Removes the root added by this Host while the services are stopped.
 pub fn remove_installed_server_root(dir: &Path) -> Result<()> {
-    let root = config::root_path(dir);
-    let trust = root.parent().unwrap();
+    let trust = dir.join(crate::service::install::TRUST_DIR);
     if trust.try_exists()? {
-        crate::service::install::check_trust_dir(trust)?;
+        crate::service::install::check_trust_dir(&trust)?;
         let installed = trust.join(INSTALLED_ROOT);
         if let Some(der) = read_installed(&installed)? {
             remove_owned(&installed, &der)?;
@@ -72,19 +70,15 @@ fn remove_owned(path: &Path, der: &[u8]) -> Result<()> {
 }
 
 pub fn sync_server_root(dir: PathBuf, dev: bool) -> Result<()> {
-    let path = config::root_path(&dir);
-    let trust = path.parent().unwrap();
+    if dev || !crate::settings::local_forces_settings(&dir) {
+        return Ok(());
+    }
+    let trust = dir.join(crate::service::install::TRUST_DIR);
     if !trust.try_exists()? {
         return Ok(());
     }
-    if !dev {
-        crate::service::install::check_trust_dir(trust)?;
-    }
-    let root = if crate::settings::local_forces_settings(&dir) && !dev {
-        read_installed(&trust.join(HUB_ROOT))?
-    } else {
-        signed_in_root(&dir)?
-    };
+    crate::service::install::check_trust_dir(&trust)?;
+    let root = read_installed(&trust.join(HUB_ROOT))?;
     let Some(der) = root else {
         return Ok(());
     };
@@ -112,32 +106,6 @@ pub fn sync_server_root(dir: PathBuf, dev: bool) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn signed_in_root(dir: &Path) -> Result<Option<Vec<u8>>> {
-    let cfg = match config::Config::load_from(dir) {
-        Ok(cfg) => cfg,
-        Err(e)
-            if e.downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == ErrorKind::NotFound) =>
-        {
-            return Ok(None)
-        }
-        Err(e) => return Err(e),
-    };
-    if cfg.id.is_empty() || cfg.token.is_empty() {
-        return Ok(None);
-    }
-    if crate::local_server::is_own(dir, &cfg.server) {
-        if dir == crate::service::machine_dir() {
-            return read_installed(&config::root_path(dir).with_file_name(HUB_ROOT));
-        }
-        return Ok(None);
-    }
-    cfg.server_root
-        .as_deref()
-        .map(|pem| Address::parse(&cfg.server)?.verified_root(pem))
-        .transpose()
 }
 
 struct Store(HCERTSTORE);

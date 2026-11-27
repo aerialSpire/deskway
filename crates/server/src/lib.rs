@@ -8,9 +8,9 @@ use std::time::Duration;
 use anyhow::{bail, ensure, Context, Result};
 use native_tls::{Certificate, TlsConnector};
 use tungstenite::{
-    client::IntoClientRequest,
+    client::{uri_mode, IntoClientRequest},
     handshake::{client::Request, HandshakeError},
-    stream::MaybeTlsStream,
+    stream::{MaybeTlsStream, Mode},
     Connector, WebSocket,
 };
 use wire::crypto::{hex, sha256};
@@ -361,30 +361,51 @@ impl Connection {
         path: &str,
         headers: impl FnOnce(&mut Request) -> Result<()>,
     ) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+        self.websocket_with_tcp(path, headers, |host, port| {
+            Ok(TcpStream::connect((host, port))?)
+        })
+    }
+
+    pub fn websocket_with_tcp(
+        &self,
+        path: &str,
+        headers: impl FnOnce(&mut Request) -> Result<()>,
+        mut connect: impl FnMut(&str, u16) -> Result<TcpStream>,
+    ) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
         let mut request =
             format!("{}{path}", self.base.replacen("http", "ws", 1)).into_client_request()?;
         headers(&mut request)?;
-        let Some(tls) = &self.tls else {
-            return Ok(tungstenite::connect(request)?.0);
-        };
-        let uri = request.uri();
-        let Some(host) = uri.host() else {
-            bail!("missing WebSocket hostname")
-        };
-        let socket =
-            TcpStream::connect((host.trim_matches(['[', ']']), uri.port_u16().unwrap_or(443)))?;
-        socket.set_nodelay(true)?;
-        match tungstenite::client_tls_with_config(
-            request,
-            socket,
-            None,
-            Some(Connector::NativeTls(tls.clone())),
-        ) {
-            Ok((ws, _)) => Ok(ws),
-            Err(HandshakeError::Failure(e)) => Err(e.into()),
-            Err(HandshakeError::Interrupted(_)) => {
-                bail!("the blocking WebSocket handshake was interrupted")
+        let max_redirects = if self.tls.is_some() { 0 } else { 3 };
+        for attempt in 0..=max_redirects {
+            let uri = request.uri();
+            let host = uri.host().context("missing WebSocket hostname")?;
+            let default_port = if matches!(uri_mode(uri)?, Mode::Tls) {
+                443
+            } else {
+                80
+            };
+            let socket = connect(
+                host.trim_matches(['[', ']']),
+                uri.port_u16().unwrap_or(default_port),
+            )?;
+            socket.set_nodelay(true)?;
+            let tls = self.tls.clone().map(Connector::NativeTls);
+            match tungstenite::client_tls_with_config(request.clone(), socket, None, tls) {
+                Ok((ws, _)) => return Ok(ws),
+                Err(HandshakeError::Failure(tungstenite::Error::Http(response)))
+                    if response.status().is_redirection() && attempt < max_redirects =>
+                {
+                    let Some(location) = response.headers().get("Location") else {
+                        return Err(tungstenite::Error::Http(response).into());
+                    };
+                    *request.uri_mut() = location.to_str()?.parse()?;
+                }
+                Err(HandshakeError::Failure(e)) => return Err(e.into()),
+                Err(HandshakeError::Interrupted(_)) => {
+                    bail!("the blocking WebSocket handshake was interrupted");
+                }
             }
         }
+        unreachable!("the last WebSocket attempt cannot redirect")
     }
 }

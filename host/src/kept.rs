@@ -93,6 +93,11 @@ impl<C: Child, K: Eq> Kept<C, K> {
         self.child.as_mut().map(|(child, _, _)| child)
     }
 
+    #[cfg(desktop_host)]
+    pub fn next_retry(&self) -> Option<Instant> {
+        self.child.is_none().then_some(self.next_try)
+    }
+
     pub fn failures(&self) -> u32 {
         self.failures
     }

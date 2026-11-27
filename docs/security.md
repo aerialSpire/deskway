@@ -107,23 +107,20 @@ roots. The six-digit approval still authenticates the device joining the account
 A new device still needs approval on the real hub even if an impersonating hub captures the
 account password.
 
-On Windows the panel passes the verified fingerprint to the elevated sign-in. The elevated
-process checks the PEM against that fingerprint and publishes it to the protected enrollment
-folder. The SYSTEM agent checks the signed-in config and matching PEM before adding the root
-to `LocalMachine\Root`. DeskwayNet can request an update and read the root for TLS. On macOS
-the Host asks the system to trust the root for SSL in the login keychain. The panel reports a
-refused store update, and the Host can still sign in using its copy of the root. Signing out
-removes a root the Host added. Windows uninstall also removes it. The headless Linux Host and
-the CLI use their saved root without updating OS trust.
+A Host joining another hub uses the saved root only for its own connections, whether the
+person selected a discovered hub or entered the address. Browsers on that computer use
+the hub's HTTP certificate guide just like other devices on the network.
 
-The Windows hub requests administrator consent when it first opens its setup or account
-link. The elevated program verifies the hub root against the fingerprint passed by the
-panel and saves the DER in the protected enrollment folder. The SYSTEM agent only uses
-that authorized copy for browser trust. DeskwayNet creates and holds the local service's
-state and CA under the machine-wide Deskway data directory. SYSTEM, Administrators and the
-DeskwayNet account can access that directory. On macOS, the app keeps the server's data
-under its private per-user data directory and asks for trust in the login keychain.
-The macOS app and its bundled server run as the signed-in user, who can modify that data.
+The Host can add browser trust for the hub it runs itself, using the CA in its local
+service data. On Windows the panel asks for administrator consent when it first opens
+its hub's setup or account link. The elevated program reads the local CA, verifies its
+fingerprint against the panel's request, and saves the authorized DER in the protected
+`server-trust/` directory. The SYSTEM agent uses that copy for `LocalMachine\Root`.
+DeskwayNet holds the local service's state and CA under the machine-wide Deskway data
+directory, accessible to SYSTEM, Administrators and DeskwayNet. On macOS the app and
+bundled server run as the signed-in user. The app reads its local CA from the user's
+private data directory and asks for SSL trust in the login keychain. Signing out removes
+a root the Host added for its own hub. Windows uninstall also removes it.
 
 Before installing, compare the fingerprint in the HTTP guide with the startup log on the hub
 computer itself. Verify that the downloaded root certificate also has that fingerprint. On
@@ -682,8 +679,10 @@ The per-user panel handles signing in and out. DeskwayNet enrolls its own Host w
 local service has an admin. The panel uses one-time admin links to open that local service
 in a browser. Authorizing the hub's root for Windows browsers requires administrator consent.
 Stopping with **Also delete the local service data** also requires administrator consent.
-The elevated command moves the hub's data folder aside atomically before running the same
-sign-out and trust cleanup as **Sign out**. It then erases the renamed folder.
+The elevated command saves the off switch and clears the hub's active enrollment in
+`host.json` before moving the data folder aside. It restores the previous configuration if
+the move fails. After the move it removes the hub's browser trust and erases the renamed
+folder. The next service start retries the deletion of any leftover renamed folders.
 
 DeskwayNet is not restricted further for this reason: Windows' TLS and DTLS implementation
 (SChannel) fails with "no credentials available" when the service runs with a write-restricted

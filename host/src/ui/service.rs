@@ -34,6 +34,7 @@ pub enum BackendEvent {
     RootProblem(Option<String>),
     Local(State),
     LocalAccess(bool),
+    LocalOwner(Result<String, String>),
     LocalReply(Request, Result<Reply, String>),
     DevLeft(Result<(), String>),
     Disconnected,
@@ -62,13 +63,14 @@ pub struct Service {
     local: super::local::Panel,
     after_leave: Option<Request>,
     leaving: bool,
+    start_switch: Option<bool>,
 }
 
 impl Service {
     pub fn new(proxy: EventLoopProxy<UiEvent>, at_login: bool, dev: bool) -> Service {
         let mut local = super::local::Panel::default();
         local.link_allowed = Some(false);
-        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new(), root_problem: None, dev, local, after_leave: None, leaving: false }
+        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new(), root_problem: None, dev, local, after_leave: None, leaving: false, start_switch: None }
     }
 
     fn send(&self, r: PanelRequest) -> bool {
@@ -78,13 +80,14 @@ impl Service {
     fn local_request(&mut self, action: Request) {
         let own = self.local.state.as_ref().is_some_and(|s| s.own);
         let switching = action == Request::Start && !self.signed_out && !own;
-        if !self.dev && matches!(action, Request::Start | Request::StopAndDelete) {
-            let args = match action {
-                Request::StopAndDelete => "stop-local-and-delete",
-                _ if switching => "start-local --switch",
-                _ => "start-local",
-            };
-            self.admin_local(action, args);
+        if !self.dev && action == Request::Start {
+            if self.send(PanelRequest::LocalOwner) {
+                self.start_switch = Some(switching);
+            } else {
+                self.local.replied(action, Err(t("status.service_down")));
+            }
+        } else if !self.dev && action == Request::StopAndDelete {
+            self.admin_local(action, "stop-local-and-delete".into());
         } else if switching {
             self.after_leave = Some(action);
             self.leaving = true;
@@ -124,13 +127,16 @@ impl Service {
         std::thread::spawn(move || {
             let result = (|| -> anyhow::Result<Reply> {
                 let address = deskway_server_connection::Address::parse(&address)?;
-                let pem = address.fetch_root()?.ok_or_else(|| anyhow::anyhow!(t("local.failed")))?;
+                let dev_dir = dev.then(crate::config::dir).transpose()?;
+                let pem = match &dev_dir {
+                    Some(dir) => std::fs::read_to_string(crate::local_server::own_root_path(dir))?,
+                    None => address.fetch_root()?.ok_or_else(|| anyhow::anyhow!(t("local.failed")))?,
+                };
                 let der = address.verified_root(&pem)?;
-                if dev {
-                    crate::platform::sync_dev_browser_root(&crate::config::dir()?, Some(&der))?;
+                if let Some(dir) = dev_dir {
+                    crate::platform::sync_dev_browser_root(&dir, Some(&der))?;
                 } else if !crate::platform::browser_trusts(&der)? {
-                    let pin = address.fingerprint().unwrap();
-                    anyhow::ensure!(install::elevate(&format!("authorize-local-root {pin}"))? == 0, t("err.not_done"));
+                    anyhow::ensure!(install::elevate(&format!("authorize-local-root {}", address.fingerprint().unwrap()))? == 0, t("err.not_done"));
                     if let Some(c) = client.lock().unwrap().as_ref() {
                         c.send(PanelRequest::SyncLocalRoot)?;
                     }
@@ -156,7 +162,7 @@ impl Service {
         });
     }
 
-    fn admin_local(&self, action: Request, args: &'static str) {
+    fn admin_local(&self, action: Request, args: String) {
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let id = wire::crypto::hex(&wire::crypto::random::<16>());
@@ -190,9 +196,7 @@ impl Service {
                     return Config::settle(cfg).map(drop).map_err(|e| format!("{e:#}"));
                 }
                 cfg.save().map_err(|e| e.to_string())?;
-                let address = deskway_server_connection::Address::parse(&cfg.server).map_err(|e| e.to_string())?;
-                let pin = address.fingerprint().map(|pin| format!(" --ca-pin {pin}")).unwrap_or_default();
-                let ok = install::elevate(&format!("sign-in --from \"{}\"{pin}", mine.display())).map(|code| code == 0).unwrap_or(false);
+                let ok = install::elevate(&format!("sign-in --from \"{}\"", mine.display())).map(|code| code == 0).unwrap_or(false);
                 // A computer given back has no new token: there is nothing to withdraw.
                 if !ok && !cfg.token.is_empty() {
                     let _ = crate::withdraw(&cfg);
@@ -221,6 +225,7 @@ impl Backend for Service {
                             ToPanel::Exit => (UiEvent::Backend(BackendEvent::Exit), true),
                             ToPanel::RootProblem(error) => (UiEvent::Backend(BackendEvent::RootProblem(error)), false),
                             ToPanel::Local(state) => (UiEvent::Backend(BackendEvent::Local(state)), false),
+                            ToPanel::LocalOwner(owner) => (UiEvent::Backend(BackendEvent::LocalOwner(owner)), false),
                             ToPanel::LocalAccess(allowed) => (UiEvent::Backend(BackendEvent::LocalAccess(allowed)), false),
                             ToPanel::LocalReply(action, result) => (UiEvent::Backend(BackendEvent::LocalReply(action, result)), false),
                             ToPanel::DevLeft(result) => (UiEvent::Backend(BackendEvent::DevLeft(result)), false),
@@ -353,6 +358,18 @@ impl Backend for Service {
                 self.continue_local();
                 true
             }
+            BackendEvent::LocalOwner(owner) => {
+                if let Some(switching) = self.start_switch.take() {
+                    match owner {
+                        Ok(owner) => {
+                            let switch = if switching { " --switch" } else { "" };
+                            self.admin_local(Request::Start, format!("start-local --owner-sid {owner}{switch}"));
+                        }
+                        Err(e) => self.local.replied(Request::Start, Err(e)),
+                    }
+                }
+                true
+            }
             BackendEvent::LocalAccess(allowed) => {
                 self.local.link_allowed = Some(allowed);
                 true
@@ -374,6 +391,9 @@ impl Backend for Service {
                 true
             }
             BackendEvent::Disconnected => {
+                if self.start_switch.take().is_some() {
+                    self.local.replied(Request::Start, Err(t("status.service_down")));
+                }
                 self.local.state = None;
                 self.local.link_allowed = Some(false);
                 true

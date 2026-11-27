@@ -8,7 +8,7 @@
 //! reconnecting, the status names the holders again so the server can route them.
 
 use std::io::ErrorKind;
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -991,16 +991,91 @@ fn tcp(ws: &Socket) -> &TcpStream {
     }
 }
 
-fn connect(cfg: &Config) -> Result<Socket> {
-    let ws = cfg.connection()?.websocket(&format!("/ws/host?id={}", cfg.id), |req| {
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[derive(Default)]
+struct Connecting {
+    cancelled: bool,
+    socket: Option<TcpStream>,
+}
+
+fn time_left(deadline: Instant) -> std::io::Result<Duration> {
+    deadline.checked_duration_since(Instant::now()).filter(|left| !left.is_zero())
+        .ok_or_else(|| std::io::Error::new(ErrorKind::TimedOut, "signaling connection timed out"))
+}
+
+fn connect(cfg: &Config, deadline: Instant, attempt: &Mutex<Connecting>) -> Result<Socket> {
+    let ws = cfg.connection()?.websocket_with_tcp(&format!("/ws/host?id={}", cfg.id), |req| {
         req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.token).parse().context("token header")?);
         Ok(())
+    }, |host, port| {
+        let mut error = None;
+        for addr in (host, port).to_socket_addrs().context("resolve signaling hostname")? {
+            if attempt.lock().unwrap().cancelled {
+                anyhow::bail!("signaling connection cancelled");
+            }
+            match TcpStream::connect_timeout(&addr, time_left(deadline)?) {
+                Ok(stream) => {
+                    let left = time_left(deadline)?;
+                    stream.set_read_timeout(Some(left))?;
+                    stream.set_write_timeout(Some(left))?;
+                    let mut attempt = attempt.lock().unwrap();
+                    anyhow::ensure!(!attempt.cancelled, "signaling connection cancelled");
+                    attempt.socket = Some(stream.try_clone()?);
+                    return Ok(stream);
+                }
+                Err(e) => error = Some(e),
+            }
+        }
+        Err(error.context("signaling hostname resolved to no addresses")?.into())
     })?;
     tcp(&ws).set_write_timeout(Some(alive::WRITE_TIMEOUT))?;
     // A blocking TLS write can also need to read, so bound that wait too.
     tcp(&ws).set_read_timeout(Some(alive::WRITE_TIMEOUT))?;
-    tcp(&ws).set_nodelay(true)?;
     Ok(ws)
+}
+
+/// Wait on the control queue and the result together. Shutting down the registered socket
+/// interrupts both TLS and HTTP upgrade, even if the peer keeps sending partial data.
+fn await_connection(host: &mut Host, q: &Queues, timeout: Duration) -> Result<Option<Socket>> {
+    let deadline = Instant::now() + timeout;
+    let poller = Arc::new(Poller::new()?);
+    q.wake.attach(&poller);
+    let (done, result) = q.wake.channel();
+    let attempt = Arc::new(Mutex::new(Connecting::default()));
+    let worker = attempt.clone();
+    let cfg = host.cfg.clone();
+    std::thread::Builder::new().name("signal-connect".into()).spawn(move || {
+        let _ = done.send(connect(&cfg, deadline, &worker));
+    })?;
+
+    let outcome = (|| {
+        let mut events = Events::new();
+        loop {
+            let first = match q.control.try_recv() {
+                Ok(control) => Some(control),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Control::Quit),
+            };
+            q.drain_local(host, first);
+            if host.quit {
+                return Ok(None);
+            }
+            let left = time_left(deadline)?;
+            match result.try_recv() {
+                Ok(result) => return result.map(Some),
+                Err(TryRecvError::Disconnected) => anyhow::bail!("signaling connection worker stopped"),
+                Err(TryRecvError::Empty) => {}
+            }
+            poller.wait(&mut events, Some(left))?;
+        }
+    })();
+    let mut attempt = attempt.lock().unwrap();
+    attempt.cancelled = true;
+    if let Some(socket) = attempt.socket.take().filter(|_| !matches!(&outcome, Ok(Some(_)))) {
+        let _ = socket.shutdown(Shutdown::Both);
+    }
+    outcome
 }
 
 struct Connection<'a> {
@@ -1287,8 +1362,8 @@ pub fn run(p: Params, control: Controls) {
     let mut browse = None;
     eprintln!("Deskway host: {} -> {}{}", cfg.name, cfg.server, if view_only { " (view only)" } else { "" });
     while !host.quit {
-        match connect(&cfg) {
-            Ok(mut ws) => {
+        match await_connection(&mut host, &q, CONNECT_TIMEOUT) {
+            Ok(Some(mut ws)) => {
                 browse = None;
                 eprintln!("connected");
                 host.problem = None;
@@ -1305,6 +1380,7 @@ pub fn run(p: Params, control: Controls) {
                     desk.platform.thumbnails(false);
                 }
             }
+            Ok(None) => break,
             Err(e) => {
                 host.waiting = e.downcast_ref::<tungstenite::Error>().is_some_and(|e| matches!(e, tungstenite::Error::Http(r) if r.status() == 403));
                 host.problem = if host.waiting { None } else { Some(describe(&e)) };
@@ -1346,7 +1422,7 @@ fn refusal(e: &anyhow::Error) -> Reason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc::channel;
     use std::thread;
@@ -1364,6 +1440,32 @@ mod tests {
     }
 
     /// A host as `run` makes it, offline, in a folder of its own; `trust` decides who may connect.
+    #[test]
+    fn stalled_tls_and_websocket_handshakes_time_out_or_quit() {
+        for (scheme, quit) in [("https", false), ("http", false), ("https", true), ("http", true)] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut test = Test::new(&format!("connect-{scheme}-{quit}"), false, false);
+            test.host.cfg.server = format!("{scheme}://{}", listener.local_addr().unwrap());
+            let control = test.control.clone();
+            let (done, result) = channel();
+            let timeout = Duration::from_millis(if quit { 10_000 } else { 350 });
+            let worker = thread::spawn(move || {
+                done.send(await_connection(&mut test.host, &test.q, timeout)).unwrap();
+            });
+            let (mut socket, _) = listener.accept().unwrap();
+            if quit {
+                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                assert!(socket.read(&mut [0; 4096]).unwrap() > 0);
+                control.send(Control::Quit).unwrap();
+                assert!(result.recv_timeout(Duration::from_secs(2)).unwrap().unwrap().is_none());
+            } else {
+                assert!(result.recv_timeout(Duration::from_secs(2)).unwrap().is_err());
+            }
+            drop(socket);
+            worker.join().unwrap();
+        }
+    }
+
     struct Test {
         host: Host,
         q: Queues,
@@ -1418,7 +1520,8 @@ mod tests {
             let control = self.control.clone();
             let (done, host) = channel();
             thread::spawn(move || {
-                let result = connect(&self.host.cfg).and_then(|mut ws| serve(&mut ws, &mut self.host, &self.q));
+                let result = await_connection(&mut self.host, &self.q, CONNECT_TIMEOUT)
+                    .and_then(|ws| ws.map_or(Ok(()), |mut ws| serve(&mut ws, &mut self.host, &self.q)));
                 let _ = done.send(result);
             });
             let (socket, _) = listener.accept().unwrap();

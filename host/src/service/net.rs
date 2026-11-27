@@ -50,6 +50,7 @@ pub enum ToPanel {
     /// The agent's last browser trust error, if any.
     RootProblem(Option<String>),
     Local(local_server::State),
+    LocalOwner(Result<String, String>),
     LocalAccess(bool),
     LocalReply(local_server::Request, Result<local_server::Reply, String>),
     DevLeft(Result<(), String>),
@@ -63,7 +64,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
         super::KillJob::keep_service_children()?;
     }
     crate::i18n::from_config();
-    let for_panels = Arc::new(Mutex::new(None));
+    let for_panels = Arc::new(Mutex::new(None::<Arc<Settings>>));
 
     let (events, from_agent) = channel();
     let host_events = Arc::new(Mutex::new(None::<std::sync::mpsc::Sender<PlatformEvent>>));
@@ -81,6 +82,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     serve_agent(dev, platform.clone())?;
     let dir = crate::config::dir()?;
     let agent = platform.clone();
+    let apply_settings = for_panels.clone();
     let local = Arc::new(local_server::Handle::start(
         dir.clone(), |state| PANELS.local(state),
         move |on| {
@@ -96,8 +98,21 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
         },
         move || !dev && super::install::autostart().unwrap_or(false),
         |_| {},
-        dev_sign_out,
+        dev_clear_sign_in,
+        move |cfg| {
+            if let (Some(settings), Some(cfg)) = (apply_settings.lock().unwrap().clone(), cfg) {
+                if let Err(e) = settings.apply_saved(cfg) {
+                    eprintln!("{e:#}");
+                }
+            }
+        },
     )?);
+    let watch = Arc::downgrade(&local);
+    super::watch::watch_file(&dir, "host.json", move || {
+        let Some(local) = watch.upgrade() else { return false };
+        local.changed();
+        true
+    })?;
     serve_ui(dev, for_panels.clone(), Arc::downgrade(&local), platform.clone())?;
     while let Some(cfg) = signed_in() {
         let (to_host, platform_events) = channel();
@@ -118,9 +133,6 @@ fn run_host(
     platform: Arc<Remote>, platform_events: Receiver<PlatformEvent>,
     for_panels: &Mutex<Option<Arc<Settings>>>,
 ) -> Result<()> {
-    if cfg.server_root.is_some() {
-        platform.sync_server_root();
-    }
     crate::i18n::from_config();
     PANELS.status(Status::offline(&cfg));
     let (control_tx, control_rx) = signal::control_channel();
@@ -132,16 +144,6 @@ fn run_host(
     }
     let settings = Arc::new(settings);
     *for_panels.lock().unwrap() = Some(settings.clone());
-
-    // An administrator's command line (`--set-lang`) changes the file, not the pipe.
-    let watched = Arc::downgrade(&settings);
-    super::watch::watch_file(dir, "host.json", move || {
-        let Some(watched) = watched.upgrade() else { return false };
-        if let Err(e) = watched.reload() {
-            eprintln!("{e:#}");
-        }
-        true
-    })?;
 
     // Run by hand (`--dev`), this process is the person; as the service it is not, and the
     // person's workspace is the user worker's.
@@ -187,7 +189,6 @@ fn run_host(
 fn signed_in() -> Option<Config> {
     while !STOPPING.load(Ordering::Acquire) {
         if let Ok(cfg) = Config::load() {
-            // The elevated sign-in publishes its verified PEM after host.json.
             if cfg.connection().is_ok() {
                 return Some(cfg);
             }
@@ -359,13 +360,11 @@ fn serve_worker(remote: Arc<crate::workspace::remote::Remote>, kind: super::work
     Ok(())
 }
 
-fn dev_sign_out(dir: &std::path::Path) -> Result<()> {
-    crate::platform::sync_dev_browser_root(dir, None)?;
-    Config::sign_out()?;
+fn dev_clear_sign_in(dir: &std::path::Path) -> Result<()> {
     if let Some(host) = HOST.lock().unwrap().as_ref() {
         let _ = host.send(Control::Quit);
     }
-    crate::config::remove_sign_in_root(dir)
+    crate::config::remove_sign_in_root(dir).and(crate::platform::sync_dev_browser_root(dir, None))
 }
 
 fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<local_server::Handle>, agent: Arc<Remote>) -> Result<()> {
@@ -413,6 +412,12 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
                     pipe.allows_admin_link(owner.as_deref())
                 };
                 while let Ok(r) = pipe.recv_json::<PanelRequest>() {
+                    if r == PanelRequest::LocalOwner {
+                        let owner = local_server::localized(pipe.client_sid(), "local.owner_failed")
+                            .map_err(|e| e.to_string());
+                        let _ = pipe.send_json(&ToPanel::LocalOwner(owner));
+                        continue;
+                    }
                     if r == PanelRequest::LocalAccess {
                         let _ = pipe.send_json(&ToPanel::LocalAccess(admin_link_allowed().unwrap_or(false)));
                         continue;
@@ -438,7 +443,7 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
                     if r == PanelRequest::DevLeave {
                         if dev {
                             let result = crate::config::dir()
-                                .and_then(|dir| dev_sign_out(&dir))
+                                .and_then(|dir| Config::sign_out().and_then(|()| dev_clear_sign_in(&dir)))
                                 .map_err(|e| format!("{e:#}"));
                             let _ = pipe.send_json(&ToPanel::DevLeft(result));
                         }

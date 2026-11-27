@@ -19,7 +19,7 @@ use crate::wake::Wake;
 
 pub enum BackendEvent {
     /// Signing in finished: the new config, or why it failed.
-    Enrolled(std::result::Result<Config, String>),
+    Enrolled(Result<Config, String>, bool),
     /// Signed out.
     Left(Result<Option<String>, String>, bool),
     RootChanged(Option<String>),
@@ -182,12 +182,7 @@ impl InProcess {
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let res = crate::enroll_with(&server, &user, &password, "", Config::kept().as_ref()).and_then(Config::settle).map_err(|e| format!("{e:#}"));
-            let local = res.as_ref().ok().filter(|cfg| cfg.server_root.is_some()).cloned();
-            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Enrolled(res)));
-            if let Some(cfg) = local {
-                let error = crate::install_browser_trust(&cfg).err().map(|e| format!("{e:#}"));
-                let _ = proxy.send_event(UiEvent::Backend(BackendEvent::RootChanged(error)));
-            }
+            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Enrolled(res, false)));
         });
     }
 
@@ -224,15 +219,18 @@ impl Backend for InProcess {
             || platform::ui::login_status().registered(),
             move |cfg| {
                 let address = cfg.server.clone();
-                let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::Enrolled(Ok(cfg))));
+                let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::Enrolled(Ok(cfg), true)));
                 let error = trust_hub(&address).err().map(|e| format!("{e:#}"));
                 let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::RootChanged(error)));
             },
             move |dir| {
-                let root_error = sign_out(dir, &signal)?;
-                let _ = left.send_event(UiEvent::Backend(BackendEvent::Left(Ok(root_error.clone()), true)));
-                root_error.map_or(Ok(()), |error| Err(anyhow::anyhow!(error)))
+                let running = signal.lock().unwrap().take();
+                stop_host(running);
+                let result = clear_sign_in(dir);
+                let _ = left.send_event(UiEvent::Backend(BackendEvent::Left(Ok(None), true)));
+                result
             },
+            |_| {},
         )).map_err(|e| eprintln!("{e:#}")).ok();
         self.cfg.is_none() || !platform::permissions().ready()
     }
@@ -262,6 +260,7 @@ impl Backend for InProcess {
     }
 
     fn request(&mut self, r: PanelRequest) -> bool {
+        let awake_changed = matches!(r, PanelRequest::PreventSleep(_));
         let result = match r {
             PanelRequest::AutoStart(false) if self.local.state.as_ref().is_some_and(|s| s.enabled) => Ok(()),
             PanelRequest::AutoStart(on) => self.set_login_item(on),
@@ -272,6 +271,11 @@ impl Backend for InProcess {
                 None => Ok(()),
             },
         };
+        if awake_changed && result.is_ok() {
+            if let Some(handle) = &self.local_handle {
+                handle.changed();
+            }
+        }
         self.settings_error = result.err().map(|e| format!("{e:#}")).unwrap_or_default();
         true
     }
@@ -317,11 +321,13 @@ impl Backend for InProcess {
 
     fn event(&mut self, e: BackendEvent) -> bool {
         match e {
-            BackendEvent::Enrolled(res) => {
-                self.busy = false;
+            BackendEvent::Enrolled(res, trust_pending) => {
+                self.busy = trust_pending;
                 match res {
                     Ok(cfg) => {
-                        self.busy = cfg.server_root.is_some();
+                        if let Some(handle) = &self.local_handle {
+                            handle.changed();
+                        }
                         self.cfg = Some(cfg);
                         self.error.clear();
                         self.start_host();
@@ -351,6 +357,9 @@ impl Backend for InProcess {
                 };
                 self.cfg = None;
                 self.settings = None;
+                if let Some(handle) = &self.local_handle {
+                    handle.changed();
+                }
                 if !local_cleanup && after_leave.is_none() {
                     let _ = crate::power::prevent_sleep(false);
                     self.settings_error = platform::ui::set_login(false).with_context(|| t("err.mac_login_off")).err().map(|e| format!("{e:#}")).unwrap_or_default();
@@ -407,14 +416,20 @@ fn sign_out(dir: &std::path::Path, signal: &Mutex<Option<RunningHost>>) -> Resul
         Config::sign_out()?;
         running.take()
     };
+    stop_host(host);
+    Ok(clear_sign_in(dir).err().map(|e| format!("{e:#}")))
+}
+
+fn stop_host(host: Option<RunningHost>) {
     if let Some(host) = host {
         let _ = host.control.send(Control::Quit);
         let _ = host.thread.join();
     }
-    let root_error = crate::config::remove_sign_in_root(dir)
-        .and_then(|()| platform::remove_installed_server_root(dir))
-        .err().map(|e| format!("{e:#}"));
-    Ok(root_error)
+}
+
+fn clear_sign_in(dir: &std::path::Path) -> Result<()> {
+    crate::config::remove_sign_in_root(dir)
+        .and(platform::remove_installed_server_root(dir))
 }
 
 fn open_local(url: &str, address: &str) -> Result<()> {
@@ -425,7 +440,7 @@ fn open_local(url: &str, address: &str) -> Result<()> {
 fn trust_hub(address: &str) -> Result<()> {
     let address = deskway_server_connection::Address::parse(address)?;
     let dir = crate::config::dir()?;
-    let pem = address.fetch_root()?.context("the local root is missing")?;
-    crate::config::write_private(&crate::config::root_path(&dir), pem.as_bytes())?;
-    platform::install_hub_root(&dir, address.fingerprint().unwrap())
+    let root = crate::local_server::own_root_path(&dir);
+    address.verified_root(&std::fs::read_to_string(&root)?)?;
+    platform::install_hub_root(&dir, &root, address.fingerprint().unwrap())
 }

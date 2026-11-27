@@ -61,13 +61,12 @@ after an update.
 For a [local server](self-hosting.md#local-mode), choose it under **Found on this network**
 to fill **Server address**. A single result is selected automatically. You can also paste the
 whole `https://name.local:port#ca=<64 hex digits>` address using the fingerprint from the
-hub's startup log. To let browsers trust the hub, approve the macOS
-prompt to trust the root for SSL in your login keychain. The Host connects using the
-verified root even if you decline. Signing out removes the root if Deskway Host added it.
+hub's startup log. The Host uses the verified root for its own connections. To open that hub
+in a browser on this Mac, follow the hub's [certificate guide](self-hosting.md#local-mode).
 
 To serve your own network, choose **Run local service** and then **Complete setup**. Approve
-the system's certificate prompt and set the admin password in the browser. The Host joins
-automatically. Local service keeps **Open at login** and **Keep this computer awake** on.
+the prompt to trust this hub's root for SSL in your login keychain and set the admin password
+in the browser. The Host joins automatically. Local service keeps **Open at login** and **Keep this computer awake** on.
 To remove the server's files and sign out of the hub, check **Also delete the local service data**
 in the stop dialog, then choose **Stop and delete**.
 The files are in `~/Library/Application Support/Deskway/local-server/`.
@@ -149,9 +148,9 @@ If this Mac runs the local service, use the stop dialog before uninstalling. To 
 the hub's data and sign the Mac out of the hub, select **Also delete the local service data**.
 By default the data stays in `~/Library/Application Support/Deskway/local-server/`.
 
-For a local server, click **Sign out** in the Host panel and approve any macOS prompt to
-remove the root certificate Deskway Host added. Then remove the Mac on **My devices** in the
-browser, quit Deskway Host, and move `Deskway.app` from Applications to the Trash. To remove its
+Click **Sign out** in the Host panel. If this Mac ran its own hub, approve any macOS prompt
+to remove the root Deskway Host added. Then remove the Mac on **My devices** in the browser,
+quit Deskway Host, and move `Deskway.app` from Applications to the Trash. To remove its
 settings too, delete `~/Library/Application Support/Deskway`.
 
 ## Building from source

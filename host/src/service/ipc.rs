@@ -118,6 +118,17 @@ fn admin_link_uses_the_pipe_clients_windows_token() {
     });
     server.accept().unwrap();
     let forged = server.recv_json::<String>().unwrap();
+    let owner = server.client_sid().unwrap();
+    assert_eq!(owner, sid);
+    assert_ne!(owner, forged);
+    let dir = std::env::temp_dir().join(format!("deskway-test-owner-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+    std::fs::create_dir(&dir).unwrap();
+    let mut setting = crate::local_server::Setting::default();
+    let previous = crate::local_server::Preferences { autostart: false, prevent_sleep: false };
+    setting.enable_for_panel(&dir, previous, owner).unwrap();
+    let saved = crate::config::Config::local_service(&dir).unwrap().unwrap();
+    assert_eq!(saved.owner.as_deref(), Some(sid.as_str()));
+    std::fs::remove_dir_all(dir).unwrap();
     assert!(server.allows_admin_link(Some(&sid)).unwrap());
     let mut token = Event(HANDLE::default());
     unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token.0).unwrap(); }
@@ -360,6 +371,15 @@ impl Pipe {
 
     /// The authenticated identity of the last panel message, never a SID supplied in JSON.
     pub fn allows_admin_link(&self, owner: Option<&str>) -> Result<bool> {
+        let token = self.client_token()?;
+        Ok(permits_admin_link(owner, &token_sid(token.0)?, token_is_admin(token.0)?))
+    }
+
+    pub fn client_sid(&self) -> Result<String> {
+        token_sid(self.client_token()?.0)
+    }
+
+    fn client_token(&self) -> Result<Event> {
         unsafe {
             ImpersonateNamedPipeClient(self.h)?;
             let mut token = HANDLE::default();
@@ -369,8 +389,7 @@ impl Pipe {
                 std::process::abort();
             }
             opened?;
-            let token = Event(token);
-            Ok(permits_admin_link(owner, &token_sid(token.0)?, token_is_admin(token.0)?))
+            Ok(Event(token))
         }
     }
 

@@ -82,6 +82,17 @@ export const area = {
       await clearSent();
       await p.eval(`$('local-open').click()`);
       h.check(`panel ${lang}: Complete setup asks the Host to open the link`, (await sent()).at(-1)?.action === 'setup');
+      const setupError = 'This account has reached its computer limit';
+      await render(base({ enrolled: false, local: local('setup', {
+        own: false, admin_ready: true, setup_error: setupError,
+      }) }));
+      h.check(`panel ${lang}: failed enrollment shows the server error and View`,
+        await localLine('setup_error', { reason: setupError }) &&
+        await p.eval(`$('local-open').textContent === ${lit(localText('view'))}`));
+      await clearSent();
+      await p.eval(`$('local-open').click()`);
+      h.check(`panel ${lang}: View after enrollment failure asks for an admin sign-in link`,
+        (await sent()).at(-1)?.action === 'open');
       for (const phase of ['setup', 'running']) {
         await render(base({ local: { ...local(phase), link_allowed: false } }));
         await clearSent();

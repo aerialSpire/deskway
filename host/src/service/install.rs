@@ -548,7 +548,7 @@ pub fn set_autostart(on: bool) -> Result<()> {
     }
 }
 
-fn local_firewall(exe: &Path, install: bool) -> Result<()> {
+fn install_local_firewall(exe: &Path) -> Result<()> {
     use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
     let mut buffer = [0u16; 260];
     let len = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
@@ -556,19 +556,41 @@ fn local_firewall(exe: &Path, install: bool) -> Result<()> {
     let netsh = PathBuf::from(String::from_utf16(&buffer[..len])?).join("netsh.exe");
     let program = format!("program={}", exe.display());
     let name = format!("name={FIREWALL_RULE}");
-    let output = Command::new(&netsh)
+    let _ = Command::new(&netsh)
         .args(["advfirewall", "firewall", "delete", "rule", &name, &program])
         .output()?;
-    if install {
-        let output = Command::new(netsh)
-            .args(["advfirewall", "firewall", "add", "rule", &name, &program, "dir=in", "action=allow", "profile=private", "enable=yes"])
-            .output()?;
-        anyhow::ensure!(output.status.success(), "add the local service firewall rule: {}", String::from_utf8_lossy(&output.stdout).trim());
-    } else {
-        anyhow::ensure!(output.status.success(), "remove the local service firewall rule ({}): {}{}",
-            output.status, String::from_utf8_lossy(&output.stdout).trim(), String::from_utf8_lossy(&output.stderr).trim());
-    }
+    let output = Command::new(netsh)
+        .args(["advfirewall", "firewall", "add", "rule", &name, &program, "dir=in", "action=allow", "profile=private", "enable=yes"])
+        .output()?;
+    anyhow::ensure!(output.status.success(), "add the local service firewall rule: {}", String::from_utf8_lossy(&output.stdout).trim());
     Ok(())
+}
+
+fn remove_local_firewall(exe: &Path) -> Result<()> {
+    use windows::core::BSTR;
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows::Win32::NetworkManagement::WindowsFirewall::{INetFwPolicy2, NetFwPolicy2};
+    use windows::Win32::System::Com::*;
+
+    let remove = || -> Result<()> {
+        let policy: INetFwPolicy2 = unsafe { CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)? };
+        let name = BSTR::from(FIREWALL_RULE);
+        let rules = unsafe { policy.Rules()? };
+        let rule = match unsafe { rules.Item(&name) } {
+            Ok(rule) => rule,
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let program = unsafe { rule.ApplicationName()? }.to_string();
+        if program.eq_ignore_ascii_case(&exe.to_string_lossy()) {
+            unsafe { rules.Remove(&name)? };
+        }
+        Ok(())
+    };
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+    let result = remove();
+    unsafe { CoUninitialize() };
+    result.context("remove the local service firewall rule")
 }
 
 /// Opened by hand after automatic start was turned off: it starts with Windows again, and
@@ -662,7 +684,7 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
         }
     }
     if server.is_file() {
-        local_firewall(&server, true)?;
+        install_local_firewall(&server)?;
     }
 
     let data = crate::service::machine_dir();
@@ -726,19 +748,13 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
 /// own folder (`from`): it is settled in the service's folder, which the service is waiting on
 /// (`Config::settle_in`: the computer signed out there comes back, or a new one starts clean).
 /// Administrator.
-pub fn sign_in(from: &Path, pin: Option<&str>) -> Result<()> {
+pub fn sign_in(from: &Path) -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
     let new = crate::config::Config::load_from(from).context("read the sign-in")?;
-    check_sign_in_pin(&new, pin)?;
-    let dir = crate::service::machine_dir();
-    if new.server_root.is_some() {
-        let trust = dir.join(TRUST_DIR);
-        fresh_dir(&trust, &service_sddl()?)?;
-        check_trust_dir(&trust)?;
-    }
-    crate::config::Config::settle_in(&dir, new).map(drop)
+    new.connection().context("verify the sign-in's server root")?;
+    crate::config::Config::settle_in(&crate::service::machine_dir(), new).map(drop)
 }
 
 /// The consent prompt authorizes exactly the local server root shown by this panel.
@@ -746,48 +762,13 @@ pub fn authorize_local_root(pin: &str) -> Result<()> {
     anyhow::ensure!(is_elevated(), t("err.need_admin"));
     let dir = crate::service::machine_dir();
     anyhow::ensure!(crate::settings::local_forces_settings(&dir), t("local.failed"));
-    let address = crate::local_server::own_address(&dir)?;
-    anyhow::ensure!(address.fingerprint() == Some(pin), "the local root has changed");
-    let pem = address.fetch_root()?.context("the local root is missing")?;
-    let der = address.verified_root(&pem)?;
+    let pem = std::fs::read_to_string(crate::local_server::own_root_path(&dir))?;
+    let der = deskway_server_connection::root_der(&pem)?;
+    anyhow::ensure!(wire::crypto::hex(&wire::crypto::sha256(&der)) == pin, "the local root has changed");
     let trust = dir.join(TRUST_DIR);
     fresh_dir(&trust, &service_sddl()?)?;
     check_trust_dir(&trust)?;
     crate::config::write_private(&trust.join(crate::platform::HUB_ROOT), &der)
-}
-
-fn check_sign_in_pin(cfg: &crate::config::Config, pin: Option<&str>) -> Result<()> {
-    let address = deskway_server_connection::Address::parse(&cfg.server)?;
-    anyhow::ensure!(address.fingerprint() == pin, "server root fingerprint differs from the approved sign-in");
-    if pin.is_some() {
-        let pem = cfg.server_root.as_deref().context("the approved server root is missing")?;
-        address.verified_root(pem)?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-#[test]
-fn elevated_enrollment_requires_the_pin_passed_by_the_panel() {
-    use deskway_server_connection::Address;
-    use wire::crypto::{hex, sha256};
-
-    let params = rcgen::CertificateParams::default();
-    let first = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
-    let other = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
-    let pin = hex(&sha256(first.der()));
-    let address = Address::parse(&format!("https://hub.local#ca={pin}")).unwrap();
-    let mut cfg: crate::config::Config = serde_json::from_value(serde_json::json!({
-        "server": address.saved(), "id": "H1", "token": "token", "name": "Host"
-    })).unwrap();
-    cfg.server_root = Some(address.pin_root(first.der()).unwrap());
-    check_sign_in_pin(&cfg, Some(&pin)).unwrap();
-    assert!(check_sign_in_pin(&cfg, None).is_err());
-
-    let other = Address::parse(&format!("https://hub.local#ca={}", hex(&sha256(other.der())))).unwrap()
-        .pin_root(other.der()).unwrap();
-    cfg.server_root = Some(other);
-    assert!(check_sign_in_pin(&cfg, Some(&pin)).is_err());
 }
 
 /// Signs the installed service out: the services start again, waiting for a sign-in. The
@@ -806,14 +787,13 @@ pub fn sign_out() -> Result<()> {
     restart_after_cleanup(&m, cleanup)
 }
 
-pub fn start_local(switch: bool) -> Result<()> {
+pub fn start_local(switch: bool, owner: String) -> Result<()> {
     use crate::{config::Config, local_server::{is_own, Preferences}};
 
     anyhow::ensure!(is_elevated(), t("err.need_admin"));
     let dir = crate::service::machine_dir();
     crate::config::use_dir(dir.clone());
     check_server_program(&program_dir().join(crate::local_server::SERVER_EXE))?;
-    let owner = super::ipc::own_sid()?;
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let cleanup = (|| {
         stop_services(&m)?;
@@ -826,8 +806,7 @@ pub fn start_local(switch: bool) -> Result<()> {
             anyhow::ensure!(switch, t("local.leave_first"));
             remove_root_and_sign_out(&dir)?;
         }
-        setting.owner = Some(owner);
-        setting.enable(&dir, previous)?;
+        setting.enable_for_panel(&dir, previous, owner)?;
         set_autostart(true)
     })();
     restart_after_cleanup(&m, cleanup)
@@ -839,16 +818,19 @@ pub fn stop_local_and_delete() -> Result<()> {
     }
     let dir = crate::service::machine_dir();
     crate::config::use_dir(dir.clone());
-    let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let cleanup = (|| {
-        stop_services(&m)?;
-        crate::local_server::delete_stopped_data(
-            &dir,
-            || disable_local(&dir),
-            || remove_root_and_sign_out(&dir),
-        )
-    })();
-    restart_after_cleanup(&m, cleanup)
+    use crate::local_server::{delete_stopped_data, localized};
+    let m = localized(ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).map_err(Into::into), "local.delete_stop_failed")?;
+    let cleanup = localized(stop_services(&m), "local.delete_stop_failed").and_then(|()| {
+        delete_stopped_data(&dir, |own| {
+            let clear = if own {
+                crate::platform::remove_installed_server_root(&dir).and(remove_sign_in_roots(&dir))
+            } else {
+                Ok(())
+            };
+            clear.and(disable_local(&dir))
+        })
+    });
+    cleanup.and(localized(run_services(&m), "local.delete_restart_failed"))
 }
 
 fn disable_local(dir: &Path) -> Result<()> {
@@ -858,29 +840,13 @@ fn disable_local(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn clear_sign_in(dir: &Path) -> Result<()> {
-    let root = crate::config::root_path(dir);
-    let retired = root.with_extension("signed-out");
-    let moved = match std::fs::rename(&root, &retired) {
-        Ok(()) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => return Err(e).context("revoke the local server root"),
-    };
-    if let Err(e) = crate::config::Config::sign_out() {
-        if moved {
-            std::fs::rename(&retired, &root).with_context(|| format!("restore the local server root after sign-out failed: {e:#}"))?;
-        }
-        return Err(e);
-    }
-    if moved {
-        let _ = std::fs::remove_file(retired);
-    }
-    match std::fs::remove_file(root.with_file_name(crate::platform::HUB_ROOT)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).context("revoke the hub's browser trust"),
-    }
-    Ok(())
+fn remove_sign_in_roots(dir: &Path) -> Result<()> {
+    let root = crate::config::remove_sign_in_root(dir);
+    root.and(match std::fs::remove_file(dir.join(TRUST_DIR).join(crate::platform::HUB_ROOT)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("revoke the hub's browser trust"),
+    })
 }
 
 fn stop_and_remove_root(m: &ServiceManager, dir: &Path) -> Result<()> {
@@ -895,7 +861,8 @@ fn stop_services(m: &ServiceManager) -> Result<()> {
 
 fn remove_root_and_sign_out(dir: &Path) -> Result<()> {
     crate::platform::remove_installed_server_root(dir)?;
-    clear_sign_in(dir)
+    crate::config::Config::sign_out()?;
+    remove_sign_in_roots(dir)
 }
 
 fn restart_after_cleanup(m: &ServiceManager, cleanup: Result<()>) -> Result<()> {
@@ -923,15 +890,14 @@ pub fn uninstall(purge: bool, purge_local: bool, keep: Option<u32>) -> Result<()
         bail!(t("err.need_admin"));
     }
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    remove_local_firewall(&program_dir().join(crate::local_server::SERVER_EXE))?;
     // The panels first, while the service they listen to still runs.
     close_panels(&m);
     let data = crate::service::machine_dir();
-    if let Err(e) = stop_and_remove_root(&m, &data) {
+    if let Err(e) = stop_and_remove_root(&m, &data).and_then(|()| disable_local(&data)) {
         return restart_after_cleanup(&m, Err(e));
     }
     let hub = crate::local_server::data_dir(&data);
-    disable_local(&data)?;
-    local_firewall(&program_dir().join(crate::local_server::SERVER_EXE), false)?;
     for name in [AGENT_SERVICE, NET_SERVICE] {
         if let Ok(s) = m.open_service(name, ServiceAccess::DELETE) {
             s.delete()?;

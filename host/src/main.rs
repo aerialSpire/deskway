@@ -120,6 +120,17 @@ fn enroll(server: &str, name: &str, back: Option<&config::Kept>, credential: Enr
         // The account has as many computers as the server allows.
         Err(ureq::Error::Status(403, _)) => bail!(t("err.computer_limit")),
         Err(ureq::Error::Status(429, _)) => bail!(t("err.too_many")),
+        #[cfg(desktop_host)]
+        Err(ureq::Error::Status(code, response)) if matches!(credential, Enrollment::Link(_)) => {
+            use std::io::Read;
+            let mut detail = String::new();
+            if response.into_reader().take(512).read_to_string(&mut detail).is_ok()
+                && !detail.trim().is_empty()
+            {
+                bail!("{}", detail.trim());
+            }
+            return Err(server_error(code));
+        }
         Err(e) => return Err(server_error(e)),
     };
     Ok(config::Config {
@@ -164,22 +175,9 @@ fn enroll_command(args: &[String]) -> Result<()> {
     #[cfg(target_os = "linux")]
     let _lock = platform::lock()?;
     let cfg = config::Config::settle(enroll_with(&server, &user, &read_password()?, &name, config::Config::kept().as_ref())?)?;
-    #[cfg(target_os = "macos")]
-    if let Err(e) = install_browser_trust(&cfg) {
-        eprintln!("{}", tf("err.root_trust", &[("e", format!("{e:#}"))]));
-    }
     // A host with no window says how to start it and where its approval code appears.
     let done = if cfg!(desktop_host) { "cli.enrolled" } else { "cli.enrolled_linux" };
     println!("{}", tf(done, &[("name", shown_name(&cfg.name))]));
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn install_browser_trust(cfg: &config::Config) -> Result<()> {
-    let address = Address::parse(&cfg.server)?;
-    if let Some(fingerprint) = address.fingerprint() {
-        platform::install_server_root(&config::dir()?, fingerprint)?;
-    }
     Ok(())
 }
 
@@ -253,7 +251,7 @@ fn main() -> Result<()> {
         #[cfg(windows)]
         Some("sign-in") => {
             let from = flag(&args, "--from").with_context(|| tf("cli.need_flag", &[("flag", "--from".to_string())]))?;
-            let r = install::sign_in(std::path::Path::new(&from), flag(&args, "--ca-pin").as_deref());
+            let r = install::sign_in(std::path::Path::new(&from));
             write_result(&args, &r);
             r
         }
@@ -265,7 +263,8 @@ fn main() -> Result<()> {
         }
         #[cfg(windows)]
         Some("start-local") => {
-            let r = install::start_local(args.iter().any(|a| a == "--switch"));
+            let r = flag(&args, "--owner-sid").context(t("local.owner_failed"))
+                .and_then(|owner| install::start_local(args.iter().any(|a| a == "--switch"), owner));
             write_result(&args, &r);
             r
         }

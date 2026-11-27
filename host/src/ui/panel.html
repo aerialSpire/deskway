@@ -480,7 +480,7 @@ function renderLocal(s) {
   $('local-open').hidden = !visible || starting;
   $('local-open').disabled = restricted;
   $('local-link-note').hidden = !restricted;
-  $('local-open').textContent = t(failed ? 'local.retry' : setup ? 'local.complete_setup' : 'local.view');
+  $('local-open').textContent = t(failed ? 'local.retry' : (setup && !state.admin_ready) ? 'local.complete_setup' : 'local.view');
   $('local-stop').hidden = !visible || starting || failed;
   $('local-setting').hidden = !state;
   $('local-switch').disabled = !state?.available || !!localUi.dialog?.request || !!s.busy;
@@ -798,9 +798,9 @@ $('local-switch').onclick = () => localDialog(window.last.local.state.enabled ? 
 $('local-stop').onclick = () => localDialog('stop');
 $('local-stop-delete').onchange = () => renderLocal(window.last);
 $('local-open').onclick = () => {
-  const phase = window.last.local.state.phase;
+  const { phase, admin_ready } = window.last.local.state;
   localUi.error = '';
-  localCommand(phase === 'failed' ? 'retry' : phase === 'setup' ? 'setup' : 'open');
+  localCommand(phase === 'failed' ? 'retry' : (phase === 'setup' && !admin_ready) ? 'setup' : 'open');
 };
 $('local-cancel').onclick = finishLocalDialog;
 $('local-confirm').onclick = () => {

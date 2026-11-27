@@ -48,13 +48,12 @@ fn installed_root(dir: &Path) -> Result<Option<String>> {
     }
 }
 
-pub fn install_server_root(dir: &Path, fingerprint: &str) -> Result<()> {
+fn install_server_root(dir: &Path, root: &Path, fingerprint: &str) -> Result<()> {
     let owned = installed_root(dir)?;
     if owned.as_deref().is_some_and(|pin| pin != fingerprint) {
         remove_installed_server_root(dir)?;
     }
     let keychain = login_keychain()?;
-    let root = crate::config::root_path(dir);
     if !contains_root(fingerprint, Some(&keychain))? {
         if contains_root(fingerprint, None)? {
             return Ok(());
@@ -62,7 +61,7 @@ pub fn install_server_root(dir: &Path, fingerprint: &str) -> Result<()> {
         security(
             Command::new("/usr/bin/security")
                 .args(["add-certificates", "-k", &keychain])
-                .arg(&root),
+                .arg(root),
         )?;
         // Record the import before asking for permission to trust the certificate.
         if let Err(e) =
@@ -88,13 +87,13 @@ pub fn install_server_root(dir: &Path, fingerprint: &str) -> Result<()> {
 }
 
 /// Successful browser trust for the hub persists in the login keychain across app launches.
-pub fn install_hub_root(dir: &Path, fingerprint: &str) -> Result<()> {
+pub fn install_hub_root(dir: &Path, root: &Path, fingerprint: &str) -> Result<()> {
     if installed_root(dir)?.as_deref() == Some(fingerprint)
         && contains_root(fingerprint, Some(&login_keychain()?))?
     {
         return Ok(());
     }
-    install_server_root(dir, fingerprint)
+    install_server_root(dir, root, fingerprint)
 }
 
 fn delete_root(fingerprint: &str, keychain: &str) -> Result<()> {
