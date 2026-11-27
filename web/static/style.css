@@ -21,7 +21,8 @@ img, svg { -webkit-user-drag: none; }
 .page { max-width: 1280px; margin: 0 auto; padding: var(--s6) var(--s8) var(--s12); }
 .topbar { min-height: var(--h-control); display: flex; align-items: center; justify-content: space-between; gap: var(--s4); }
 /* Its buttons' words end where the page's content ends, as the title's ⋯ does (.heading-end). */
-.topbar-end { display: flex; align-items: center; gap: var(--s2); margin-right: calc(-1 * var(--s3)); }
+.topbar-end { min-width: 0; display: flex; align-items: center; gap: var(--s2); margin-right: calc(-1 * var(--s3)); }
+.topbar-end > .dropdown:has(> .name-btn) { min-width: 0; }
 .brand { font-size: var(--fs-subtitle); font-weight: 400; letter-spacing: .01em; }
 .heading { margin-top: var(--s8); }
 .heading-row { display: flex; align-items: baseline; gap: var(--s4); }
@@ -56,6 +57,9 @@ img, svg { -webkit-user-drag: none; }
 .field-label { display: flex; flex-direction: column; gap: var(--s2); color: var(--quiet); font-size: var(--fs-small); }
 .dialog .steps { margin: var(--s3) 0 0; padding-left: var(--s5); display: flex; flex-direction: column; gap: var(--s2); }
 .dialog .note-box { margin-top: var(--s4); }
+.dialog .qr-lead { margin-top: var(--s3); text-align: center; color: var(--ink); }
+.qr-addr { text-align: center; }
+.qr-addr .copyable-code { display: inline-block; }
 .form > .note-box { margin-bottom: var(--s5); }
 /* A note on a page: the home-screen app's first sign-in, and the like. */
 .note-box { display: flex; gap: var(--s2); padding: var(--s3); border-radius: var(--r-box); background: var(--accent-soft); font-size: var(--fs-small); }

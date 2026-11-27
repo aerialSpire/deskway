@@ -14,7 +14,8 @@ import { topbar, heading, updateNote, settingRow } from './common.js';
 // The name in the top bar opens the account's places: its page, its devices, and for the admin
 // Members and Relays.
 export function accountMenu() {
-  const button = h('button', { class: 'btn text bar-btn name-btn' }, state.me.display, svg(ICONS.chevron));
+  const button = h('button', { class: 'btn text bar-btn name-btn' },
+    h('span', { class: 'bar-name' }, state.me.display), svg(ICONS.chevron));
   return dropdown('account', button, (item) => {
     const install = installItem(item);
     return [

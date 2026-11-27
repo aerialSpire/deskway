@@ -1,8 +1,9 @@
 // Dialogs: one at a time, in the dialog layer over the page (or over the session in full
 // screen). When one closes, whatever waits for the layer (an approval) gets its turn.
-import { $dialogs, h } from './dom.js';
+import { $dialogs, copyableCode, h, svg } from './dom.js';
 import { t } from './i18n.js';
 import { signedOut } from './net.js';
+import { qrcode } from '../vendor/qrcode.mjs';
 
 let afterClose = () => {};
 
@@ -30,6 +31,21 @@ export function dialog(title, text, actions) {
 // button, `also` is one more action beside it.
 export const gotIt = (title, text, { primary = false, also = null } = {}) =>
   dialog(title, text, [{ label: t('common.gotIt'), primary }, also]);
+
+export function scanOpenDialog() {
+  const url = location.origin + '/';
+  const code = qrcode(0, 'M');
+  code.addData(url);
+  code.make();
+  const image = svg(code.createSvgTag({ cellSize: 1, scalable: true }));
+  image.setAttribute('shape-rendering', 'crispEdges');
+  image.setAttribute('aria-hidden', 'true');
+  dialog(t('scanOpen.title'), h('div', {},
+    h('div', { class: 'qr' }, image),
+    h('p', { class: 'qr-lead' }, t('scanOpen.lead')),
+    h('p', { class: 'qr-addr' }, copyableCode(url))),
+  [{ label: t('common.close') }]);
+}
 
 // A small form in a dialog: fields, an error line, and a submit that may fail and stay open.
 // `submit` returns { title, text } to show when done, a function that opens the dialog that

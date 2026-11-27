@@ -1,10 +1,10 @@
-import { $app, h, svg, ICONS, loading } from '../dom.js';
+import { $app, h, svg, ICONS, loading, copyableCode } from '../dom.js';
 import { t } from '../i18n.js';
 import { api, signedOut } from '../net.js';
 import { probeRelay } from '../relay-check.js';
 import { state, setView } from '../state.js';
 import { dialog, gotIt, nameDialog } from '../dialogs.js';
-import { topbar, heading, updateNote, statusOf, copyableCode } from './common.js';
+import { topbar, heading, updateNote, statusOf } from './common.js';
 import { dropdown, menuSeparator, moreButton } from './menu.js';
 import { accountMenu } from './account.js';
 

@@ -315,6 +315,8 @@
   "qr.add": "Add",
   "qr.addedText": "You can now control “{name}”.",
   "qr.failed": "Adding failed. Please try again.",
+  "scanOpen.title": "Scan to open",
+  "scanOpen.lead": "Scan the QR code to open this address.",
   "pw.title": "Change password",
   "pw.intro": "Your computers aren’t affected: they connect to the server with their own credentials.",
   "pw.current": "Current password",
