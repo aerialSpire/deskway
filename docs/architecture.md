@@ -471,11 +471,14 @@ On Windows, AI programs and the browser terminal use the first `pwsh.exe` on `PA
 On macOS and Linux, ordinary commands use `$SHELL -lc` and an interactive terminal starts `$SHELL -l`.
 The defaults when `SHELL` is unset are `/bin/zsh` on macOS and `/bin/sh` on Linux. At the first
 non-interactive start in a host process, the host compares the PATH from `$SHELL -lc` and
-`$SHELL -ilc`, allowing 10 seconds each. It caches the directories only the interactive shell
-adds and appends them to the host's PATH for ordinary commands. If a probe fails, the host logs
-it once and uses its inherited PATH. A login profile that resets PATH, as Debian's does, drops
-the added directories. On both systems, `proc_kill` ends a piped command's process group or a
-terminal's session, including its job-control groups.
+`$SHELL -ilc`, allowing 10 seconds each. Each probe uses the ordinary child setup and starts
+in its own session without a controlling terminal. It keeps the last 64 KiB of stdout, reads
+any bytes still queued when the shell exits, and ends the probe's process group. The host
+caches the directories only the interactive shell adds and appends them to the host's PATH
+for ordinary commands. If a probe fails, the host logs it once and uses its inherited PATH.
+A login profile that resets PATH, as Debian's does, drops the added directories. On both
+systems, `proc_kill` ends a piped command's process group or a terminal's session, including
+its job-control groups.
 
 Programs belong to the computer and can outlive the AI session. The computer keeps the last
 1 MiB of output per program, read by offset. Once a table exceeds 64 records, adding a program

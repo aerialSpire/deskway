@@ -18,6 +18,8 @@ use crate::signal::Control;
 use crate::wake::Wake;
 use crate::workspace::{self, Browser};
 
+use super::programs::shell;
+
 /// This session's desktop: `Default` when it is on the console and unlocked; `Winlogon` when
 /// the lock screen or the login window (another user, fast user switching) is showing.
 pub fn current() -> Desk {
@@ -53,7 +55,7 @@ fn browser_state(desk: Desk) -> WorkspaceState {
 
 pub(crate) fn workspace_browser(control: Wake<Control>) -> (Browser, WorkspaceWatch) {
     let browser = workspace::local_browser(
-        Arc::new(|rows, cols| programs::browser_pty(programs::shell("/bin/zsh", None, None), rows, cols, || !workspace_state().locked)),
+        Arc::new(|rows, cols| programs::browser_pty(shell(None, None), rows, cols, || !workspace_state().locked)),
         Arc::new(workspace_state),
     );
     workspace::sweep_home(&|| !workspace_state().locked);

@@ -29,7 +29,10 @@ fn shell(command: Option<&str>, cwd: Option<&str>, elevated: bool) -> io::Result
     if elevated {
         return Err(io::Error::new(io::ErrorKind::Unsupported, t("mcp.elevation_unavailable")));
     }
-    let mut c = programs::shell("/bin/sh", command, cwd);
+    Ok(programs::shell("/bin/sh", command, cwd, prepare_child))
+}
+
+fn prepare_child(mut c: Command) -> Command {
     let signals = host_signals();
     // Children should receive signals that the host consumes through sigwait.
     unsafe {
@@ -40,7 +43,7 @@ fn shell(command: Option<&str>, cwd: Option<&str>, elevated: bool) -> io::Result
             Ok(())
         });
     }
-    Ok(c)
+    c
 }
 
 pub fn session_members(id: libc::pid_t) -> io::Result<Vec<libc::pid_t>> {
