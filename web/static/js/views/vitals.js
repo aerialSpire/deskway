@@ -27,12 +27,15 @@ function gauge(label, usage, sub) {
 const usedPercent = (usage) => usage?.total > 0 ? 100 * usage.used / usage.total : undefined;
 
 function capacity({ used, total }) {
-  const unit = total >= 1e12 ? 1e12 : 1e9;
-  const size = (bytes) => {
-    const value = bytes / unit;
-    return `${value.toFixed(value < 10 ? 1 : 0)} ${unit === 1e12 ? 'TB' : 'GB'}`;
-  };
-  return t('vitals.capacity', { used: size(used), total: size(total) });
+  const terabyte = 1024 ** 4;
+  const unit = total >= terabyte ? 'TB' : 'GB';
+  const divisor = unit === 'TB' ? terabyte : 1024 ** 3;
+  const values = [used / divisor, total / divisor];
+  let sizes = values.map((value) => value.toFixed(value < 10 ? 1 : 0));
+  for (let decimals = 2; used !== total && Number(sizes[0]) === Number(sizes[1]); decimals++) {
+    sizes = values.map((value) => value.toFixed(decimals));
+  }
+  return t('vitals.capacity', { used: `${sizes[0]} ${unit}`, total: `${sizes[1]} ${unit}` });
 }
 
 function cpuModel(machine) {
@@ -48,11 +51,11 @@ function cpuModel(machine) {
 export function vitalsBars(d, { detail = false } = {}) {
   if (!d.online || !d.vitals) return null;
   const { cpu, memory, disks } = d.vitals;
-  const systemDisk = d.os === 'windows' ? 'C:' : '/';
-  const shownDisks = detail ? disks : disks.filter((disk) => disk.name === systemDisk);
+  const systemDisk = disks.find((disk) => disk.system === true);
+  const shownDisks = detail ? disks : systemDisk ? [systemDisk] : [];
   const gauges = [
     gauge(t('vitals.cpu'), cpu, detail ? cpuModel(d.machine) : ''),
-    gauge(t(detail ? 'vitals.memory' : 'vitals.memoryShort'), usedPercent(memory), detail ? capacity(memory) : ''),
+    gauge(t('vitals.memory'), usedPercent(memory), detail ? capacity(memory) : ''),
     ...shownDisks.map((disk) => gauge(
       detail ? t('vitals.diskName', { name: disk.name }) : t('vitals.disk'),
       usedPercent(disk), detail ? capacity(disk) : '')),

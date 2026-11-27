@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"reflect"
 	"testing"
@@ -40,7 +41,7 @@ func TestPreviewRequestsIncludeVitalsOnlyForCapableHosts(t *testing.T) {
 			nothing(t, host)
 
 			s.asked[host.deviceID] = time.Now().Add(-previewMaxAge)
-			s.forwardThumb(host.deviceID, "preview", "screen")
+			s.forwardThumb(host, "preview", "screen")
 			s.fromClient(viewer, watch)
 			nothing(t, host) // previews are still fresh
 			s.previews[host.deviceID]["screen"] = preview{data: "preview", at: time.Now().Add(-previewMaxAge)}
@@ -68,18 +69,19 @@ func TestVitalsLiveOnTheHostConnectionAndAppIsSaved(t *testing.T) {
 		s.clients[client] = true
 	}
 	machine := &proto.Machine{CPU: "Model", Cores: 4, Threads: 8, Memory: 16_000_000_000}
-	s.fromHost(host, proto.Msg{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapVitals}, App: "0.1.3", Machine: machine}, func() {})
+	hello := proto.Msg{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapVitals}, App: "0.1.3", Machine: machine}
+	s.fromHost(host, hello, func() {})
+	if req := one(t, host); req.Type != proto.TypeThumbs || !req.Vitals {
+		t.Fatalf("preview request: %+v", req)
+	}
 	for _, client := range []*conn{viewer, idle, other} {
 		got(client)
 	}
 
-	cpu, rtt := 12.3, uint64(0)
-	memory := proto.Usage{Used: 4_000_000_000, Total: machine.Memory}
-	disks := []proto.DiskUsage{}
-	report := proto.Msg{Type: proto.TypeVitals, CPU: &cpu, Memory: &memory, Disks: &disks, RTT: &rtt}
+	report := decodeVitals(t, `12.3`, `{"used":4000000000,"total":16000000000}`, `[{"name":"D:","used":0,"total":10,"system":true}]`)
 	s.fromHost(host, report, nil)
 
-	want := &proto.Vitals{CPU: cpu, Memory: memory, Disks: disks, RTT: &rtt}
+	want := &proto.Vitals{CPU: *report.CPU, Memory: *report.Memory, Disks: *report.Disks, RTT: report.RTT}
 	msg := one(t, viewer)
 	if msg.Type != proto.TypeDevices || len(msg.Devices) != 1 {
 		t.Fatalf("device list: %+v", msg)
@@ -91,7 +93,12 @@ func TestVitalsLiveOnTheHostConnectionAndAppIsSaved(t *testing.T) {
 	nothing(t, idle)
 	nothing(t, other)
 
+	s.forwardThumb(host, "preview", "screen")
+	got(viewer)
 	s.forgetHostLocked(host.deviceID)
+	if _, ok := s.asked[host.deviceID]; ok || len(s.previews[host.deviceID]) != 0 {
+		t.Fatal("disconnect kept preview state")
+	}
 	s.fromHost(host, report, nil)
 	nothing(t, viewer)
 	offline := s.deviceList(viewer)[0]
@@ -105,4 +112,71 @@ func TestVitalsLiveOnTheHostConnectionAndAppIsSaved(t *testing.T) {
 	if !bytes.Contains(raw, []byte(`"0.1.3"`)) || bytes.Contains(raw, []byte(`"vitals"`)) {
 		t.Fatalf("unexpected saved state: %s", raw)
 	}
+
+	reconnected := fakeConn("", "")
+	reconnected.deviceID = host.deviceID
+	s.hosts[host.deviceID] = reconnected
+	s.forwardThumb(host, "late preview", "screen")
+	nothing(t, viewer)
+	s.fromHost(reconnected, hello, func() {})
+	if req := one(t, reconnected); req.Type != proto.TypeThumbs || !req.Vitals {
+		t.Fatalf("reconnected host request: %+v", req)
+	}
+}
+
+func decodeVitals(t *testing.T, cpu, memory, disks string) proto.Msg {
+	t.Helper()
+	var m proto.Msg
+	raw := `{"type":"vitals","cpu":` + cpu + `,"memory":` + memory + `,"disks":` + disks + `,"rtt":0}`
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestVitalsAcceptOneValidReportPerRequest(t *testing.T) {
+	f := signalingFixture(t)
+	s := f.s
+	host, viewer := fakeConn("", ""), fakeConn(f.id("me"), "")
+	host.deviceID, host.version, host.caps = "pc1", proto.Version, []string{proto.CapVitals}
+	viewer.watching = true
+	s.hosts[host.deviceID], s.clients[viewer] = host, true
+
+	const memory = `{"used":0,"total":16}`
+	const disks = `[{"name":"D:","used":0,"total":32}]`
+	report := decodeVitals(t, "0", memory, disks)
+	s.fromHost(host, report, nil)
+	nothing(t, viewer)
+
+	now := time.Now()
+	s.requestPreviewLocked(host, now)
+	one(t, host)
+	for _, fields := range [][3]string{
+		{"null", memory, disks},
+		{"-0.1", memory, disks},
+		{"100.1", memory, disks},
+		{"0", `{"total":16}`, disks},
+		{"0", `{"used":null,"total":16}`, disks},
+		{"0", `{"used":0}`, disks},
+		{"0", `{"used":0,"total":0}`, disks},
+		{"0", `{"used":17,"total":16}`, disks},
+		{"0", memory, `null`},
+		{"0", memory, `[{"name":"D:","total":32}]`},
+		{"0", memory, `[{"name":"D:","used":0}]`},
+		{"0", memory, `[{"name":"D:","used":33,"total":32}]`},
+	} {
+		t.Run(fields[0]+"/"+fields[1]+"/"+fields[2], func(t *testing.T) {
+			s.fromHost(host, decodeVitals(t, fields[0], fields[1], fields[2]), nil)
+			nothing(t, viewer)
+		})
+	}
+	s.fromHost(host, report, nil)
+	one(t, viewer)
+	s.fromHost(host, report, nil)
+	nothing(t, viewer)
+
+	s.requestPreviewLocked(host, now.Add(previewMaxAge))
+	one(t, host)
+	s.fromHost(host, decodeVitals(t, "100", memory, `[]`), nil)
+	one(t, viewer)
 }

@@ -71,8 +71,9 @@ type conn struct {
 	version int
 	caps    []string
 	machine *proto.Machine
-	// The latest vitals on this connection, guarded by Server.mu.
-	vitals *proto.Vitals
+	// Vitals on this connection, guarded by Server.mu.
+	vitalsRequested bool
+	vitals          *proto.Vitals
 	// Hosts: the current list's probe and the latest reported timings. Guarded by Server.mu.
 	relayProbe string
 	relayRTTs  map[string]int

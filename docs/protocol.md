@@ -89,16 +89,17 @@ for each relay that answered. The server matches the reply to the current list u
 When a browser sends `watch {on:true}`, it receives the cached previews. A host can be asked
 for a refresh while a browser of its account is watching, when its previews are missing or at
 least 30 seconds old. The same check applies when a host sends its hello. The server sends
-`thumbs {on:true}` at most once per computer every 30 seconds. It adds `vitals:true` for hosts
-with the capability. A headless host with that capability answers with vitals alone.
+`thumbs {on:true}` at most once every 30 seconds on a host connection. It adds `vitals:true`
+for hosts with the capability. A headless host with that capability answers with vitals alone.
 
 The host sends `vitals {cpu, memory, disks, rtt?}`. CPU is a percentage rounded to one decimal
-place. Memory is `{used,total}` in bytes, and each disk is `{name,used,total}` in bytes, with
-the name taken from its mount point or drive letter. The optional `rtt` is the latest
+place. Memory is `{used,total}` in bytes, and each disk is `{name,used,total,system?}`, with
+capacities in bytes and the name taken from its mount point or drive letter. The host marks
+the operating system's disk with `system:true`. The optional `rtt` is the latest
 host-to-server WebSocket keepalive round trip in milliseconds. It first appears after the host
-receives a matching pong. The server keeps the latest sample in memory for the current host
-connection, includes it in `devices`, and sends the updated list to watching browsers of the
-account. Going offline drops that sample.
+receives a matching pong. The server accepts one valid sample per request, includes it in
+`devices`, and sends the updated list to watching browsers of the account. Going offline
+clears the sample, previews, and request cooldown.
 
 ## The computer you are using
 

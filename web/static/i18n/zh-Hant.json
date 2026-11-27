@@ -36,7 +36,6 @@
   "vitals.title": "運作狀況",
   "vitals.cpu": "CPU",
   "vitals.memory": "記憶體",
-  "vitals.memoryShort": "RAM",
   "vitals.disk": "磁碟",
   "vitals.diskName": "磁碟 {name}",
   "vitals.cores.one": "{n} 核心",

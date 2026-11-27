@@ -44,7 +44,7 @@ export const TYPES = Object.freeze({
   Device: { id: 's', name: 's', os: 's', online: 'b', last_seen: 'i?', controller: 'Controller?', kept_terminal: 'KeptTerminal?', workspace_access: 's:locked|no_user_session|view_only?', displays: '[Display]?', version: 'i?', app: 's?', machine: 'Machine?', vitals: 'Vitals?', caps: '[s]?', ai: 'AiView?', here: 'b?', tools: '[s]?' },
   Machine: { cpu: 's', cores: 'i', threads: 'i', memory: 'i' },
   Usage: { used: 'i', total: 'i' },
-  DiskUsage: { name: 's', used: 'i', total: 'i' },
+  DiskUsage: { name: 's', used: 'i', total: 'i', system: 'b?' },
   Vitals: { cpu: 'n', memory: 'Usage', disks: '[DiskUsage]', rtt: 'i?' },
   AiView: { state: 's:off|on|stopped', admin: 'b', ts: 'i', name: 's?', since: 'i?', refused: 'b?' },
   Controller: { device: 'b', name: 's', connecting: 'b' },

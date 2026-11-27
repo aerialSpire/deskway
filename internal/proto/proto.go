@@ -121,13 +121,15 @@ type Machine struct {
 }
 
 type Usage struct {
-	Used  uint64 `json:"used"`
-	Total uint64 `json:"total"`
+	// Pointers distinguish a missing reading from zero when decoding a host report.
+	Used  *uint64 `json:"used"`
+	Total *uint64 `json:"total"`
 }
 
 type DiskUsage struct {
 	Name string `json:"name"`
 	Usage
+	System bool `json:"system,omitempty"`
 }
 
 type Vitals struct {

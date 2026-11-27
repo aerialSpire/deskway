@@ -99,7 +99,8 @@
       "fields": {
         "name": { "type": "string", "optional": false, "meaning": "mount point or drive letter" },
         "used": { "type": "integer", "optional": false, "meaning": "used bytes" },
-        "total": { "type": "integer", "optional": false, "meaning": "total bytes" }
+        "total": { "type": "integer", "optional": false, "meaning": "total bytes" },
+        "system": { "type": "boolean", "optional": true, "meaning": "true for the disk containing the operating system" }
       }
     },
     "Vitals": {

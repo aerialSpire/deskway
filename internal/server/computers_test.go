@@ -168,7 +168,12 @@ func TestOwnerRenamesAndRemovesComputers(t *testing.T) {
 	}
 	want(t, "empty name", f.status(a, "PATCH", "/api/computers/pc1", map[string]string{"name": " "}), http.StatusBadRequest)
 	want(t, "someone else's", f.status(a, "DELETE", "/api/computers/theirs", nil), http.StatusNotFound)
-	f.s.forwardThumb("pc1", "jpeg", "0")
+	host := fakeConn("", "")
+	host.deviceID = "pc1"
+	f.s.mu.Lock()
+	f.s.hosts[host.deviceID] = host
+	f.s.mu.Unlock()
+	f.s.forwardThumb(host, "jpeg", "0")
 	want(t, "remove", f.status(a, "DELETE", "/api/computers/pc1", nil), http.StatusNoContent)
 	if _, approved := f.s.store.DeviceOwner("pc1"); approved {
 		t.Fatal("still there")

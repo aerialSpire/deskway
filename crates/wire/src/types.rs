@@ -73,6 +73,8 @@ wire_struct! {
         "name" name: String,
         "used" used: u64,
         "total" total: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "system" system: Option<bool>,
     }
 }
 

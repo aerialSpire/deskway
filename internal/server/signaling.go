@@ -42,6 +42,9 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	// A reconnecting host replaces its stale socket instead of waiting for ping timeout.
 	old := s.hosts[id]
+	if old != nil {
+		s.clearPreviewsLocked(id)
+	}
 	s.hosts[id] = c
 	s.mu.Unlock()
 	if old != nil {
@@ -64,7 +67,6 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	removed := s.hosts[id] == c
 	if removed {
-		// Its previews stay for the overview.
 		s.forgetHostLocked(id)
 	}
 	s.mu.Unlock()
@@ -394,7 +396,7 @@ func (s *Server) fromHost(c *conn, m proto.Msg, watchRelays func()) {
 		if len(m.Screen) > 64 {
 			return
 		}
-		s.forwardThumb(c.deviceID, m.Data, m.Screen)
+		s.forwardThumb(c, m.Data, m.Screen)
 		return
 	}
 	if len(m.Auth) > proto.MaxAuth || (m.Holder != nil && !validHolder(m.Holder)) {

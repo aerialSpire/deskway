@@ -118,11 +118,41 @@ fn disk_name(removable: bool, fs: &str, mount: &str, source: &str) -> Option<Str
     mount.starts_with('/').then(|| mount.into())
 }
 
+#[cfg(windows)]
+fn system_disk_name() -> Option<String> {
+    let root = std::env::var_os("SystemRoot")?;
+    system_drive(std::path::Path::new(&root))
+}
+
+#[cfg(windows)]
+fn system_drive(root: &std::path::Path) -> Option<String> {
+    use std::path::{Component, Prefix};
+
+    if !root.is_absolute() {
+        return None;
+    }
+    let Component::Prefix(prefix) = root.components().next()? else {
+        return None;
+    };
+    match prefix.kind() {
+        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+            Some(format!("{}:", drive.to_ascii_uppercase() as char))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(windows))]
+fn system_disk_name() -> Option<String> {
+    Some("/".into())
+}
+
 fn disks() -> Vec<DiskUsage> {
     let Ok(mut disks) = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing()) else {
         return Vec::new();
     };
     let mut volumes = BTreeMap::new();
+    let system_disk = system_disk_name();
     let storage = DiskRefreshKind::nothing().with_storage();
     for disk in &mut disks {
         let mount = disk.mount_point().to_string_lossy();
@@ -143,6 +173,7 @@ fn disks() -> Vec<DiskUsage> {
             name: name.clone(),
             used: total.saturating_sub(disk.available_space()),
             total,
+            system: (system_disk.as_deref() == Some(name.as_str())).then_some(true),
         };
         // APFS's writable Data volume represents the startup disk when both mounts are reported.
         if startup_data {
@@ -157,6 +188,16 @@ fn disks() -> Vec<DiskUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn the_system_drive_comes_from_the_windows_directory() {
+        use std::path::Path;
+
+        assert_eq!(system_drive(Path::new(r"d:\Windows")).as_deref(), Some("D:"));
+        assert_eq!(system_drive(Path::new(r"\\?\E:\Windows")).as_deref(), Some("E:"));
+        assert_eq!(system_drive(Path::new(r"D:Windows")), None);
+    }
 
     #[test]
     fn fixed_local_mounts_have_user_facing_names() {

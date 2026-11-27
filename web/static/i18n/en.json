@@ -36,7 +36,6 @@
   "vitals.title": "Vitals",
   "vitals.cpu": "CPU",
   "vitals.memory": "Memory",
-  "vitals.memoryShort": "RAM",
   "vitals.disk": "Disk",
   "vitals.diskName": "Disk {name}",
   "vitals.cores.one": "{n} core",

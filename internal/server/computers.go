@@ -133,6 +133,12 @@ func (s *Server) handleComputerRemove(w http.ResponseWriter, r *http.Request) {
 func (s *Server) forgetHostLocked(id string) {
 	delete(s.hosts, id)
 	delete(s.displays, id)
+	s.clearPreviewsLocked(id)
+}
+
+func (s *Server) clearPreviewsLocked(id string) {
+	delete(s.previews, id)
+	delete(s.asked, id)
 }
 
 // dropComputer ends everything live of a computer that was removed: its socket, its state and
@@ -141,8 +147,6 @@ func (s *Server) dropComputer(id string) {
 	s.mu.Lock()
 	host := s.hosts[id]
 	s.forgetHostLocked(id)
-	delete(s.previews, id)
-	delete(s.asked, id)
 	s.mu.Unlock()
 	if host != nil {
 		host.cancel()

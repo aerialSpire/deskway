@@ -36,7 +36,6 @@
   "vitals.title": "运行状况",
   "vitals.cpu": "CPU",
   "vitals.memory": "内存",
-  "vitals.memoryShort": "内存",
   "vitals.disk": "磁盘",
   "vitals.diskName": "磁盘 {name}",
   "vitals.cores.one": "{n} 核",

@@ -9,7 +9,7 @@
 
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -279,6 +279,7 @@ struct Host {
     workspace_state: WorkspaceState,
     transfers: session::file_transfer::Registry,
     machine: Option<types::Machine>,
+    sampling: Option<Receiver<Option<Sample>>>,
     out_tx: Wake<String>,
     updates_tx: Wake<SessionUpdate>,
     /// The sessions on the two seats (their handles feed the session threads).
@@ -1078,9 +1079,8 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
     ws.send(WsMessage::text(serde_json::to_string(&host.hello())?))?;
     host.send_status();
     let mut alive = alive::Alive::new(Instant::now());
-    // A sample from an old connection must never be sent on its replacement.
-    let (sample_tx, samples) = q.wake.channel();
-    let mut sampling = false;
+    let mut sampling_here = false;
+    let mut sample_requested = false;
     loop {
         tcp(ws).set_nonblocking(true)?;
         let read = match ws.read() {
@@ -1089,10 +1089,7 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
                 alive.heard(now);
                 match m {
                     WsMessage::Text(t) => {
-                        let requested = q.on_message(host, t.as_str());
-                        if requested && !sampling {
-                            sampling = Sample::request(sample_tx.clone()).is_ok();
-                        }
+                        sample_requested |= q.on_message(host, t.as_str()) && !sampling_here;
                     }
                     WsMessage::Pong(payload) => alive.pong(&payload, now),
                     _ => {}
@@ -1112,10 +1109,25 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
             alive::Due::Gone => anyhow::bail!("the server said nothing for {}s", alive::SILENT.as_secs()),
         }
         q.drain_local(host);
-        while let Ok(sample) = samples.try_recv() {
-            sampling = false;
-            if let Some(sample) = sample {
-                ws.send(WsMessage::text(serde_json::to_string(&sample.message(alive.rtt()))?))?;
+        if let Some(samples) = &host.sampling {
+            let result = samples.try_recv();
+            if !matches!(result, Err(TryRecvError::Empty)) {
+                host.sampling = None;
+                // A sample from an old connection must never be sent on its replacement.
+                if std::mem::take(&mut sampling_here) {
+                    if let Ok(Some(sample)) = result {
+                        ws.send(WsMessage::text(serde_json::to_string(&sample.message(alive.rtt()))?))?;
+                    }
+                }
+            }
+        }
+        // If a worker survived a reconnect, wait for it before sampling for this socket.
+        if sample_requested && host.sampling.is_none() {
+            sample_requested = false;
+            let (tx, rx) = q.wake.channel();
+            if Sample::request(tx).is_ok() {
+                host.sampling = Some(rx);
+                sampling_here = true;
             }
         }
         for e in q.platform.iter().flat_map(Receiver::try_iter) {
@@ -1183,6 +1195,7 @@ impl Host {
             browser,
             transfers: Default::default(),
             machine: vitals::machine(),
+            sampling: None,
             out_tx,
             updates_tx,
             sessions: Seats::default(),
@@ -1358,9 +1371,10 @@ mod tests {
             let (socket, _) = listener.accept().unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut server = tungstenite::accept(socket).unwrap();
-            for kind in ["hello", "status"] {
-                assert_eq!(read_signal(&mut server)["type"], kind);
-            }
+            assert_eq!(read_signal(&mut server)["type"], "hello");
+            assert!(matches!(server.read().unwrap(), WsMessage::Ping(_)));
+            server.flush().unwrap(); // tungstenite queued the pong when it read the ping
+            assert_eq!(read_signal(&mut server)["type"], "status");
             (server, control, host)
         }
 
@@ -1469,7 +1483,7 @@ mod tests {
                 let report = read_signal(&mut server);
                 assert_eq!(report["type"], "vitals");
                 assert!(report["cpu"].is_number() && report["memory"].is_object() && report["disks"].is_array());
-                assert!(report.get("rtt").is_none());
+                assert!(report["rtt"].is_u64());
             } else {
                 server.get_mut().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
                 assert!(matches!(server.read(), Err(tungstenite::Error::Io(e))
@@ -1478,6 +1492,24 @@ mod tests {
             control.send(Control::Quit).unwrap();
             done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
         }
+    }
+
+    #[test]
+    fn a_request_after_reconnecting_waits_for_the_hosts_previous_sample() {
+        let mut test = Test::with_features("vitals-reconnect", false, false, Features::default());
+        let (finish_old_sample, old_sample) = test.q.wake.channel();
+        test.host.sampling = Some(old_sample);
+        let (mut server, control, done) = test.serve();
+        server.send(WsMessage::text(r#"{"type":"thumbs","on":true,"vitals":true}"#)).unwrap();
+        server.get_mut().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        assert!(matches!(server.read(), Err(tungstenite::Error::Io(e))
+            if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)));
+
+        finish_old_sample.send(None).unwrap();
+        server.get_mut().set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        assert_eq!(read_signal(&mut server)["type"], "vitals");
+        control.send(Control::Quit).unwrap();
+        done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
     }
 
     fn read_signal(server: &mut WebSocket<TcpStream>) -> Value {

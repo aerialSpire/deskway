@@ -60,23 +60,27 @@ func (s *Server) requestPreviewLocked(host *conn, now time.Time) {
 		return
 	}
 	s.asked[id] = now
-	host.send(proto.Msg{Type: proto.TypeThumbs, On: true, Vitals: slices.Contains(host.caps, proto.CapVitals)})
+	host.vitalsRequested = slices.Contains(host.caps, proto.CapVitals)
+	host.send(proto.Msg{Type: proto.TypeThumbs, On: true, Vitals: host.vitalsRequested})
 }
 
 func (s *Server) onVitals(host *conn, m proto.Msg) {
-	if m.CPU == nil || *m.CPU < 0 || *m.CPU > 100 || m.Memory == nil || m.Memory.Used > m.Memory.Total || m.Disks == nil || *m.Disks == nil {
+	if m.CPU == nil || !(0 <= *m.CPU && *m.CPU <= 100) ||
+		m.Memory == nil || !validUsage(*m.Memory) || *m.Memory.Total == 0 ||
+		m.Disks == nil || *m.Disks == nil {
 		return
 	}
 	for _, disk := range *m.Disks {
-		if disk.Name == "" || disk.Used > disk.Total {
+		if disk.Name == "" || !validUsage(disk.Usage) {
 			return
 		}
 	}
 	s.mu.Lock()
-	if s.hosts[host.deviceID] != host || !slices.Contains(host.caps, proto.CapVitals) {
+	if s.hosts[host.deviceID] != host || !host.vitalsRequested || !slices.Contains(host.caps, proto.CapVitals) {
 		s.mu.Unlock()
 		return
 	}
+	host.vitalsRequested = false
 	host.vitals = &proto.Vitals{CPU: *m.CPU, Memory: *m.Memory, Disks: *m.Disks, RTT: m.RTT}
 	s.mu.Unlock()
 	s.broadcastDevicesTo(func(c *conn) bool {
@@ -84,10 +88,18 @@ func (s *Server) onVitals(host *conn, m proto.Msg) {
 	})
 }
 
+func validUsage(usage proto.Usage) bool {
+	return usage.Used != nil && usage.Total != nil && *usage.Used <= *usage.Total
+}
+
 // forwardThumb relays a preview to whoever is looking and keeps the latest in memory (never on disk).
-func (s *Server) forwardThumb(device, data, screen string) {
+func (s *Server) forwardThumb(host *conn, data, screen string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	device := host.deviceID
+	if s.hosts[device] != host {
+		return
+	}
 	if s.previews[device] == nil {
 		s.previews[device] = map[string]preview{}
 	}
