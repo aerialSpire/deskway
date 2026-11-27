@@ -364,7 +364,7 @@ func (s *Store) DevicesFor(user string) []proto.Device {
 	list := []proto.Device{}
 	for id, d := range s.Devices {
 		if !d.Pending && d.Owner == user {
-			dev := proto.Device{ID: id, Name: d.Name, OS: d.OS, LastSeen: d.LastSeen, Tools: d.Tools, Version: d.Version}
+			dev := proto.Device{ID: id, Name: d.Name, OS: d.OS, LastSeen: d.LastSeen, Tools: d.Tools, Version: d.Version, App: d.App}
 			if d.AI != nil {
 				dev.AI = &proto.AiView{State: proto.AIOff, Admin: d.AI.Admin, TS: d.AI.TS}
 				if d.AI.AI {
@@ -413,15 +413,15 @@ func (s *Store) Touch(device string) error {
 	return nil
 }
 
-// SetHostHello keeps the reported protocol version and AI tools, saving when either changes.
-func (s *Store) SetHostHello(device string, version int, tools []string) error {
+// SetHostHello keeps the reported versions and AI tools, saving when they change.
+func (s *Store) SetHostHello(device string, version int, app string, tools []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	d := s.Devices[device]
-	if d == nil || (d.Version == version && slices.Equal(d.Tools, tools)) {
+	if d == nil || (d.Version == version && d.App == app && slices.Equal(d.Tools, tools)) {
 		return nil
 	}
-	d.Version, d.Tools = version, slices.Clone(tools)
+	d.Version, d.App, d.Tools = version, app, slices.Clone(tools)
 	return s.saveLocked()
 }
 

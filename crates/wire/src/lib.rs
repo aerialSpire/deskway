@@ -29,7 +29,7 @@ pub mod contract;
 mod tests;
 
 /// The protocol version this build speaks. Version 1 is everything before `hello` existed.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The oldest host protocol supported by this release.
 #[cfg(any(test, feature = "contract"))]
@@ -59,8 +59,9 @@ pub mod caps {
     /// It takes AI clients (docs/architecture.md, "AI control").
     pub const AI: &str = "ai";
     pub const RELAY_RTT: &str = "relay-rtt";
+    pub const VITALS: &str = "vitals";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, START_DISPLAY, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, BROWSE, FILE_TRANSFER, AI, RELAY_RTT];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, START_DISPLAY, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, BROWSE, FILE_TRANSFER, AI, RELAY_RTT, VITALS];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of

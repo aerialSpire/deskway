@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::types::{AiState, AiSwitch, AnswerAuth, Display, Holder, IceCandidate, IceServer, KeptTerminal, LogEntry, OfferAuth, PairAuth, PairedAuth, Reason, View};
+use super::types::{AiState, AiSwitch, AnswerAuth, DiskUsage, Display, Holder, IceCandidate, IceServer, KeptTerminal, LogEntry, Machine, OfferAuth, PairAuth, PairedAuth, Reason, Usage, View};
 use super::wire_enum;
 
 wire_enum! {
@@ -13,6 +13,10 @@ wire_enum! {
             "caps" caps: Vec<String>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             "tools" tools: Option<Vec<String>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "app" app: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "machine" machine: Option<Machine>,
         },
         "status" => Status {
             "displays" displays: Vec<Display>,
@@ -29,7 +33,18 @@ wire_enum! {
             #[serde(skip_serializing_if = "Option::is_none")]
             "workspace_access" workspace_access: Option<Reason>,
         },
-        "thumbs" => Thumbs { "on" on: bool },
+        "thumbs" => Thumbs {
+            "on" on: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "vitals" vitals: Option<bool>,
+        },
+        "vitals" => Vitals {
+            "cpu" cpu: f64,
+            "memory" memory: Usage,
+            "disks" disks: Vec<DiskUsage>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "rtt" rtt: Option<u64>,
+        },
         "thumb" => Thumb { "screen" screen: String, "data" data: String },
         "devlog" => DeviceLog {
             "auth" auth: Vec<LogEntry>,

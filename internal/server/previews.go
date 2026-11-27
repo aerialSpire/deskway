@@ -1,12 +1,13 @@
 package server
 
 import (
+	"slices"
 	"time"
 
 	"deskway/internal/proto"
 )
 
-// Previews: the overview's thumbnail of each computer's displays, kept in memory only.
+// Previews and vitals for the overview, kept in memory only.
 
 // preview is the latest thumbnail of one display, and when it arrived.
 type preview struct {
@@ -26,43 +27,79 @@ func (s *Server) anyWatcherLocked(device string) bool {
 	return false
 }
 
-// syncThumbs gives a browser that just opened the overview the previews already here, and asks
-// a computer for new ones only if someone is looking and the ones here are old or missing.
-// Previews are single pictures, not a stream: the computer captures once and stops.
-func (s *Server) syncThumbs(viewer ...*conn) {
+// syncThumbs gives a browser that just opened the overview its cached previews and asks for
+// a refresh. The same request goes to a host that sends its hello while someone is watching.
+func (s *Server) syncThumbs(viewer *conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, c := range viewer {
-		for device, screens := range s.previews {
-			if !s.store.CanAccess(c.user, device) {
-				continue
-			}
-			for screen, p := range screens {
-				c.send(proto.Msg{Type: proto.TypeThumb, Device: device, Data: p.data, Screen: screen})
-			}
+	for device, screens := range s.previews {
+		if !s.store.CanAccess(viewer.user, device) {
+			continue
+		}
+		for screen, p := range screens {
+			viewer.send(proto.Msg{Type: proto.TypeThumb, Device: device, Data: p.data, Screen: screen})
 		}
 	}
 	now := time.Now()
-	for id, h := range s.hosts {
-		if !s.anyWatcherLocked(id) || now.Sub(s.asked[id]) < previewMaxAge {
-			continue
-		}
-		fresh := len(s.previews[id]) > 0
-		for _, p := range s.previews[id] {
-			fresh = fresh && now.Sub(p.at) < previewMaxAge
-		}
-		if fresh {
-			continue
-		}
-		s.asked[id] = now
-		h.send(proto.Msg{Type: proto.TypeThumbs, On: true})
+	for _, host := range s.hosts {
+		s.requestPreviewLocked(host, now)
 	}
 }
 
+// The request is shared by previews and vitals, including hosts with no previews.
+func (s *Server) requestPreviewLocked(host *conn, now time.Time) {
+	id := host.deviceID
+	if host.version == 0 || now.Sub(s.asked[id]) < previewMaxAge || !s.anyWatcherLocked(id) {
+		return
+	}
+	fresh := len(s.previews[id]) > 0
+	for _, p := range s.previews[id] {
+		fresh = fresh && now.Sub(p.at) < previewMaxAge
+	}
+	if fresh {
+		return
+	}
+	s.asked[id] = now
+	host.vitalsRequested = slices.Contains(host.caps, proto.CapVitals)
+	host.send(proto.Msg{Type: proto.TypeThumbs, On: true, Vitals: host.vitalsRequested})
+}
+
+func (s *Server) onVitals(host *conn, m proto.Msg) {
+	if m.CPU == nil || !(0 <= *m.CPU && *m.CPU <= 100) ||
+		m.Memory == nil || !validUsage(*m.Memory) || *m.Memory.Total == 0 ||
+		m.Disks == nil || *m.Disks == nil {
+		return
+	}
+	for _, disk := range *m.Disks {
+		if disk.Name == "" || !validUsage(disk.Usage) {
+			return
+		}
+	}
+	s.mu.Lock()
+	if s.hosts[host.deviceID] != host || !host.vitalsRequested || !slices.Contains(host.caps, proto.CapVitals) {
+		s.mu.Unlock()
+		return
+	}
+	host.vitalsRequested = false
+	host.vitals = &proto.Vitals{CPU: *m.CPU, Memory: *m.Memory, Disks: *m.Disks, RTT: m.RTT}
+	s.mu.Unlock()
+	s.broadcastDevicesTo(func(c *conn) bool {
+		return c.watching && s.store.CanAccess(c.user, host.deviceID)
+	})
+}
+
+func validUsage(usage proto.Usage) bool {
+	return usage.Used != nil && usage.Total != nil && *usage.Used <= *usage.Total
+}
+
 // forwardThumb relays a preview to whoever is looking and keeps the latest in memory (never on disk).
-func (s *Server) forwardThumb(device, data, screen string) {
+func (s *Server) forwardThumb(host *conn, data, screen string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	device := host.deviceID
+	if s.hosts[device] != host {
+		return
+	}
 	if s.previews[device] == nil {
 		s.previews[device] = map[string]preview{}
 	}

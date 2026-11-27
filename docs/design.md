@@ -48,9 +48,17 @@ Each component is defined once, and both apps use the same classes.
 | Inline confirm | `.confirm` is used only to confirm, in place, the removal of one row of a list. |
 | Notice | `.notice` is one line of state on a page: a `.dot`, the text and an optional `.btn.compact`. Over the remote picture the same component is `.notice.dark`. |
 | Menu | `.dropdown` contains the button that opens it and a `.menu` with `.menu-head`, `.menu-item` (`.danger` for removal) and `.menu-sep`. The menu drops down from its button, aligned to the button's right edge. Items are sized to their text (at least 40 high, wrapping as needed) and have no decorative icons. All menus are made in one place (`js/views/menu.js`), and a menu stays open when the page is redrawn. An item's own actions are always in a menu under its ⋯, never laid out as buttons next to its name. |
-| Status | `.status` with a `.dot` (`.ok`, `.warn`, or neither for off). |
+| Status | `.status` with a `.dot` (`.ok`, `.warn`, or neither for off). On computers, the installed host version uses the right edge of the same line. The latency indicator fills four bars below 30 ms, three below 80 ms, two below 150 ms, and one in warning colour from 150 ms. |
+| Usage gauge | `.gauge` puts the label and percentage above a thin bar. It uses accent below 80%, warning from 80%, and danger from 95%. |
 | Tag | `.tag` (`.accent`, `.ok`, or plain). |
 | Spinner, loading | `.spinner` is the spinner. `.loading` is a spinner together with a description of what is being waited for. |
+
+On the computer list, the name, tags and menu share the first row of the card body. The
+status line and the three-column CPU, memory and system disk gauges use the full card width.
+On a computer's page, the same status line sits under the title. A heading-free vitals card
+between the computer actions and AI activity uses the AI activity frame, with wider gauges and
+hardware or capacity details in an auto-fitting grid. Latency and gauges appear as measurements
+arrive and disappear when the computer goes offline.
 
 ## Page structure
 

@@ -183,6 +183,9 @@ fn check_struct<T: Serialize + DeserializeOwned + Debug>(name: &str, fields: &[&
 #[test]
 fn shared_types_match_the_definition() {
     check_struct::<Display>("Display", Display::FIELDS);
+    check_struct::<Machine>("Machine", Machine::FIELDS);
+    check_struct::<Usage>("Usage", Usage::FIELDS);
+    check_struct::<DiskUsage>("DiskUsage", DiskUsage::FIELDS);
     check_struct::<IceServer>("ICEServer", IceServer::FIELDS);
     check_struct::<View>("View", View::FIELDS);
     check_struct::<IceCandidate>("IceCandidate", IceCandidate::FIELDS);
