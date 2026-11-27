@@ -5,7 +5,7 @@
 //! guessing from the frontmost application.
 
 use std::io;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc::{self, Sender}, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
