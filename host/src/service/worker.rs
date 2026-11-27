@@ -1,4 +1,4 @@
-//! The user worker: the person signed in at the console, for an AI client's workspace
+//! The user worker: the person signed in at the console, for the browser and AI workspace
 //! (`workspace`). The `Deskway` service starts it as that person (`launch_worker`) and gives it
 //! the key of this run on its standard input; it connects to the network service's worker pipe
 //! and answers there until the person signs out. Its program table outlives the pipe: the
@@ -75,6 +75,7 @@ pub fn run(kind: Kind) -> Result<()> {
     if kind == Kind::User {
         crate::platform::workspace::sweep_home();
     }
+    let activity = (kind == Kind::User).then(|| Arc::new(crate::platform::workspace::WorkspaceActivity::default()));
     let ws: Arc<dyn Workspace> = Arc::new(match kind {
         Kind::User => Local::default(),
         Kind::Admin => Local::numbered_from(procs::ADMIN_FIRST),
@@ -85,7 +86,7 @@ pub fn run(kind: Kind) -> Result<()> {
             ipc::handshake_client(&pipe, &key)?;
             eprintln!("{}: connected", kind.what());
             delay = Duration::from_secs(1);
-            crate::workspace::remote::serve(Arc::new(pipe), ws.clone(), kind == Kind::User)
+            crate::workspace::remote::serve(Arc::new(pipe), ws.clone(), activity.clone())
         });
         if let Err(e) = r {
             eprintln!("{}: {e:#}", kind.what());
