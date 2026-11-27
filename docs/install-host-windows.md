@@ -82,9 +82,10 @@ you can remove devices from it there.
 ## Terminal and Files in the browser
 
 After signing in to Windows, open the computer’s page and choose **Terminal** or **Files**.
-Terminal starts PowerShell 7 if available and uses Windows PowerShell otherwise. Files starts
-in your profile folder. The root lists drives, and you can browse, upload, replace and
-download files with your Windows account’s rights.
+Terminal and AI commands use the first `pwsh.exe` on `PATH`, then
+`%ProgramFiles%\PowerShell\7\pwsh.exe`, then Windows PowerShell from the Windows system folder.
+Files starts in your profile folder. The root lists drives, and you can browse, upload, replace
+and download files with your Windows account’s rights.
 
 When Windows is locked or showing a secure prompt, take over the desktop and unlock it to
 use these actions. A terminal you left keeps running while Windows is locked. When the

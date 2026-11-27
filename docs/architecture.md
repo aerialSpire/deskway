@@ -462,6 +462,9 @@ use tool names as tags. On Windows they cross the user worker's JSON pipe with t
 request and reply shape. The service starts that worker as the person signed in at the
 console. On macOS and Linux the workspace runs in the host process as its user.
 
+On Windows, AI programs and the browser terminal use the first `pwsh.exe` on `PATH`, then
+`%ProgramFiles%\PowerShell\7\pwsh.exe`, then Windows PowerShell from the Windows system folder.
+
 On macOS and Linux, ordinary commands use `$SHELL -lc` and an interactive terminal starts `$SHELL -l`.
 The defaults when `SHELL` is unset are `/bin/zsh` on macOS and `/bin/sh` on Linux. On both
 systems, `proc_kill` ends a piped command's process group or a terminal's session, including

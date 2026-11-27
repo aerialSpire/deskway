@@ -50,6 +50,7 @@ pub fn computer_name() -> Option<String> {
 pub enum KnownFolder {
     ProgramData,
     ProgramFiles,
+    System,
 }
 
 /// A folder as the system names it, never as environment variables do.
@@ -59,6 +60,7 @@ pub fn known_folder(which: KnownFolder) -> PathBuf {
         let id = match which {
             KnownFolder::ProgramData => FOLDERID_ProgramData,
             KnownFolder::ProgramFiles => FOLDERID_ProgramFiles,
+            KnownFolder::System => FOLDERID_System,
         };
         if let Ok(p) = SHGetKnownFolderPath(&id, KNOWN_FOLDER_FLAG(0), None) {
             let s = p.to_string().unwrap_or_default();
@@ -71,6 +73,7 @@ pub fn known_folder(which: KnownFolder) -> PathBuf {
     PathBuf::from(match which {
         KnownFolder::ProgramData => r"C:\ProgramData",
         KnownFolder::ProgramFiles => r"C:\Program Files",
+        KnownFolder::System => r"C:\Windows\System32",
     })
 }
 
