@@ -136,7 +136,7 @@ impl Forward for Local {
             let _ = self.input.send((hand, c));
         };
         match call {
-            Call::VideoStart { session, view } => {
+            Call::VideoStart { session, view, display } => {
                 if take(&mut s.owner, session) {
                     self.clear_session();
                 }
@@ -144,7 +144,7 @@ impl Forward for Local {
                 crate::power::session(true);
                 // Each session starts from the computer's own key state, not the last session's.
                 input(input::Command::Reset);
-                let _ = self.video.send(video::Command::Start(view));
+                let _ = self.video.send(video::Command::Start { view, display });
             }
             Call::VideoStop { .. } => {
                 s.owner = None;
@@ -246,7 +246,7 @@ mod tests {
             assert_eq!(obeyed(Some("new"), Some("ai"), &c), Some(Hand::Person), "{c:?}");
         }
         // What concerns the whole computer is not a session's.
-        assert!(obeyed(Some("new"), None, &Call::VideoStart { session: "next".into(), view: Default::default() }).is_some());
+        assert!(obeyed(Some("new"), None, &Call::VideoStart { session: "next".into(), view: Default::default(), display: None }).is_some());
         assert!(obeyed(Some("new"), None, &Call::AutoLock { on: true }).is_some());
         assert!(obeyed(None, None, &Call::Thumbnails { on: true }).is_some());
     }

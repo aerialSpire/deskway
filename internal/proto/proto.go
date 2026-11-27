@@ -187,7 +187,7 @@ type Msg struct {
 	Host       string          `json:"host,omitempty"`       // attached, presence: online or away
 	From       string          `json:"from,omitempty"`       // pairing: the account's display name, set by the server
 	User       string          `json:"user,omitempty"`       // the browser's account, set by the server; account: the sign-in name
-	Display    string          `json:"display,omitempty"`    // account: the name others see
+	Display    string          `json:"display,omitempty"`    // offer: initial display id; account: the name others see
 	Force      bool            `json:"force,omitempty"`      // take over the session holding the computer
 	On         bool            `json:"on,omitempty"`
 	Data       string          `json:"data,omitempty"` // base64 JPEG thumbnail

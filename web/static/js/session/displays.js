@@ -45,8 +45,9 @@ export class Displays {
     this.button.hidden = !this.s.hasCap(CAPS.DISPLAYS) || this.list.length < 2;
   }
 
-  // Return to the last display once the list is known and the session can send the choice.
+  // Restore the choice once the session can send it if the offer omitted the display.
   restore() {
+    if (this.s.connection.display) return;
     if (this.restored || !this.s.connected || !this.s.hasCap(CAPS.DISPLAYS) || !this.list.length) return;
     this.restored = true;
     const want = chosenDisplay(this.s.device.id);

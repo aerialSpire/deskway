@@ -153,11 +153,11 @@ mod tests {
         let remote = Remote::new(events_tx);
         // Before any agent: kept, and a key press is simply lost.
         remote.auto_lock(true);
-        remote.video_start("s1".into(), Default::default());
+        remote.video_start("s1".into(), Default::default(), None);
         remote.choose_display("s1", "B".into());
         // A takeover: the new session starts before the old one's stop arrives. Both replay, in
         // order, and the agent's `Local` keeps video for the newer one.
-        remote.video_start("s2".into(), Default::default());
+        remote.video_start("s2".into(), Default::default(), Some("A".into()));
         remote.video_stop("s1");
         remote.key("s2", "KeyQ".into(), true);
         remote.auto_lock(false);
@@ -175,7 +175,7 @@ mod tests {
         let replayed = wait_for(&agent, 4);
         assert_eq!(
             replayed,
-            vec![Call::ChooseDisplay { session: "s1".into(), id: "B".into() }, Call::VideoStart { session: "s2".into(), view: Default::default() }, Call::VideoStop { session: "s1".into() }, Call::AutoLock { on: false }]
+            vec![Call::ChooseDisplay { session: "s1".into(), id: "B".into() }, Call::VideoStart { session: "s2".into(), view: Default::default(), display: Some("A".into()) }, Call::VideoStop { session: "s1".into() }, Call::AutoLock { on: false }]
         );
 
         remote.key("s2", "KeyA".into(), true);

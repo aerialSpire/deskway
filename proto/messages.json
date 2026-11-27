@@ -12,6 +12,7 @@
     { "name": "clipboard", "who": "host", "since": 2, "meaning": "The shared clipboard (cb, cbreq, cbdata, cberr, clipshare) works." },
     { "name": "cursor", "who": "host", "since": 2, "meaning": "The host stops drawing the pointer into the video on lc and reports cs and cp." },
     { "name": "displays", "who": "host", "since": 2, "meaning": "The host reports its displays and switches on display." },
+    { "name": "start-display", "who": "host", "since": 4, "meaning": "The host starts video on the display requested in the offer." },
     { "name": "relmouse", "who": "host", "since": 2, "meaning": "The host applies relative moves (mr) for Pointer Lock sessions." },
     { "name": "layout", "who": "host", "since": 2, "meaning": "The host reports its keyboard layout's key labels (layout)." },
     { "name": "chars", "who": "host", "since": 2, "meaning": "The host resolves characters with modifiers through its own layout (kc)." },
@@ -397,6 +398,7 @@
             "epoch": { "type": "integer", "optional": false, "meaning": "the negotiation's number: 0 for the offer" },
             "sdp": { "type": "string", "optional": false, "meaning": "SDP offer" },
             "view": { "type": "View", "optional": false, "meaning": "the viewer constraints now, so the host starts the picture at that size while the connection is set up (not signed: the view on the control channel confirms it)" },
+            "display": { "type": "string", "optional": true, "status": "current", "since": 4, "meaning": "id of the display to start on, sent when the host advertises start-display" },
             "force": { "type": "boolean", "optional": true, "meaning": "take over a running session (signed)" },
             "auth": { "type": "OfferAuth", "optional": true, "meaning": "absent when this browser has no key; the host decides" }
           }
@@ -619,6 +621,7 @@
             "sdp": { "type": "string", "optional": false, "meaning": "SDP offer" },
             "ice": { "type": "array", "items": "ICEServer", "optional": false, "meaning": "STUN and TURN servers" },
             "view": { "type": "View", "optional": false, "meaning": "the browser's viewer constraints, as it sent them" },
+            "display": { "type": "string", "optional": true, "status": "current", "since": 4, "meaning": "the initial display id, as the browser sent it; absent or unknown: the primary display" },
             "force": { "type": "boolean", "optional": true, "meaning": "take over a running session" },
             "user": { "type": "string", "optional": false, "meaning": "the browser's account id (never its sign-in name), from its login" },
             "auth": { "type": "OfferAuth", "optional": true, "meaning": "the browser's proof" }
@@ -1114,7 +1117,7 @@
       "transport": "Named pipe between DeskwayNet (network service) and the Deskway agent (Windows), after the HMAC handshake. Frames: tag 0 = JSON (these messages), tag 1 = encoded video frame (agent->service), tag 3 = blob, bytes of the transfer named by the last FilesReceive/ClipboardData. Both ends are the same build.",
       "discriminator": "t",
       "messages": [
-        { "type": "VideoStart", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "The session takes the computer: capture and encoding start for it; a session that held it before loses it.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session that now holds the computer: only its calls are carried out" }, "view": { "type": "Constraints", "optional": false, "meaning": "the viewer's constraints to start at (w, h, max_w, max_h, fps, level as ViewConstraints)" } } },
+        { "type": "VideoStart", "enum": "PlatformCall", "status": "current", "since": 2, "directions": ["service->agent"], "meaning": "The session takes the computer: capture and encoding start for it; a session that held it before loses it.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session that now holds the computer: only its calls are carried out" }, "view": { "type": "Constraints", "optional": false, "meaning": "the viewer's constraints to start at (w, h, max_w, max_h, fps, level as ViewConstraints)" }, "display": { "type": "string", "optional": true, "status": "current", "since": 4, "meaning": "the initial display id, or null for the primary display" } } },
         { "type": "VideoStop", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "The session ended: if it holds the computer, capture stops and what it held is released; otherwise nothing happens.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session that ended" } } },
         { "type": "Keyframe", "enum": "PlatformCall", "status": "new", "since": 2, "directions": ["service->agent"], "meaning": "Encode a keyframe next.", "fields": { "session": { "type": "string", "optional": false, "meaning": "the session acting; carried out only while it holds the computer (the one that started video last)" } } },
         {

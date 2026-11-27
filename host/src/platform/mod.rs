@@ -205,10 +205,10 @@ platform! {
     }
 
     free {
-    /// Session `session` takes the computer: video starts for it at the viewer's constraints
-    /// `view`, with the pointer and desktop changes; input starts from the computer's own key
-    /// state; the computer stays awake. A session that held it before loses it.
-    fn video_start(session: String, view: Constraints) => VideoStart, keep video_start;
+    /// Session `session` takes the computer. Video starts on `display` (primary if unavailable
+    /// or omitted) at the viewer's `view` constraints. The computer stays awake and input starts
+    /// from its own key state. A session that held it before loses it.
+    fn video_start(session: String, view: Constraints, display: Option<String>) => VideoStart, keep video_start;
     /// One round of display previews, for the device list.
     fn thumbnails(on: bool) => Thumbnails, keep thumbnails;
     /// The AI client's session beside the person's (`None`: none): its input is carried out.
@@ -449,6 +449,7 @@ mod tests {
         use std::collections::{BTreeMap, BTreeSet};
         let f = ClipFormat::of(FormatKind::Text);
         let mine: BTreeMap<String, BTreeSet<String>> = [
+            serde_json::to_value(Call::VideoStart { session: "s1".into(), view: Constraints::default(), display: Some("A".into()) }).unwrap(),
             serde_json::to_value(Call::ViewConstraints { session: "s1".into(), w: 1, h: 1, max_w: 1, max_h: 1, fps: 1, level: 1 }).unwrap(),
             serde_json::to_value(Call::ClipboardShare { session: "s1".into(), on: true }).unwrap(),
             serde_json::to_value(Call::ClipboardAnnounce { session: "s1".into(), gen: 1, formats: vec![f.clone()] }).unwrap(),
@@ -483,7 +484,7 @@ mod tests {
         let log = Log::default();
         log.key("s1", "KeyA".into(), true);
         log.file_data("s1", Bytes(vec![0, 1, 255]));
-        log.video_start("s1".into(), Constraints::default());
+        log.video_start("s1".into(), Constraints::default(), None);
         log.thumbnails(true);
         let calls = std::mem::take(&mut *log.0.lock().unwrap());
         assert_eq!(calls[0], Call::Key { session: "s1".into(), code: "KeyA".into(), down: true });
@@ -512,7 +513,7 @@ mod tests {
     #[test]
     fn only_state_setting_calls_have_a_slot() {
         // Separate slots: a newer session's start and an older one's stop both replay, in order.
-        assert_eq!(Call::VideoStart { session: "s".into(), view: Default::default() }.slot(), Some("video_start"));
+        assert_eq!(Call::VideoStart { session: "s".into(), view: Default::default(), display: None }.slot(), Some("video_start"));
         assert_eq!(Call::VideoStop { session: "s".into() }.slot(), Some("video_stop"));
         assert_eq!(Call::AutoLock { on: true }.slot(), Some("auto_lock"));
         assert_eq!(Call::Key { session: "s".into(), code: "KeyA".into(), down: true }.slot(), None);

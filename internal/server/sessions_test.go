@@ -146,10 +146,15 @@ func TestSessionsRouteOnlyTheOwnBrowsersMessagesAndDropThemWhileTheHostIsAway(t 
 	got(host)
 	st.ss.FromBrowser(other, proto.Msg{Type: proto.TypeOffer, Session: "S1", SDP: "x"})
 	nothing(t, host)
-	// The offer reaches the host with the session's account and that account's relay credentials.
-	st.ss.FromBrowser(page, proto.Msg{Type: proto.TypeOffer, Session: "S1", Epoch: epoch(0), SDP: "o", User: "forged"})
-	if m := one(t, host); m.Type != proto.TypeOffer || *m.Epoch != 0 || m.User != "u1" || len(m.ICE) != 1 || m.ICE[0].Username != "u1" {
+	// The offer keeps the browser's display and gains the session's account and relay credentials.
+	const display = "secondary"
+	st.ss.FromBrowser(page, proto.Msg{Type: proto.TypeOffer, Session: "S1", Epoch: epoch(0), SDP: "o", Display: display, User: "forged"})
+	m := one(t, host)
+	if m.Type != proto.TypeOffer || *m.Epoch != 0 || m.User != "u1" || len(m.ICE) != 1 || m.ICE[0].Username != "u1" {
 		t.Fatalf("%+v", m)
+	}
+	if m.Display != display {
+		t.Fatalf("offer display = %q, want %q", m.Display, display)
 	}
 	// While the computer is away nothing is answered for it: the page sends again later.
 	delete(st.hosts, "pc1")

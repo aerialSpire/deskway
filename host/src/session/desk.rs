@@ -32,8 +32,8 @@ use channels::{FileQueue, Incoming};
 /// (and so none of the input module's caps) and no files.
 pub fn caps(view_only: bool) -> Vec<String> {
     use wire::caps::*;
-    // What the session and video side report: pointer, displays, capture, input desktop.
-    let session: &[&str] = &[CURSOR, DISPLAYS, CAPTURE, DESK];
+    // What the session and video side support: pointer, display selection, capture, input desktop.
+    let session: &[&str] = &[CURSOR, DISPLAYS, START_DISPLAY, CAPTURE, DESK];
     let clipboard: &[&str] = &[CLIPBOARD];
     let (control, input): (&[&str], &[&str]) = if view_only { (&[], &[]) } else { (&[INPUT, FILES], crate::input::CAPS) };
     control.iter().chain(input).chain(clipboard).chain(session).map(|c| c.to_string()).collect()
@@ -63,6 +63,7 @@ impl Drop for Cleanup {
 pub struct Desk {
     id: String,
     offer: String,
+    display: Option<String>,
     share: Wake<bool>,
     platform: Arc<dyn Platform>,
     view_only: bool,
@@ -99,10 +100,11 @@ pub struct Desk {
 
 impl Desk {
     pub fn new(p: Params) -> Desk {
-        let Params { session, offer, view, platform, view_only, clip_share, share } = p;
+        let Params { session, offer, view, display, platform, view_only, clip_share, share } = p;
         Desk {
             mid: media::video_mid(&offer),
             offer,
+            display,
             share,
             platform: platform.clone(),
             view_only,
@@ -377,8 +379,8 @@ impl Role for Desk {
     }
 
     /// The accepted offer settles the payload type: capture and the encoder start now, at the
-    /// offer's view, while ICE and DTLS are still being set up. Frames are written once
-    /// connected, starting from a keyframe.
+    /// offer's display and view, while ICE and DTLS are still being set up. Frames are written
+    /// once connected, starting from a keyframe.
     fn after_output(&mut self, cx: &mut Cx) {
         if self.pt.is_some() {
             return;
@@ -389,7 +391,7 @@ impl Role for Desk {
         cx.log(format_args!("payload {}, level {}", *p, self.level));
         let (w, h, max_w, max_h, fps) = self.view;
         self.cleanup.started = true;
-        self.platform.video_start(self.id.clone(), crate::video::Constraints { w, h, max_w, max_h, fps, level: self.level });
+        self.platform.video_start(self.id.clone(), crate::video::Constraints { w, h, max_w, max_h, fps, level: self.level }, self.display.take());
     }
 
     /// Real time over completeness: a send queue that fills up holds the encoder until it

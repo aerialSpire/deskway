@@ -6,6 +6,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Connection, DEADLINE_MS } from '../../web/static/js/session/connection.js';
+import { CAPS, Control, Signal } from '../../web/static/js/proto.js';
+
+globalThis.matchMedia = () => ({ matches: false });
+globalThis.document = {
+  getElementById: () => null,
+  createElement: () => ({ append() {}, addEventListener() {}, replaceChildren() {}, setAttribute() {} }),
+};
+
+const { store } = await import('../../web/static/js/env.js');
+const { Displays, chosenDisplay, rememberDisplay } = await import('../../web/static/js/session/displays.js');
 
 class FakeChannel extends EventTarget {
   constructor(label) { super(); this.label = label; this.readyState = 'connecting'; this.sent = []; }
@@ -60,14 +70,14 @@ const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) 
 let ids = 0;
 // A connection to computer `pc1` and everything it talks to; `verdict` is what checking an
 // answer says.
-function setup({ force = false, verdict = 'ok', socketOpen = true, dataOnly = false } = {}) {
+function setup({ force = false, verdict = 'ok', socketOpen = true, dataOnly = false, device = { id: 'pc1' } } = {}) {
   const socket = { open: socketOpen, sent: [], isOpen() { return this.open; }, send(m) { this.sent.push(m); } };
   const timers = fakeTimers();
   let peer = null;
   const env = { socket, timers, verdict, signed: [] };
   const c = new Connection({
     id: `S${++ids}`,
-    device: 'pc1',
+    device,
     force,
     dataOnly,
     deps: {
@@ -80,6 +90,7 @@ function setup({ force = false, verdict = 'ok', socketOpen = true, dataOnly = fa
         return resume ? { k: 'rs', nonce, id: resume.id, mac: 'm' } : { k: 'dk', nonce, cred: 'c', sig: 's' };
       },
       verify: async () => env.verdict,
+      chosenDisplay,
       view: async () => ({ w: 1, h: 1, maxW: 1, maxH: 1, fps: 2 }),
     },
   });
@@ -108,13 +119,58 @@ async function active(opts) {
   const env = await offered(opts);
   env.signal({ type: 'answer', epoch: 0, sdp: 'answer0', auth: {} });
   await settle();
-  env.peer.channels.input.open();
+  env.c.channels.input.open();
   return env;
 }
 
 function trickle(env, candidate) {
   env.signal({ type: 'candidate', candidate: { candidate, sdpMLineIndex: 0 } });
 }
+
+test('the first desktop offer uses the remembered display when the host can start on it', async (t) => {
+  const saved = new Map();
+  t.mock.method(store, 'set', (key, value) => saved.set(key, value));
+  t.mock.method(store, 'get', (key) => saved.get(key) ?? null);
+  const list = [
+    { id: 'primary', x: 0, y: 0, w: 640, h: 400 },
+    { id: 'secondary', x: 640, y: 0, w: 640, h: 400 },
+  ];
+  const cases = [
+    { id: 'known', startDisplay: true, wanted: 'secondary', display: 'secondary' },
+    { id: 'missing', startDisplay: true, wanted: 'gone' },
+    { id: 'stale', startDisplay: true, wanted: 'secondary', deviceDisplays: [list[0]], switchTo: 'secondary' },
+    { id: 'none', startDisplay: true },
+    { id: 'legacy', startDisplay: false, wanted: 'secondary', switchTo: 'secondary' },
+    { id: 'terminal', startDisplay: true, wanted: 'secondary', dataOnly: true },
+  ];
+  for (const { id, startDisplay, wanted, display, switchTo, dataOnly, deviceDisplays = list } of cases) {
+    const caps = startDisplay ? [CAPS.DISPLAYS, CAPS.START_DISPLAY] : [CAPS.DISPLAYS];
+    const device = { id, caps, displays: deviceDisplays };
+    // The detail page remembers the clicked display before opening the session.
+    if (wanted) rememberDisplay(id, wanted);
+    const env = await active({ device, dataOnly });
+    const [offer] = env.sent(Signal.OFFER);
+    assert.equal(Object.hasOwn(offer, 'display'), display !== undefined, id);
+    assert.equal(offer.display, display, id);
+    if (dataOnly) continue;
+    const input = env.peer.channels.input;
+    const session = {
+      device,
+      connection: env.c,
+      connected: true,
+      hasCap: (cap) => caps.includes(cap),
+      send: (message) => input.send(JSON.stringify(message)),
+      toolbar: { refreshPanel() {} },
+      pointer: {},
+      video: { setZoom() {}, zoomEnded() {} },
+    };
+    const displays = new Displays(session);
+    displays.restore();
+    displays.onDisplays({ list, cur: 'primary' });
+    displays.restore();
+    assert.deepEqual(input.sent, switchTo ? [{ t: Control.DISPLAY, v: switchTo }] : [], id);
+  }
+});
 
 test('the data-only offer negotiates control and terminal channels and keeps them on ICE restart', async () => {
   const env = await offered({ dataOnly: true });

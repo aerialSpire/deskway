@@ -719,8 +719,8 @@ The source of truth is the viewer's constraints.
   The host answers with its host candidates and then trickles its STUN
   address (`crates/peer/src/stun.rs`, with probes answered
   through the sockets' own readers) and its relay candidates. Capture and the encoder start when
-  the offer is accepted, at the offer's `view`, and the first frame sent after DTLS connects is a
-  keyframe.
+  the offer is accepted, on the offer's `display` (or the primary display if absent or detached)
+  and at the offer's `view`. The first frame sent after DTLS connects is a keyframe.
 - With server-terminated TLS and TURN enabled, the HTTPS listener serves both HTTP and TURN
   over TLS. HTTP ALPN goes to the HTTP server. Without ALPN, an ASCII letter goes to HTTP and
   a STUN first byte goes to TURN. The relay shares its account limits and peer rules across

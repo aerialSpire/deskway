@@ -46,6 +46,7 @@ pub mod caps {
     pub const CLIPBOARD: &str = "clipboard";
     pub const CURSOR: &str = "cursor";
     pub const DISPLAYS: &str = "displays";
+    pub const START_DISPLAY: &str = "start-display";
     pub const RELMOUSE: &str = "relmouse";
     pub const LAYOUT: &str = "layout";
     pub const CHARS: &str = "chars";
@@ -59,7 +60,7 @@ pub mod caps {
     pub const AI: &str = "ai";
     pub const RELAY_RTT: &str = "relay-rtt";
     #[cfg(any(test, feature = "contract"))]
-    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, BROWSE, FILE_TRANSFER, AI, RELAY_RTT];
+    pub const ALL: &[&str] = &[INPUT, FILES, CLIPBOARD, CURSOR, DISPLAYS, START_DISPLAY, RELMOUSE, LAYOUT, CHARS, CAPTURE, DESK, TERMINAL, TERMINAL_KEEP, BROWSE, FILE_TRANSFER, AI, RELAY_RTT];
 }
 
 /// Declares one channel's messages as an internally tagged serde enum and its table of
