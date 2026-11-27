@@ -148,7 +148,11 @@ pub fn spawn<H: Host + 'static>(make: impl FnOnce() -> H + Send + 'static, clipb
         .spawn(move || {
             let mut t = Transfers::new(make(), clipboard, out);
             loop {
-                match rx.recv_timeout(Duration::from_secs(1)) {
+                let command = match t.next_deadline() {
+                    Some(deadline) => rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+                    None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                };
+                match command {
                     Ok(Command::Message(m)) => t.message(&m),
                     Ok(Command::Data(d)) => t.data(&d),
                     Ok(Command::Send { id, gen, name, mime, data }) => t.send_out(&id, gen, &name, &mime, &data),
@@ -191,7 +195,17 @@ impl<H: Host> Transfers<H> {
         let _ = self.out.send(PlatformEvent::TransferNote(note));
     }
 
-    /// Called every second or so: ends a stalled transfer and clears an old result note.
+    fn next_deadline(&self) -> Option<Instant> {
+        self.put
+            .as_ref()
+            .map(|put| put.last_data + STALL)
+            .into_iter()
+            .chain(self.note_until)
+            .min()
+    }
+
+    /// Called after a command or when the next deadline arrives. Ends a stalled transfer
+    /// and clears an expired result note.
     pub fn tick(&mut self) {
         if self.put.as_ref().is_some_and(|p| p.last_data.elapsed() >= STALL) {
             self.note(None);

@@ -116,6 +116,26 @@ fn files_arrive_split_across_chunks_with_safe_unique_names() {
 }
 
 #[test]
+fn next_deadline_is_the_earliest_pending_timeout() {
+    let mut x = Test::new("deadline");
+    let now = Instant::now();
+    let early_note = now + NOTE_FOR;
+    let stall = now + STALL;
+    let late_note = stall + NOTE_FOR;
+
+    assert_eq!(x.t.next_deadline(), None);
+    x.t.note_until = Some(early_note);
+    assert_eq!(x.t.next_deadline(), Some(early_note));
+
+    x.t.message(r#"{"t":"put","id":"p1","kind":"image","items":[{"n":"image.png","s":4}]}"#);
+    x.t.put.as_mut().unwrap().last_data = now;
+    for (note_until, expected) in [(None, stall), (Some(early_note), early_note), (Some(late_note), stall)] {
+        x.t.note_until = note_until;
+        assert_eq!(x.t.next_deadline(), Some(expected));
+    }
+}
+
+#[test]
 fn a_stalled_transfer_ends_and_leaves_nothing() {
     let mut x = Test::new("stall");
     x.t.message(r#"{"t":"put","id":"s1","kind":"files","items":[{"n":"half.bin","s":10}]}"#);
