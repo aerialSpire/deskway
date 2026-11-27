@@ -325,6 +325,26 @@ export const area = {
       await layout('no device yet');
       await p.shot(`panel-${lang}-empty`, 380, 700);
 
+      // A recreated page can be handed a pairing window that the host has already opened.
+      await clearSent();
+      await p.send('Page.reload');
+      await p.until(`window.__sent?.some(m => m.cmd === 'ready')`, `${lang}: recreated panel ready`);
+      await render(base({ pair_qr: QR, local: local('running') }));
+      h.check(`panel ${lang}: existing pairing shows its QR code without requesting a new one`, await p.eval(`!document.querySelector('#add-overlay').hidden && !!document.querySelector('#qr-img svg')`) && !(await sent()).some(m => m.cmd === 'pair'));
+      h.check(`panel ${lang}: a recreated panel shows current local service state`, await localLine('running'));
+      await p.eval(`document.querySelector('#add-close').click()`);
+      h.check(`panel ${lang}: closing the QR dialog hides it while the host processes the request`, await p.eval(`document.querySelector('#add-overlay').hidden`) && (await sent()).some(m => m.cmd === 'pair-stop'));
+
+      await hubPanel('running');
+      await p.eval(`$('local-stop').click()`);
+      await render(base({ pair_qr: QR, local: local('running') }));
+      h.check(`panel ${lang}: an incoming pairing QR leaves the local-service dialog visible`,
+        await p.eval(`!$('local-overlay').hidden && $('add-overlay').hidden`));
+      await p.eval(`$('local-cancel').click()`);
+      h.check(`panel ${lang}: closing the local-service dialog reveals the active QR`,
+        await p.eval(`$('local-overlay').hidden && !$('add-overlay').hidden`));
+      await p.eval(`$('add-close').click()`);
+
       // Adding: the QR code in a dialog, closed by the device appearing, which is then named.
       await clearSent();
       await render(base());

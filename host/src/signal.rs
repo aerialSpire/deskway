@@ -1506,6 +1506,8 @@ mod tests {
                         download: Arc::new(|_, _| unreachable!()),
                     },
                     #[cfg(windows)]
+                    send_guard: None,
+                    #[cfg(windows)]
                     _lease: None,
                 })),
             }), notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };

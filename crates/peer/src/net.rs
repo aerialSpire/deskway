@@ -17,6 +17,8 @@ use crate::stun::{self, Probe};
 use crate::turn::{Relay, Transport, TurnServer};
 use crate::{NetEvent, Stop};
 
+pub type SendGuard = Arc<dyn Fn() -> bool + Send + Sync>;
+
 pub(crate) fn resolve_ipv4(endpoint: impl ToSocketAddrs) -> Option<SocketAddr> {
     endpoint.to_socket_addrs().ok()?.find(SocketAddr::is_ipv4)
 }
@@ -94,6 +96,7 @@ pub struct Net<E> {
     direct: bool,
     tx: Sender<E>,
     all: Arc<AtomicBool>,
+    send_guard: Option<SendGuard>,
 }
 
 impl<E: From<NetEvent> + Send + 'static> Net<E> {
@@ -113,7 +116,7 @@ impl<E: From<NetEvent> + Send + 'static> Net<E> {
         for c in sockets.iter().flat_map(|b| b.candidates.iter().cloned()) {
             rtc.add_local_candidate(c);
         }
-        let net = Net { sockets, relays: Vec::new(), probes: Vec::new(), stun: None, turn, direct, tx, all };
+        let net = Net { sockets, relays: Vec::new(), probes: Vec::new(), stun: None, turn, direct, tx, all, send_guard: None };
         if !net.sockets.is_empty() && !stun_urls.is_empty() {
             net.spawn_path("stun-resolve", move |_| {
                 stun_urls.iter().find_map(|u| stun::resolve(u)).map(NetEvent::StunServer)
@@ -130,11 +133,19 @@ impl<E: From<NetEvent> + Send + 'static> Net<E> {
 
     /// Sends what str0m wants sent, from the socket or relay it names.
     pub fn transmit(&self, t: &Transmit) {
+        if self.send_guard.as_ref().is_some_and(|allowed| !allowed()) {
+            return;
+        }
         if let Some(b) = self.sockets.iter().find(|b| b.addr == t.source) {
             let _ = b.socket.send_to(&t.contents, t.destination);
         } else if let Some((r, _)) = self.relays.iter().find(|(r, _)| r.addr == t.source) {
-            r.send(t.destination, &t.contents);
+            r.send(t.destination, &t.contents, self.send_guard.clone());
         }
+    }
+
+    /// Recheck access for packets still queued in RTC or a TCP/TLS relay.
+    pub fn set_send_guard(&mut self, guard: Option<SendGuard>) {
+        self.send_guard = guard;
     }
 
     /// One event from the paths. `offer` adds a candidate found now to `rtc` and tells the other

@@ -4,22 +4,23 @@
 //! loses its console when the user worker restarts; a piped one runs on.
 
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::io::{self, Write};
+use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::{mpsc, Arc, Mutex};
 
 use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::System::Console::{ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON};
 use windows::Win32::System::JobObjects::*;
-use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess, InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject, EXTENDED_STARTUPINFO_PRESENT, INFINITE, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 use crate::platform::Pty;
+use crate::platform::pty::{PtyEvents, PtyInput};
 use crate::workspace::procs::{Program, Started};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -243,6 +244,8 @@ pub fn kill_tree(pid: u32) {
 struct Job(HANDLE);
 
 unsafe impl Send for Job {}
+// Windows permits concurrent operations on this job; the handle stays open while shared.
+unsafe impl Sync for Job {}
 
 impl Job {
     fn new() -> io::Result<Self> {
@@ -283,72 +286,81 @@ pub(super) fn open_pty(line: &str, rows: u16, cols: u16, allowed: impl Fn() -> b
 
 fn browser_pty(line: &str, home: &std::path::Path, rows: u16, cols: u16, allowed: impl Fn() -> bool + Send + Sync + 'static) -> io::Result<Box<dyn Pty>> {
     let job = Job::new()?;
-    let (mut terminal, output) = start_console(line, Some(home.as_os_str()), cols, rows, Some((&job, &allowed)))?;
-    let mut writer = terminal.input.take().expect("new terminal has input");
-    let (input, queued) = sync_channel::<Vec<u8>>(1);
-    let allowed = std::sync::Arc::new(allowed);
-    let pty = BrowserPty { terminal, output: Some(output), input, job, status: None, allowed: allowed.clone() };
-    // ConPTY requires synchronous pipes. A short queue bounds the writes the registry
-    // can acknowledge ahead of the console, and a blocked writer never holds its lock.
-    std::thread::Builder::new().name("conpty-input".into()).spawn(move || {
-        for bytes in queued {
-            if allowed() && writer.write_all(&bytes).is_err() {
-                break;
-            }
-        }
-    })?;
-    Ok(Box::new(pty))
+    let (terminal, output) = start_console(line, Some(home.as_os_str()), cols, rows, Some((&job, &allowed)))?;
+    Ok(Box::new(BrowserPty {
+        terminal, output: Some(output), input: None, job: Arc::new(job),
+        console: Arc::default(), allowed: Arc::new(allowed),
+    }))
 }
 
 struct BrowserPty {
     terminal: Terminal,
     output: Option<File>,
-    input: SyncSender<Vec<u8>>,
-    job: Job,
-    status: Option<i32>,
-    allowed: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
-}
-
-impl Read for BrowserPty {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        if !(self.allowed)() { return Err(io::ErrorKind::WouldBlock.into()); }
-        self.read_output(bytes)
-    }
-}
-
-impl BrowserPty {
-    fn read_output(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        let Some(output) = &mut self.output else { return Ok(0); };
-        let mut pending = 0;
-        match unsafe { PeekNamedPipe(HANDLE(output.as_raw_handle()), None, 0, None, Some(&mut pending), None) } {
-            Ok(()) if pending > 0 => {
-                let count = bytes.len().min(pending as usize);
-                output.read(&mut bytes[..count])
-            }
-            Ok(()) => Err(io::ErrorKind::WouldBlock.into()),
-            Err(e) if e.code() == windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_BROKEN_PIPE.0) => Ok(0),
-            Err(e) => Err(e.into()),
-        }
-    }
+    input: Option<PtyInput>,
+    job: Arc<Job>,
+    console: Arc<Mutex<Option<HPCON>>>,
+    allowed: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl Write for BrowserPty {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.input.try_send(bytes.to_vec()).map_err(|error| match error {
-            TrySendError::Full(_) => io::ErrorKind::WouldBlock,
-            TrySendError::Disconnected(_) => io::ErrorKind::BrokenPipe,
-        })?;
-        Ok(bytes.len())
+        let result = self.input.as_ref().ok_or(io::ErrorKind::NotConnected)?.write(bytes);
+        if result.as_ref().is_err_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+            && unsafe { WaitForSingleObject(self.terminal.process, 0) } == WAIT_OBJECT_0
+        {
+            // The reader still owns any final output and will report the exit in order.
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        result
     }
 
     fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
 
 impl Pty for BrowserPty {
-    fn drain(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.read_output(buf) }
+    fn listen(&mut self, events: PtyEvents) -> io::Result<()> {
+        let output = self.output.take().ok_or(io::ErrorKind::AlreadyExists)?;
+        let mut writer = self.terminal.input.take().expect("new terminal has input");
+        let process = unsafe { BorrowedHandle::borrow_raw(self.terminal.process.0) }.try_clone_to_owned()?;
+        let allowed = self.allowed.clone();
+        self.input = Some(PtyInput::start(move |bytes| {
+            if allowed() { writer.write_all(bytes)?; }
+            Ok(())
+        }, events.writable.clone())?);
+
+        let (status, exited) = mpsc::channel();
+        let job = self.job.clone();
+        let console = self.console.clone();
+        *console.lock().unwrap() = self.terminal.console.take();
+        let waiter = std::thread::Builder::new().name("conpty-exit".into()).spawn(move || {
+            let process = HANDLE(process.as_raw_handle());
+            let result = unsafe {
+                if WaitForSingleObject(process, INFINITE) != WAIT_OBJECT_0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    let mut code = 0;
+                    GetExitCodeProcess(process, &mut code).map(|()| code as i32).map_err(io::Error::from)
+                }
+            };
+            let cleanup = unsafe { TerminateJobObject(job.0, 1) }.map_err(io::Error::from);
+            let _ = status.send(result.and_then(|code| cleanup.map(|()| code)));
+            let closing = console.lock().unwrap().take();
+            // Older ConPTY versions wait for the reader to drain the output here.
+            if let Some(closing) = closing { unsafe { ClosePseudoConsole(closing) }; }
+        });
+        if let Err(error) = waiter {
+            self.terminal.console = self.console.lock().unwrap().take();
+            return Err(error);
+        }
+        std::thread::Builder::new().name("conpty-output".into()).spawn(move || {
+            events.read(output, || exited.recv().map_err(io::Error::other)?);
+        })?;
+        Ok(())
+    }
 
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
-        let Some(console) = self.terminal.console else { return Ok(()); };
+        let console = self.console.lock().unwrap();
+        let Some(console) = console.or(self.terminal.console) else { return Ok(()); };
         let size = COORD {
             X: i16::try_from(cols).map_err(io::Error::other)?,
             Y: i16::try_from(rows).map_err(io::Error::other)?,
@@ -358,29 +370,15 @@ impl Pty for BrowserPty {
 
     fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()> { self.resize(rows, cols) }
 
-    fn exit(&mut self) -> io::Result<Option<i32>> {
-        if self.status.is_none() {
-            let mut code = 0;
-            unsafe { GetExitCodeProcess(self.terminal.process, &mut code)? };
-            if code != STILL_ACTIVE.0 as u32 {
-                unsafe { TerminateJobObject(self.job.0, 1)? };
-                if let Some(console) = self.terminal.console.take() {
-                    let raw = console.0;
-                    // Older ConPTY versions wait for output to be read before closing.
-                    std::thread::spawn(move || unsafe { ClosePseudoConsole(HPCON(raw)) });
-                }
-                self.status = Some(code as i32);
-            }
-        }
-        Ok(self.status)
-    }
-
     fn terminate(&mut self) -> io::Result<bool> {
-        if self.exit()?.is_some() {
-            return Ok(false);
+        match unsafe { WaitForSingleObject(self.terminal.process, 0) } {
+            WAIT_OBJECT_0 => Ok(false),
+            WAIT_TIMEOUT => {
+                unsafe { TerminateJobObject(self.job.0, 1)? };
+                Ok(true)
+            }
+            _ => Err(io::Error::last_os_error()),
         }
-        unsafe { TerminateJobObject(self.job.0, 1)? };
-        Ok(true)
     }
 }
 
@@ -402,20 +400,16 @@ fn a_suspended_shell_is_rejected_if_the_console_locks_during_start() {
 }
 
 #[cfg(test)]
-fn wait_for_conpty_output(pty: &mut dyn Pty, output: &mut Vec<u8>, expected: &str) {
+fn wait_for_conpty_output(events: &mpsc::Receiver<crate::platform::pty::PtyEvent>, output: &mut Vec<u8>, expected: &str) {
+    use crate::platform::pty::PtyEvent;
     use std::time::{Duration, Instant};
 
     let deadline = Instant::now() + Duration::from_secs(8);
-    let mut buffer = [0; 1024];
-    loop {
-        match pty.read(&mut buffer) {
-            Ok(n) => output.extend_from_slice(&buffer[..n]),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => panic!("{e}"),
+    while !String::from_utf8_lossy(output).contains(expected) {
+        match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(PtyEvent::Bytes(bytes)) => output.extend(bytes),
+            other => panic!("missing {expected:?} in {:?}, output event: {other:?}", String::from_utf8_lossy(output)),
         }
-        if String::from_utf8_lossy(output).contains(expected) { break; }
-        assert!(Instant::now() < deadline, "missing {expected:?} in {:?}", String::from_utf8_lossy(output));
-        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -431,15 +425,28 @@ fn browser_conpty_exchanges_utf8_and_resizes() {
     let dir = std::env::temp_dir();
     let line = plain_shell();
     let mut pty = browser_pty(&line, &dir, 24, 80, || true).unwrap();
+    let (listener, events) = crate::platform::pty::test_events();
+    pty.listen(listener).unwrap();
     let mut output = Vec::new();
-    wait_for_conpty_output(pty.as_mut(), &mut output, "PS ");
+    wait_for_conpty_output(&events, &mut output, "PS ");
     pty.write_all("Write-Output ('\u{6587}' + '\u{5b57}'); Write-Output ('width=' + $Host.UI.RawUI.WindowSize.Width)\r".as_bytes()).unwrap();
-    wait_for_conpty_output(pty.as_mut(), &mut output, "\u{6587}\u{5b57}");
-    wait_for_conpty_output(pty.as_mut(), &mut output, "width=80");
+    wait_for_conpty_output(&events, &mut output, "\u{6587}\u{5b57}");
+    wait_for_conpty_output(&events, &mut output, "width=80");
     pty.resize(31, 95).unwrap();
     pty.write_all(b"Write-Output ('width=' + $Host.UI.RawUI.WindowSize.Width)\r").unwrap();
-    wait_for_conpty_output(pty.as_mut(), &mut output, "width=95");
-    assert!(pty.terminate().unwrap());
+    wait_for_conpty_output(&events, &mut output, "width=95");
+    use crate::platform::pty::PtyEvent;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    pty.write_all(b"exit 17\r").unwrap();
+    loop {
+        match events.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok(PtyEvent::Bytes(_)) => {}
+            Ok(PtyEvent::Exit(code)) => { assert_eq!(code, 17); break; }
+            other => panic!("expected exit: {other:?}"),
+        }
+    }
+    assert_eq!(events.recv_timeout(std::time::Duration::from_secs(2)).unwrap_err(), mpsc::RecvTimeoutError::Disconnected);
+    assert!(!pty.terminate().unwrap());
 }
 
 #[cfg(test)]
@@ -447,13 +454,15 @@ fn browser_conpty_exchanges_utf8_and_resizes() {
 fn browser_conpty_ctrl_c_interrupts_powershell() {
     let dir = std::env::temp_dir();
     let mut pty = browser_pty(&plain_shell(), &dir, 24, 120, || true).unwrap();
+    let (listener, events) = crate::platform::pty::test_events();
+    pty.listen(listener).unwrap();
     let mut output = Vec::new();
-    wait_for_conpty_output(pty.as_mut(), &mut output, "PS ");
+    wait_for_conpty_output(&events, &mut output, "PS ");
     pty.write_all(b"Write-Output ('sleep-' + 'started'); Start-Sleep -Seconds 60\r").unwrap();
-    wait_for_conpty_output(pty.as_mut(), &mut output, "sleep-started");
+    wait_for_conpty_output(&events, &mut output, "sleep-started");
     output.clear();
     pty.write_all(b"\x03").unwrap();
-    wait_for_conpty_output(pty.as_mut(), &mut output, "PS ");
+    wait_for_conpty_output(&events, &mut output, "PS ");
     pty.write_all(b"Write-Output ('interrupt-' + 'returned')\r").unwrap();
-    wait_for_conpty_output(pty.as_mut(), &mut output, "interrupt-returned");
+    wait_for_conpty_output(&events, &mut output, "interrupt-returned");
 }

@@ -3,7 +3,7 @@
 //! order: a `run` that waits does not hold up a file read behind it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -39,6 +39,7 @@ enum RequestOp {
 enum Reply {
     Answer { id: u64, answer: Answer },
     Workspace(WorkspaceState),
+    Pty { resource: u64, event: browser::Notice },
 }
 
 struct Link {
@@ -46,14 +47,33 @@ struct Link {
     next: AtomicU64,
     waiting: Mutex<Option<HashMap<u64, Sender<Answer>>>>,
     sending: Mutex<()>,
-    state: Mutex<WorkspaceState>,
+    state: Mutex<LinkWorkspace>,
+    terminals: Mutex<HashMap<u64, crate::platform::pty::PtyEvents>>,
+}
+
+struct LinkWorkspace {
+    current: WorkspaceState,
+    allowed: Arc<AtomicBool>,
+}
+
+impl LinkWorkspace {
+    fn update(&mut self, next: WorkspaceState) {
+        if self.current != next {
+            // Old data sessions retain this token, including packets already queued at a relay.
+            self.allowed.store(false, Ordering::Release);
+            self.allowed = Arc::new(AtomicBool::new(next.refusal(false).is_none()));
+            self.current = next;
+        }
+    }
 }
 
 impl Link {
     fn new(pipe: Arc<Pipe>) -> Self {
         Self {
             pipe, next: AtomicU64::new(0), waiting: Mutex::new(Some(HashMap::new())),
-            sending: Mutex::default(), state: Mutex::new(WorkspaceState::NO_USER),
+            sending: Mutex::default(),
+            state: Mutex::new(LinkWorkspace { current: WorkspaceState::NO_USER, allowed: Arc::new(AtomicBool::new(false)) }),
+            terminals: Mutex::default(),
         }
     }
 
@@ -137,13 +157,16 @@ impl Remote {
                     }
                 }
                 Ok(Reply::Workspace(state)) => {
-                    *link.state.lock().unwrap() = state;
+                    link.state.lock().unwrap().update(state);
                     self.state_changed(state);
                 }
+                Ok(Reply::Pty { resource, event }) => link.terminal_notice(resource, event),
                 Err(e) => break Err(e),
             }
         };
+        link.state.lock().unwrap().update(WorkspaceState::NO_USER);
         *self.worker.lock().unwrap() = None;
+        link.terminals.lock().unwrap().clear();
         let pending = {
             let _sending = link.sending.lock().unwrap();
             link.waiting.lock().unwrap().take().unwrap_or_default()
@@ -178,11 +201,20 @@ impl Workspace for Remote {
 /// The worker's side: answers every request, each on a thread of its own, until the pipe closes.
 pub fn serve(pipe: Arc<Pipe>, ws: Arc<dyn Workspace>, activity: Option<Arc<WorkspaceActivity>>) -> Result<()> {
     let notices = pipe.clone();
-    let watch = activity.as_ref().and_then(|activity| WorkspaceWatch::for_worker(activity.clone(), move |state| {
-        let _ = notices.send_json(&Reply::Workspace(state));
-    }).ok());
+    let previous = Mutex::new(None);
+    let announce = Arc::new(move |state| {
+        let mut previous = previous.lock().unwrap();
+        if *previous != Some(state) {
+            *previous = Some(state);
+            let _ = notices.send_json(&Reply::Workspace(state));
+        }
+    });
+    let watch = activity.as_ref().and_then(|activity| {
+        let announce = announce.clone();
+        WorkspaceWatch::for_worker(activity.clone(), move |state| announce(state)).ok()
+    });
     let browser = activity.as_ref().filter(|_| watch.is_some()).map(|activity| {
-        Arc::new(browser::Worker::new(crate::platform::workspace::browser(None, None), activity.clone()))
+        Arc::new(browser::Worker::new(crate::platform::workspace::browser(None, None), activity.clone(), announce))
     });
     serve_requests(pipe, ws, browser, activity)
 }
@@ -196,6 +228,10 @@ fn serve_requests(
             Ok(request) => request,
             Err(error) => break Err(error),
         };
+        if let RequestOp::Browser(browser::Operation::PtyConsumed { resource }) = op {
+            if let Some(worker) = &browser { worker.consumed(resource); }
+            continue;
+        }
         let (pipe, ws, browser) = (pipe.clone(), ws.clone(), browser.clone());
         let activity = activity.clone();
         std::thread::spawn(move || {
@@ -204,7 +240,7 @@ fn serve_requests(
                 RequestOp::Work(op) => ws.call(op),
                 RequestOp::Desktop(op) => ws.desktop(op),
                 RequestOp::Browser(op) => browser.as_ref().ok_or_else(|| WorkError::new(Code::Denied, "no browser workspace", ""))
-                    .and_then(|worker| worker.call(op)),
+                    .and_then(|worker| worker.call(op, &pipe)),
             };
             let _ = pipe.send_json(&Reply::Answer { id, answer });
         });

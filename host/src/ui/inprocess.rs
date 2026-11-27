@@ -43,6 +43,7 @@ pub struct InProcess {
     /// The running host and its queue, shared with the local service's sign-out callback.
     signal: Arc<Mutex<Option<RunningHost>>>,
     settings: Option<Arc<Settings>>,
+    workspace_watch: Option<platform::WorkspaceWatch>,
     /// A sign-in, sign-out or browser trust prompt is in progress.
     busy: bool,
     /// Why signing in failed.
@@ -58,7 +59,7 @@ pub struct InProcess {
 
 impl InProcess {
     pub fn new(proxy: EventLoopProxy<UiEvent>, _at_login: bool, _dev: bool) -> InProcess {
-        InProcess { proxy, cfg: Config::load().ok(), signal: Arc::default(), settings: None, busy: false, error: String::new(), root_problem: None, settings_error: String::new(), permission_request: None, local: super::local::Panel::default(), local_handle: None, after_leave: None }
+        InProcess { proxy, cfg: Config::load().ok(), signal: Arc::default(), settings: None, workspace_watch: None, busy: false, error: String::new(), root_problem: None, settings_error: String::new(), permission_request: None, local: super::local::Panel::default(), local_handle: None, after_leave: None }
     }
 
     fn local_request(&mut self, action: Request) {
@@ -120,13 +121,9 @@ impl InProcess {
                 return;
             }
         };
-        let (browser, watch) = match platform::workspace_browser(control.clone()) {
-            Ok(workspace) => workspace,
-            Err(e) => {
-                self.settings_error = e.to_string();
-                return;
-            }
-        };
+        self.workspace_watch = None;
+        let (browser, watch) = platform::workspace_browser(control.clone());
+        self.workspace_watch = Some(watch);
         let (settings, awake) = Settings::start(dir, &cfg, Some(local.clone()), control.clone());
         let settings = Arc::new(settings);
         let login = if cfg.login_item_setup_pending { self.set_login_item(true) } else { Ok(()) };
@@ -168,7 +165,6 @@ impl InProcess {
             admin: None,
         };
         let thread = std::thread::Builder::new().name("signal".into()).spawn(move || {
-            let _watch = watch;
             signal::run(params, requests);
         }).expect("spawn signal thread");
         *running = Some(RunningHost { control, thread });
@@ -357,6 +353,7 @@ impl Backend for InProcess {
                 };
                 self.cfg = None;
                 self.settings = None;
+                self.workspace_watch = None;
                 if let Some(handle) = &self.local_handle {
                     handle.changed();
                 }
@@ -403,6 +400,7 @@ impl Backend for InProcess {
     }
 
     fn quit(&mut self) {
+        self.workspace_watch = None;
         if let Some(host) = self.signal.lock().unwrap().as_ref() {
             let _ = host.control.send(Control::Quit);
         }

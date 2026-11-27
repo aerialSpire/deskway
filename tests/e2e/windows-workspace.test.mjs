@@ -130,7 +130,7 @@ export const area = {
       const page = await h.newPage();
       await page.addAuthenticator();
       await page.eval('localStorage.setItem("deskway.autofull", "0")');
-      await redeemSetup(page, await issueAdminLink(serverExe, state, url), { user, password });
+      await redeemSetup(page, await issueAdminLink(serverExe, state, h.opts.url), { user, password });
 
       const computer = 'Windows workspace';
       await exec(hostExe, ['enroll', '--server', h.opts.url, '--user', user, '--name', computer],
@@ -171,6 +171,7 @@ export const area = {
       await keyboard.press('KeyC', true);
       await keyboard.press('KeyC', false);
       await keyboard.press('ControlLeft', false);
+      await page.until(`(${terminal}).split('sleep-started').slice(1).join('').includes('PS ')`, 'PowerShell returns to the prompt after Ctrl-C', 8000);
       await shell(page, "Write-Output ('interrupt-' + 'returned')");
       await page.until(`(${terminal}).includes('interrupt-returned')`, 'new command after interrupt', 8000);
       h.check('Ctrl-C interrupts the running command', true);

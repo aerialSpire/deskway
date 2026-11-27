@@ -148,6 +148,9 @@ the computer is signed in, how it starts, the Mac's permissions). Every setting 
 is a `settings::PanelRequest`, which the process running the host carries out in
 `settings::Settings`. The controlling browser's clipboard switch and an administrator's edits to
 host.json also arrive there.
+Opening the panel creates its WebView and renders the current state. Closing the panel leaves the
+host and tray running and releases the WebView after five minutes. The in-session indicator follows
+the host's status independently.
 
 The platform selects the host feature set once at startup. It defines the signaling hello's
 capabilities and AI tool names, which seats can be admitted, and the tool table consulted by the
@@ -170,10 +173,9 @@ until it has up to 2,000 readable entries, with its own `more` field. The browse
 checks access before describing each page entry and before each transfer filesystem step.
 A transfer holds one worker slot so a second slot can service browsing. Its channel and receiver credit limit the amount of transfer data
 competing with terminal and browse traffic. On Windows, file handles and ConPTY live in the
-ordinary user worker. A worker request for PTY bytes or file contents carries up to one frame.
-Publishing an upload, the one request made while holding the registry guard, waits up to five
-seconds for its reply; an unanswered publish fails the transfer as unconfirmed and releases the guard. ConPTY has a bounded
-input queue and supplies up to the requested output capacity. The Windows foreground host
+ordinary user worker. File contents and PTY output notices carry up to one frame.
+Publishing an upload waits up to five seconds under the registry guard for its reply. An
+unanswered publish fails the transfer as unconfirmed and releases the guard. The Windows foreground host
 uses the same filesystem and ConPTY code in-process. On macOS and Linux the workspace uses
 the shared Unix PTY and filesystem metadata code.
 The host keeps the current transfer record and final reply in memory, keyed to the device and
@@ -186,7 +188,10 @@ the entire input.
 
 The host's terminal registry owns the PTY even with no desk session. Only the admitted desk
 session can attach. It owns its own input queue and credit, while the registry owns the recent
-output. A worker drains the PTY when detached, including when signaling is unavailable.
+output. The process that owns the PTY uses a blocking reader to deliver output followed by exit.
+Windows sends those events as notices over the workspace pipe with bounded frame credit. A local
+workspace uses a bounded channel. The session consumes output with the browser's existing byte
+credit. The registry drains events when detached, including when signaling is unavailable.
 The registry reports a detached shell's last device and departure time through host status.
 It drops the shell, jobs and replay when the terminal closes or the host stops. The signaling
 host processes queued workspace transitions before judging offers. A lock revokes the current
@@ -201,7 +206,9 @@ attached output, input and filesystem calls.
   A temporarily detached console has no active console session ID. The worker checks its own
   WTS logon identity and reports it locked during detachment. Logoff or a switch to another
   console session ends the old workspace, including its shell, replay and transfer record.
-- macOS samples `CGSessionCopyCurrentDictionary` every 100 ms and checks it at workspace access.
+- macOS reads `CGSessionCopyCurrentDictionary` when the workspace watch starts, on distributed
+  lock and unlock notifications, on NSWorkspace session activation and deactivation, and at
+  workspace access.
   `CGSSessionScreenIsLocked` reports the lock and `kCGSSessionOnConsoleKey` reports whether the app's
   session is on the console. Switching away locks access to that app's workspace. Logging out
   stops the app and its workspace. These checks are independent of capture.

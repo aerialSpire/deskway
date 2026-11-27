@@ -520,10 +520,11 @@ macOS blocks new data sessions and ends any attached one while a kept shell cont
 This also applies on the Windows secure desktop and when fast user switching takes the Mac
 app's session off the active console. The host reads these states independently of capture.
 It checks access before queueing each terminal output frame, including replay, and stops a
-directory scan when its visitor detects revocation. The Windows worker checks access before
-reading attached output and before resuming a new PowerShell process. A synchronous ConPTY
-write already in progress at lock may still deliver bytes typed before the lock. A Windows
-sign-out or user switch clears the old workspace. Logging out of macOS stops Deskway Host.
+directory scan when its visitor detects revocation. The Windows worker reports any live refusal
+before sending PTY output to the network service, and checks access before resuming a new PowerShell
+process. A synchronous ConPTY write already in progress at lock may still deliver bytes typed
+before the lock. A Windows sign-out or user switch clears the old workspace. Logging out of macOS
+stops Deskway Host.
 The host logs when the terminal opens, is left, is returned to or closes, including the
 device and the reason where applicable. These events go to the systemd journal on Linux and
 the Deskway network service log on Windows. Terminal input and output stay out of the logs.

@@ -424,7 +424,7 @@ function renderLeave(s) {
 const ordered = (list) => [...list].sort((a, b) => (b.controlling - a.controlling) || (b.used - a.used) || a.name.localeCompare(b.name));
 
 // What this panel is showing: the device page, a device being confirmed, the add dialog.
-const ui = { page: 'home', confirm: '', adding: false, known: null, fresh: '', leaving: false };
+const ui = { page: 'home', confirm: '', adding: false, known: null, lastQr: null, fresh: '', leaving: false };
 
 const localCommand = (action) => send({ cmd: 'local-service', action });
 const localUi = { dialog: null, seen: 0, error: '' };
@@ -575,6 +575,12 @@ function renderDevices(s) {
 // meanwhile closes it and is said by name.
 function renderAdding(s) {
   const ids = (s.devices || []).map((d) => d.id);
+  const newQr = s.pair_qr && s.pair_qr !== ui.lastQr;
+  ui.lastQr = s.pair_qr;
+  if (newQr && !ui.adding) {
+    ui.adding = true;
+    ui.known = ids;
+  }
   if (ui.adding && ui.known) {
     const added = (s.devices || []).find((d) => !ui.known.includes(d.id));
     if (added) {
@@ -589,7 +595,7 @@ function renderAdding(s) {
   if (ui.adding && s.pair_qr) ui.sawQr = true;
   if (ui.adding && ui.sawQr && !s.pair_qr) ui.adding = false;
   if (!ui.adding) { ui.known = ids; ui.sawQr = false; }
-  $('add-overlay').hidden = !ui.adding;
+  $('add-overlay').hidden = !ui.adding || !!localUi.dialog;
   // The QR code is made by this program from its own pairing link, never from outside input.
   if ($('qr-img').dataset.svg !== (s.pair_qr || '')) { $('qr-img').innerHTML = s.pair_qr || ''; $('qr-img').dataset.svg = s.pair_qr || ''; }
 }
@@ -710,7 +716,6 @@ window.render = (s) => {
   else if (!s.online) { text = t('status.connecting'); dot = ''; }
   if (s.enrolled) {
     renderDevices(s);
-    renderAdding(s);
     renderAsk(s);
     renderLeave(s);
   }
@@ -753,6 +758,7 @@ window.render = (s) => {
   $('stop-ai').hidden = s.ai_state !== 'on';
   $('stop-ai').textContent = s.ai_client ? t('overlay.disconnect') : t('panel.stop_ai');
   renderLocal(s);
+  if (s.enrolled) renderAdding(s);
 };
 
 const showPage = (page) => { ui.page = page; ui.confirm = ''; if (window.last) window.render(window.last); };
@@ -802,7 +808,7 @@ $('local-open').onclick = () => {
   localUi.error = '';
   localCommand(phase === 'failed' ? 'retry' : (phase === 'setup' && !admin_ready) ? 'setup' : 'open');
 };
-$('local-cancel').onclick = finishLocalDialog;
+$('local-cancel').onclick = () => { finishLocalDialog(); window.render(window.last); };
 $('local-confirm').onclick = () => {
   const dialog = localUi.dialog;
   if (!dialog || dialog.request) return;

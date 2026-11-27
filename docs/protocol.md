@@ -468,9 +468,10 @@ resolves the account's current device name and forwards the time and name to the
 browsers in `devices`. The host measures the 24-hour detached lifetime with a monotonic
 clock. Older servers and browsers can ignore the display field.
 
-Messages are at most 16 KiB so one message cannot monopolize the SCTP association. The
-host pauses attached PTY reads when the channel buffers 64 KiB and resumes below 16 KiB. This leaves
-room for control messages while avoiding constant stop and start. It also caps output
+Messages are at most 16 KiB so one message cannot monopolize the SCTP association. The PTY
+reader drains into a bounded queue. The host pauses delivery to the browser when the channel
+buffers 64 KiB and resumes below 16 KiB, leaving room for control messages while avoiding
+constant stop and start. The host also caps output
 at 128 KiB awaiting `ack{bytes}`, which the browser sends after xterm.js processes the
 bytes. That second limit keeps rendering bounded even when delivery is fast. Live input can
 continue while live output is paused. The browser starts with 64 KiB of input credit, enough
