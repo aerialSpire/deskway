@@ -36,8 +36,8 @@ network process, the desktop agent and the file worker); macOS and Linux run one
 | Desktop, Smooth | 177 MB (145 MB), 23 % | 89 MB (22 MB), 6 % | — |
 | After the desktop | 69 MB (24 MB), 0.3 % | 91 MB (17 MB), 1.6 % | — |
 | Terminal, heavy output | 51 MB (13 MB), 17 % | 92 MB (17 MB), 7 % | 15 MB, 27 % (peaks above 100 %) |
-| Upload 32 MiB | 58 MB (11 MB), 22 %, **43 s** | 92 MB (17 MB), 42 %, 7.3 s | 14 MB, 48 %, 3.5 s |
-| Download 32 MiB | 46 MB (10 MB), 20 %, **41 s** | 92 MB (17 MB), 23 %, 11.8 s | 14 MB, 40 %, 1.6 s |
+| Upload 32 MiB | 58 MB (11 MB), 22 % | 92 MB (17 MB), 42 % | 14 MB, 48 % |
+| Download 32 MiB | 46 MB (10 MB), 20 % | 92 MB (17 MB), 23 % | 14 MB, 40 % |
 | Idle after | 55 MB (15 MB), 0.9 % | 92 MB (17 MB), 0.4 % | 14 MB, 0.2 % |
 
 Memory returned to its idle level after each desktop session; nothing grew across phases.
@@ -46,8 +46,7 @@ The terminal phase measures how fast each shell prints: PowerShell took 109 s fo
 
 ## Known
 
-- **File transfers on Windows are slow**: about 0.8 MB/s on the loopback, 12 to 25 times slower
-  than Linux on the same computer, with the host using about a fifth of a core throughout. An
-  earlier 256 MiB upload took 12 minutes.
+- Transfer times are left out: they follow the network path between the browser and the
+  computer, not the host.
 - The desktop figures are for a still screen; a changing picture costs more to encode.
 - On macOS a second, installed host ran on the same Mac and is not included.
