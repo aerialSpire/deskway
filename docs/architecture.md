@@ -532,8 +532,9 @@ size, and their full paths as text).
 
 The state machine (`Sync`), `RenderWait`, the format model and the `Native` trait live in
 `host/src/clipboard/`. Windows uses an owner window and a format listener in
-`platform/windows/clipboard.rs`. macOS checks `changeCount` twice a second in
-`platform/macos/clipboard.rs`; its `NSPasteboardItemDataProvider` in `clipboard/promise.rs`
+`platform/windows/clipboard.rs`. The macOS watcher in `platform/macos/clipboard.rs` checks
+`changeCount` as soon as sharing turns on, then twice a second while sharing is on. The watcher
+blocks while sharing is off. The `NSPasteboardItemDataProvider` in `clipboard/promise.rs`
 dispatches Cocoa events while it waits for the browser's answer. A new announcement, or turning
 sharing off, revokes the promise. Large data is carried by `transfer/` under the clipboard's ids
 and generations. On the browser side the clipboard is implemented in
@@ -771,7 +772,7 @@ The Mac code guarantees the following:
 | Pointer | With `lc` on, the pointer is reported instead of drawn into the video: its shape (straight RGBA, at most 64 px on a side, on the reliable channel) and its position (at most every 33 ms, on the lossy channel). Setting `DESKWAY_CAPTURE_CURSOR=0` in the launch environment hides the composited cursor. |
 | Input (CGEvent) | Coordinates are mapped to the captured display in points; dragged events are generated while a button is held; click state is tracked for double clicks; wheel events use pixel units; key codes come from the shared table; each committed text event carries one Unicode scalar. The host owns the modifier flags it sets on every event. |
 | Capture (ScreenCaptureKit) | NV12 video range, BT.709. The settings window appears in the video, while the indicator and border are excluded. Dirty rects show when nothing has changed. |
-| Clipboard | `changeCount` is checked twice a second. The browser's formats are promised through `NSPasteboardItemDataProvider` and marked `org.nspasteboard.TransientType`. |
+| Clipboard | `changeCount` is checked when sharing turns on and twice a second while it stays on. The browser's formats are promised through `NSPasteboardItemDataProvider` and marked `org.nspasteboard.TransientType`. |
 | Permissions | The panel shows Screen Recording and Accessibility. Desktop control requires both. Terminal and Files use the app's ordinary user rights and macOS privacy permissions. Programs an AI client starts inherit these permissions (security.md, R5). |
 | Lock screen | The host runs in the signed-in user's session, including while it is locked. The remote view shows the lock screen, and macOS verifies the password. Control-Command-Q locks the Mac. |
 | Files | `host.json`, `host-key`, `controllers.json`, `pairing.json` and `ai.json` are stored in `~/Library/Application Support/Deskway`, with mode 0700. |
