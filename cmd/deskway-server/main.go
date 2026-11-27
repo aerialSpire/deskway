@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,7 +47,7 @@ func main() {
 	}
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Usage: deskway-server [flags]")
-		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin-link [-if-needed] [-data FILE] -url ORIGIN")
+		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin-link [-if-needed | -login] [-data FILE] -url ORIGIN")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server remote-mcp-check [-data FILE] [-clients DIR]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+upgradeUsage)
@@ -55,7 +56,10 @@ func main() {
 	}
 	dataPath, clients, fetch := clientOptions(flag.CommandLine)
 	var (
-		listen    = flag.String("listen", "127.0.0.1:8080", "HTTP listen address")
+		listen    = flag.String("listen", "127.0.0.1:8080", "HTTP or HTTPS listen address")
+		local     = flag.Bool("local", false, "use LAN HTTPS with a local CA, without STUN or TURN")
+		guideAddr = flag.String("guide-listen", "", "local mode's plain HTTP certificate guide listen address")
+		localName = flag.String("local-name", "", "local mode's advertised computer name (up to 40 characters; defaults to the hostname)")
 		remoteMCP = flag.Bool("remote-mcp", false, "allow applications to connect to this server over MCP with OAuth")
 		mcpOrigin = flag.String("mcp-public-url", "", "public HTTPS origin for remote MCP when the server cannot infer it")
 		domain    = flag.String("domain", "", "domain name; gets a Let's Encrypt certificate automatically (listen on :443)")
@@ -75,6 +79,22 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	var https, guide net.Listener
+	if *local {
+		if *domain != "" || *tlsCert != "" || *tlsKey != "" || *publicIP != "" || *stun != "" || *remoteMCP {
+			log.Fatal("-local cannot be combined with -domain, -tls-cert, -tls-key, -public-ip, -stun, or -remote-mcp")
+		}
+		if *guideAddr == "" {
+			log.Fatal("-local requires -guide-listen")
+		}
+		var err error
+		https, guide, err = server.ListenLocal(*listen, *guideAddr)
+		if err != nil {
+			log.Fatal(err)
+		}
+	} else if *guideAddr != "" || *localName != "" {
+		log.Fatal("-guide-listen and -local-name require -local")
+	}
 
 	// The server holds the state file for as long as it runs.
 	store, err := server.OpenStore(*dataPath)
@@ -85,12 +105,36 @@ func main() {
 		log.Fatal(err)
 	}
 	defer store.Close()
-	if !store.HasAdmin() {
+	if !*local && !store.HasAdmin() {
 		log.Printf("no admin yet, run admin-link as the service user, e.g. sudo -u deskway deskway-server admin-link -data %q -url https://YOUR_DOMAIN", *dataPath)
 	}
 
-	var tlsConfig *tls.Config
+	var (
+		tlsConfig   *tls.Config
+		guideServer *http.Server
+		ca          *server.LocalCA
+		hostname    string
+	)
 	switch {
+	case *local:
+		hostname, err = server.LocalHostname()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if *localName == "" {
+			*localName = hostname[:min(len(hostname), 40)]
+		}
+		ca, err = server.OpenLocalCA(filepath.Dir(*dataPath), *localName, hostname)
+		if err != nil {
+			log.Fatal(err)
+		}
+		httpsPort := uint16(https.Addr().(*net.TCPAddr).Port)
+		handler, err := ca.GuideHandler(web.Files(), httpsPort)
+		if err != nil {
+			log.Fatal(err)
+		}
+		guideServer = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+		tlsConfig = ca.TLSConfig()
 	case *domain != "":
 		// The certificate comes through the HTTPS port itself, so port 80 can stay closed.
 		m := &autocert.Manager{
@@ -107,7 +151,6 @@ func main() {
 		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"h2", "http/1.1"}}
 	}
 
-	var https net.Listener
 	turnCfg := server.TURNConfig{PublicIP: *publicIP, Port: *turnPort, Secret: store.TURNSecret, MinPort: uint16(*turnMin), MaxPort: uint16(*turnMax), AllowPrivatePeers: *turnPriv, AccountMbps: *relayMbps}
 	if *publicIP != "" {
 		var secureRelay net.Listener
@@ -148,6 +191,9 @@ func main() {
 	}
 
 	s := server.New(store, turnCfg, stunURLs, web.Files())
+	if ca != nil {
+		s.EnableLocalMode(ca)
+	}
 	s.ServeClients(clientDirectory(*dataPath, *clients), *fetch)
 	if *remoteMCP {
 		origin := *mcpOrigin
@@ -174,34 +220,72 @@ func main() {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	// A stop (systemd, Ctrl+C) closes the listener, then every socket, and saves state
-	// before exiting, instead of dying mid-write.
-	stopped := make(chan struct{})
+	// A stop (systemd, Ctrl+C) withdraws the LAN announcement, closes both listeners and
+	// every WebSocket, and saves state before exiting.
+	signals, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	serveErr := make(chan error, 2)
+	if guideServer != nil {
+		log.Printf("guide listening on %s", guide.Addr())
+		go func() { serveErr <- guideServer.Serve(guide) }()
+	}
+	actualAddr := *listen
+	if ca != nil {
+		actualAddr = https.Addr().String()
+	}
+	log.Printf("listening on %s", actualAddr)
 	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-		<-sig
-		s.StopMCP()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-		close(stopped)
+		switch {
+		case ca != nil:
+			serveErr <- srv.ServeTLS(https, "", "")
+		case https != nil:
+			serveErr <- srv.Serve(https)
+		case tlsConfig != nil:
+			serveErr <- srv.ListenAndServeTLS("", "")
+		default:
+			serveErr <- srv.ListenAndServe()
+		}
 	}()
-	log.Printf("listening on %s", *listen)
-	switch {
-	case https != nil:
-		err = srv.Serve(https)
-	case tlsConfig != nil:
-		err = srv.ListenAndServeTLS("", "")
-	default:
-		err = srv.ListenAndServe()
+	var mdns *server.MDNS
+	if ca != nil {
+		fingerprint := ca.Fingerprint()
+		log.Printf("local CA SHA-256 fingerprint %s", fingerprint)
+		if !store.HasAdmin() {
+			host, port, _ := net.SplitHostPort(actualAddr)
+			if net.ParseIP(host).IsUnspecified() {
+				host = "localhost"
+			}
+			origin := "https://" + net.JoinHostPort(host, port)
+			log.Printf("no admin yet, run deskway-server admin-link -data %q -url %s", *dataPath, origin)
+		}
+		var mdnsErr error
+		mdns, mdnsErr = server.StartMDNS(hostname, *localName, fingerprint, https.Addr().(*net.TCPAddr), guide.Addr().(*net.TCPAddr))
+		if mdnsErr != nil {
+			log.Printf("mDNS for %s.local: %v", hostname, mdnsErr)
+		} else {
+			log.Printf("mDNS advertising %s.local", hostname)
+		}
 	}
-	if err == http.ErrServerClosed {
-		<-stopped
+	var serveError error
+	select {
+	case <-signals.Done():
+	case serveError = <-serveErr:
 	}
+	if mdns != nil {
+		mdns.Close()
+	}
+	s.StopMCP()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var shutdown sync.WaitGroup
+	if guideServer != nil {
+		shutdown.Go(func() { _ = guideServer.Shutdown(ctx) })
+	}
+	_ = srv.Shutdown(ctx)
+	shutdown.Wait()
 	s.Shutdown()
-	if err != http.ErrServerClosed {
-		log.Fatal(err)
+	if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
+		log.Fatal(serveError)
 	}
 	log.Printf("stopped")
 }
@@ -277,15 +361,16 @@ func remoteMCPCheckCommand(args []string) int {
 }
 
 // adminLinkCommand takes only the account links lock, so it can run while the server
-// holds the state lock. Use the public origin, including any non-default port.
+// holds the state lock. Use the server's origin, including any non-default port.
 func adminLinkCommand(args []string, out io.Writer) int {
 	flags := flag.NewFlagSet("admin-link", flag.ExitOnError)
 	dataPath := flags.String("data", "deskway-data/state.json", "state file")
-	origin := flags.String("url", "", "public HTTPS origin (HTTP is allowed on loopback)")
+	origin := flags.String("url", "", "Deskway HTTPS origin (HTTP is allowed on loopback)")
 	ifNeeded := flags.Bool("if-needed", false, "issue a link only when the admin needs a password")
+	login := flags.Bool("login", false, "issue a two-minute sign-in link for the existing admin")
 	flags.Parse(args)
 	u, err := url.Parse(*origin)
-	if flags.NArg() != 0 || err != nil || u.Hostname() == "" || u.User != nil ||
+	if flags.NArg() != 0 || *ifNeeded && *login || err != nil || u.Hostname() == "" || u.User != nil ||
 		(u.Path != "" && u.Path != "/") || u.ForceQuery || u.RawQuery != "" || strings.Contains(*origin, "#") {
 		flags.Usage()
 		return 2
@@ -298,6 +383,8 @@ func adminLinkCommand(args []string, out io.Writer) int {
 	issue := server.IssueAdminLink
 	if *ifNeeded {
 		issue = server.IssueAdminLinkIfNeeded
+	} else if *login {
+		issue = server.IssueAdminLoginLink
 	}
 	link, err := issue(*dataPath)
 	if err != nil {

@@ -19,8 +19,10 @@ import (
 const (
 	linkSetup     = "setup"
 	linkReset     = "reset"
+	linkLogin     = "login"
 	memberLinkTTL = 7 * 24 * time.Hour
 	adminLinkTTL  = time.Hour
+	loginLinkTTL  = 2 * time.Minute
 	adminLinkID   = "admin"
 	localIssuer   = "admin-link"
 )
@@ -28,6 +30,7 @@ const (
 var (
 	errAccountLink = errors.New("invalid or expired account link")
 	errSetupKey    = errors.New("a valid browser key is required")
+	errLoginFields = errors.New("a login link accepts only a browser key")
 )
 
 type accountLink struct {
@@ -142,58 +145,72 @@ func adminID(users map[string]*User) string {
 
 // IssueAdminLink creates the one-time admin link without opening the Store.
 func IssueAdminLink(path string) (string, error) {
-	return issueAdminLink(path, false)
+	return issueAdminLink(path, false, "")
 }
 
 // IssueAdminLinkIfNeeded returns an empty link if the admin already has a password.
 func IssueAdminLinkIfNeeded(path string) (string, error) {
-	return issueAdminLink(path, true)
+	return issueAdminLink(path, true, "")
 }
 
-func issueAdminLink(path string, ifNeeded bool) (string, error) {
+// IssueAdminLoginLink creates a two-minute sign-in link for an existing admin.
+func IssueAdminLoginLink(path string) (string, error) {
+	return issueAdminLink(path, false, linkLogin)
+}
+
+func issueAdminLink(path string, ifNeeded bool, kind string) (string, error) {
 	f, err := lockLinks(path)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	if ifNeeded {
+	ttl := adminLinkTTL
+	if ifNeeded || kind == linkLogin {
 		// Redeeming the initial link also holds this lock through the state save.
-		hasPassword, err := stateHasAdminPassword(path)
-		if err != nil || hasPassword {
+		admin, err := stateAdmin(path)
+		if kind == linkLogin {
+			if errors.Is(err, os.ErrNotExist) || err == nil && admin == nil {
+				return "", errors.New("no admin yet. Run admin-link without -login to set one up")
+			}
+			ttl = loginLinkTTL
+		}
+		if err != nil || ifNeeded && admin != nil && admin.Hash != "" {
 			return "", err
 		}
 	}
 	if err := f.load(); err != nil {
 		return "", err
 	}
-	return f.issue(adminLinkID, "", localIssuer, adminLinkTTL)
+	return f.issue(adminLinkID, kind, localIssuer, ttl)
 }
 
-func stateHasAdminPassword(path string) (bool, error) {
+type adminLinkAccount struct {
+	Admin bool   `json:"admin"`
+	Hash  string `json:"hash"`
+}
+
+func stateAdmin(path string) (*adminLinkAccount, error) {
 	f, err := openStateSnapshot(path)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	raw, err := io.ReadAll(f)
 	f.Close()
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	var state struct {
-		Users map[string]struct {
-			Admin bool   `json:"admin"`
-			Hash  string `json:"hash"`
-		} `json:"users"`
+		Users map[string]*adminLinkAccount `json:"users"`
 	}
 	if err := json.Unmarshal(raw, &state); err != nil {
-		return false, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	for _, user := range state.Users {
-		if user.Admin && user.Hash != "" {
-			return true, nil
+		if user != nil && user.Admin {
+			return user, nil
 		}
 	}
-	return false, nil
+	return nil, nil
 }
 
 func (s *Store) createMember(name, display, issuer string) (id, link string, err error) {
@@ -275,7 +292,14 @@ type setupDetails struct {
 func (s *Store) setupTargetLocked(f *linksFile, hash string) (record, user, kind string, err error) {
 	record, link, ok := f.find(hash)
 	if ok && record == adminLinkID {
-		if id := adminID(s.Users); id != "" {
+		id := adminID(s.Users)
+		if link.Kind == linkLogin {
+			if id == "" {
+				return "", "", "", errAccountLink
+			}
+			return record, id, linkLogin, nil
+		}
+		if id != "" {
 			return record, id, linkReset, nil
 		}
 		return record, "", linkSetup, nil
@@ -313,8 +337,8 @@ type setupRequest struct {
 	Device   *proto.BrowserKey `json:"device"`
 }
 
-// redeemLink consumes the link under its file lock, then commits the password and browser
-// together. If the state write fails, the old records and link can be used again. A process
+// redeemLink consumes the link under its file lock, then commits the browser and any password
+// change together. If the state write fails, the old records and link can be used again. A process
 // interrupted between writes fails closed: the operator can issue another link.
 func (s *Store) redeemLink(body setupRequest, current, label, ip string) (user, browser, token string, err error) {
 	s.mu.Lock()
@@ -324,25 +348,32 @@ func (s *Store) redeemLink(body setupRequest, current, label, ip string) (user, 
 		return "", "", "", err
 	}
 	defer f.Close()
-	record, id, _, err := s.setupTargetLocked(f, hashToken(body.Code))
+	record, id, kind, err := s.setupTargetLocked(f, hashToken(body.Code))
 	if err != nil {
 		return "", "", "", err
 	}
 	if !body.Device.Valid() || body.Device.Role != "" {
 		return "", "", "", errSetupKey
 	}
-	if !validSecret(body.Password) {
-		return "", "", "", errBadSecret
-	}
-	if (id == "" && !ValidAccountName(body.Name)) || (id != "" && body.Name != "") || len([]rune(body.Display)) > 20 {
-		return "", "", "", errBadName
-	}
-	if id == "" && idOf(s.Users, body.Name) != "" {
-		return "", "", "", errNameTaken
-	}
-	password, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", "", "", err
+	var password []byte
+	if kind == linkLogin {
+		if body.Name != "" || body.Display != "" || body.Password != "" {
+			return "", "", "", errLoginFields
+		}
+	} else {
+		if !validSecret(body.Password) {
+			return "", "", "", errBadSecret
+		}
+		if (id == "" && !ValidAccountName(body.Name)) || (id != "" && body.Name != "") || len([]rune(body.Display)) > 20 {
+			return "", "", "", errBadName
+		}
+		if id == "" && idOf(s.Users, body.Name) != "" {
+			return "", "", "", errNameTaken
+		}
+		password, err = bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
+		if err != nil {
+			return "", "", "", err
+		}
 	}
 
 	link := f.records[record]
@@ -361,10 +392,12 @@ func (s *Store) redeemLink(body setupRequest, current, label, ip string) (user, 
 		next := *previousUser
 		s.Users[user] = &next
 	}
-	u := s.Users[user]
-	u.Hash = string(password)
-	if body.Display != "" {
-		u.Display = body.Display
+	if password != nil {
+		u := s.Users[user]
+		u.Hash = string(password)
+		if body.Display != "" {
+			u.Display = body.Display
+		}
 	}
 
 	browser = current

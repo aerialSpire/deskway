@@ -60,6 +60,25 @@ export async function showSetup(link, signedIn) {
     return failure('err.noServer');
   }
 
+  const redeem = async (fields) => {
+    const res = await link.redeem(fields);
+    if (res.ok) {
+      history.replaceState(history.state, '', '/');
+      await signedIn();
+    }
+    return res;
+  };
+  if (details.kind === 'login') {
+    page('setup.loginTitle', loading(t('common.loading')));
+    try {
+      const res = await redeem({});
+      if (!res.ok) failure(statusKey(res.status));
+    } catch {
+      failure('err.noServer');
+    }
+    return;
+  }
+
   const name = h('input', { class: 'input', autocomplete: 'username', maxlength: 32, required: true, autocapitalize: 'none', spellcheck: 'false' });
   const display = h('input', { class: 'input', autocomplete: 'nickname', maxlength: 20 });
   const secret = () => h('input', { class: 'input', type: 'password', autocomplete: 'new-password', required: true });
@@ -80,15 +99,12 @@ export async function showSetup(link, signedIn) {
       if (pass.value !== again.value) return say('pw.mismatch');
       submit.disabled = true;
       try {
-        const res = await link.redeem({
+        const res = await redeem({
           password: pass.value,
           name: details.name ? undefined : name.value.trim(),
           display: display.value.trim(),
         });
-        if (res.ok) {
-          history.replaceState(history.state, '', '/');
-          return await signedIn();
-        }
+        if (res.ok) return;
         if (res.status === 410) return failure('setup.invalid');
         say(res.status === 409 ? 'signin.taken' : statusKey(res.status));
       } catch {

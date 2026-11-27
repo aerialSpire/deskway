@@ -66,14 +66,36 @@ on the website (`/api/members`). See [Accounts](accounts.md).
 The server generates 32 random bytes per link and encodes them in base64url. Its separate links
 file stores the SHA-256 of the code, the intended account when known, the kind of link, the
 issuer and the expiry. The code stays in the URL fragment until the setup page removes it from
-the address bar. The page sends the hash to obtain the form details and sends the code when
-submitting the password. Invalid codes count toward the same per-address limit as wrong passwords.
+the address bar. The page sends the hash to obtain the link's details and sends the code when
+redeeming the link. Invalid codes count toward the same per-address limit as wrong passwords.
 
 A new link replaces an outstanding link for the same account. A link works once. Member links
-expire after seven days and admin links after one hour. Redeeming a link approves the browser
-that uses it and signs it in. Its registered key joins the device log unsigned. A computer that
+expire after seven days and admin setup and recovery links after one hour. An admin login link
+expires after two minutes and leaves the account password intact. Redeeming a link approves the
+browser that uses it and signs it in. Its registered key joins the device log unsigned. A computer that
 already trusts devices requires its own approval or a signed endorsement from a trusted device
 before accepting that key.
+
+### Local server certificates
+
+A local-mode server creates a ten-year P-256 root CA with path length 1. During creation it
+uses the root key to sign one P-256 intermediate CA and then discards it. The root key stays
+in memory during creation. The intermediate has path length 0 and a single extended key
+usage, `serverAuth`. Its critical X.509 name constraints permit the `local` and `localhost`
+DNS subtrees, IPv4 private, loopback and link-local ranges, and IPv6 loopback, unique-local
+and link-local ranges. Verifiers that skip constraints on trust anchors still encounter
+them on the intermediate.
+
+The server keeps the two certificates and the intermediate key in `local-ca/` beside its
+state file. The key has mode `0600` on Unix, and the server refuses to load a key with group
+or other access. On Windows the key file has a protected DACL granting access to the server
+account, SYSTEM and Administrators. The intermediate signs the TLS leaves. The server sends
+the leaf and intermediate. Browsers trust the installed root certificate through the device's
+certificate settings. Hosts and the `deskway` CLI use platform TLS certificate verification.
+
+Before installing, compare the fingerprint in the HTTP guide with the startup log on the hub
+computer itself. Verify that the downloaded root certificate also has that fingerprint. On
+iOS, check that the profile contains only the expected `Deskway <name>` certificate.
 
 ### An account is its id
 

@@ -14,6 +14,7 @@ import (
 // and whether it is the admin (who manages the members, members.go).
 func (s *Server) me(user string) map[string]any {
 	me := map[string]any{"user": s.store.Name(user), "display": s.store.Display(user), "admin": s.store.IsAdmin(user)}
+	me["local_mode"] = s.local != nil
 	if s.mcp != nil {
 		me["remote_mcp"] = s.mcp.resource
 	}

@@ -2,6 +2,7 @@
 // language is fetched, plus English, which fills in any key a catalog lacks. The choice is kept
 // in this browser only.
 import { store } from './env.js';
+import { browserLanguage } from './language.js';
 
 export const LANGS = ['en', 'zh-Hans', 'zh-Hant'];
 // For dates and times; Traditional Chinese follows Taiwan.
@@ -14,20 +15,10 @@ let plurals = null;
 
 export const currentLang = () => lang;
 
-// A saved choice, else the browser's languages in order: zh-TW/HK/MO and zh-Hant are
-// Traditional, any other Chinese is Simplified, and the first other language means English.
+// A saved choice, else the browser's preferred language.
 export function pickLanguage() {
   const saved = store.get('deskway.lang');
-  if (LANGS.includes(saved)) return saved;
-  const wanted = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || ''];
-  for (const l of wanted) {
-    const x = String(l || '').toLowerCase().replace(/_/g, '-');
-    if (!x) continue;
-    if (/^zh-(tw|hk|mo)(-|$)|^zh-hant(-|$)/.test(x)) return 'zh-Hant';
-    if (x === 'zh' || x.startsWith('zh-')) return 'zh-Hans';
-    return 'en';
-  }
-  return 'en';
+  return LANGS.includes(saved) ? saved : browserLanguage();
 }
 
 async function loadCatalog(l) {
