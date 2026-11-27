@@ -180,6 +180,8 @@ func TestSharedTypesMatchDefinition(t *testing.T) {
 		"LogEntry":     proto.LogEntry{},
 		"AiSwitch":     proto.AiSwitch{},
 		"AiView":       proto.AiView{},
+
+		"TerminalStatus": proto.TerminalStatus{},
 	} {
 		def, ok := d.Types[name]
 		if !ok {

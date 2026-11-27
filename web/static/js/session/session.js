@@ -5,7 +5,7 @@ import { store, randomId } from '../env.js';
 import { t } from '../i18n.js';
 import { socket, iceServers } from '../net.js';
 import { connectAuth, answerSigned, pinnedHostKey, pinHostKey } from '../auth.js';
-import { PROTOCOL_VERSION, MIN_VERSION, Control } from '../proto.js';
+import { CAPS, PROTOCOL_VERSION, MIN_VERSION, Control } from '../proto.js';
 import { dialog } from '../dialogs.js';
 import { Connection } from './connection.js';
 import { chosenDisplay } from './displays.js';
@@ -34,7 +34,7 @@ async function verifyAnswer({ hostId, session, offerSdp, answerSdp, auth }) {
 }
 
 export class Session {
-  constructor(device, { force = false, view = 'desktop', full = true, onEnd = () => {} } = {}) {
+  constructor(device, { force = false, view = 'desktop', target, deviceStatus = () => device, full = true, onEnd = () => {} } = {}) {
     this.device = device;
     this.onEnd = onEnd;
     this.closed = false;
@@ -49,7 +49,7 @@ export class Session {
     this.stage = h('div', { class: dataOnly ? 'stage terminal-stage' : 'stage', tabindex: '0',
       'aria-label': t(dataOnly ? 'terminal.title' : 'session.screen') }, dataOnly ? null : this.stack);
     this.osk = new OnscreenKeyboard(this);
-    this.content = dataOnly ? new DataView(this, view) : new Desktop(this);
+    this.content = dataOnly ? new DataView(this, view, target, deviceStatus) : new Desktop(this);
     this.keyboard = new Keyboard(this, this.content.keyboardSink());
     this.toolbar = new Toolbar(this, this.content.buttons, this.content.picture || [], this.content.navigation);
     const details = new ConnectionDetails(() => this.toolbar.closePanel(this.toolbar.routeButton));
@@ -190,7 +190,7 @@ export class Session {
       this.toolbar.route('connected');
       this.connectionStats.start(this.connection.pc);
       if (!this.helloSent) {
-        this.helloSent = this.send({ t: Control.HELLO, version: PROTOCOL_VERSION, caps: [] });
+        this.helloSent = this.send({ t: Control.HELLO, version: PROTOCOL_VERSION, caps: this.content.helloCaps ?? [] });
       }
       this.content.active();
     } else if (state === 'recovering') {

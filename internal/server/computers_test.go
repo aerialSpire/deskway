@@ -311,7 +311,7 @@ func TestTheDeviceListSaysWhoHoldsAComputerAsEachBrowserSeesIt(t *testing.T) {
 	}
 }
 
-func TestDetachedTerminalStatusIsVisibleToTheComputersAccount(t *testing.T) {
+func TestTerminalStatusIsVisibleToTheComputersAccount(t *testing.T) {
 	f := signalingFixture(t)
 	owner := f.id("me")
 	f.s.store.mu.Lock()
@@ -324,29 +324,52 @@ func TestDetachedTerminalStatusIsVisibleToTheComputersAccount(t *testing.T) {
 	f.s.hosts[host.deviceID] = host
 	f.s.mu.Unlock()
 
+	fromPhone := proto.KeptTerminal{Since: 123, Name: "Phone", Cred: "C1"}
+	renamed := proto.KeptTerminal{Since: 123, Name: "Renamed phone"}
+	other := proto.KeptTerminal{Since: 456, Name: "Browser"}
+	invalid := proto.KeptTerminal{Name: "Browser"}
 	for _, tc := range []struct {
-		label string
-		sent  *proto.KeptTerminal
-		want  *proto.KeptTerminal
+		label     string
+		kept      *proto.KeptTerminal
+		wantKept  *proto.KeptTerminal
+		terminals []proto.TerminalStatus
+		want      []proto.TerminalStatus
 	}{
-		{"left", &proto.KeptTerminal{Since: 123, Name: "Phone", Cred: "C1"}, &proto.KeptTerminal{Since: 123, Name: "Renamed phone"}},
-		{"reattached or closed", nil, nil},
-		{"no device key", &proto.KeptTerminal{Since: 456, Name: "Browser"}, &proto.KeptTerminal{Since: 456, Name: "Browser"}},
-		{"invalid", &proto.KeptTerminal{Name: "Browser"}, nil},
+		{"left", &fromPhone, &renamed, nil, nil},
+		{"reattached or closed", nil, nil, nil, nil},
+		{"no device key", &other, &other, nil, nil},
+		{"invalid", &invalid, nil, nil, nil},
+		{"multiple", &fromPhone, &renamed, []proto.TerminalStatus{
+			{KeptTerminal: fromPhone, ID: 1, Left: 700},
+			{KeptTerminal: other, ID: 2, Attached: true},
+			{KeptTerminal: invalid, ID: 3},
+		}, []proto.TerminalStatus{
+			{KeptTerminal: renamed, ID: 1, Left: 700},
+			{KeptTerminal: other, ID: 2, Attached: true},
+		}},
+		{"all closed", nil, nil, nil, nil},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
-			f.s.onStatus(host, proto.Msg{KeptTerminal: tc.sent})
-			for _, browser := range []string{"phone", "other"} {
-				d := f.s.deviceList(&conn{user: owner, browser: browser})[0]
-				if !reflect.DeepEqual(d.KeptTerminal, tc.want) {
-					t.Errorf("%s got %+v, want %+v", browser, d.KeptTerminal, tc.want)
+			f.s.onStatus(host, proto.Msg{KeptTerminal: tc.kept, Terminals: tc.terminals})
+			for _, c := range []*conn{
+				{user: owner, browser: "phone", caps: []string{proto.CapTerminals}},
+				{user: owner, browser: "other"},
+				{user: owner, ai: true, caps: []string{proto.CapTerminals}},
+			} {
+				wantKept, want := tc.wantKept, tc.want
+				if c.ai {
+					wantKept = nil
+				}
+				if c.ai || len(c.caps) == 0 {
+					want = nil
+				}
+				d := f.s.deviceList(c)[0]
+				if !reflect.DeepEqual(d.KeptTerminal, wantKept) || !reflect.DeepEqual(d.Terminals, want) {
+					t.Errorf("%s (AI: %v) got kept %+v and list %+v, want kept %+v and list %+v", c.browser, c.ai, d.KeptTerminal, d.Terminals, wantKept, want)
 				}
 			}
 			if devices := f.s.deviceList(&conn{user: "another-account"}); len(devices) != 0 {
 				t.Fatalf("another account got %v", devices)
-			}
-			if d := f.s.deviceList(&conn{user: owner, ai: true})[0]; d.KeptTerminal != nil {
-				t.Fatalf("AI client got terminal status: %+v", d.KeptTerminal)
 			}
 		})
 	}

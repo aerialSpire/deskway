@@ -513,11 +513,12 @@ the ordinary worker of the console user. The shell starts in the user's home or 
 with ordinary rights, regardless of the AI administrator switch. On macOS, Terminal and Files
 work without Screen Recording or Accessibility. The shell runs with the host app's privacy
 permissions, which can differ from those of a terminal app the user opens directly.
-The shell and its programs survive the session that opened them. Any browser admitted to the
-desk seat can return to the shell and receive its most recent 256 KiB of output, kept in memory.
-The shell ends on exit, when an attached browser explicitly closes it, after 24 hours detached,
-when the host stops, or when the Windows sign-in ends or changes users. Locking Windows or
-macOS blocks new data sessions and ends any attached one while a kept shell continues to run.
+Browser shells and their programs survive the sessions that opened them. A browser admitted
+to the desk seat can attach to one shell at a time and receive its most recent 256 KiB of
+output, kept in memory. Each shell ends on exit, when an attached browser explicitly closes
+it, or after 24 hours detached. All shells end when the host stops or the Windows sign-in ends
+or changes users. Locking Windows or macOS blocks new data sessions and ends any attached one
+while kept shells continue to run.
 This also applies on the Windows secure desktop and when fast user switching takes the Mac
 app's session off the active console. The host reads these states independently of capture.
 It checks access before queueing each terminal output frame, including replay, and stops a
@@ -526,7 +527,7 @@ before sending PTY output to the network service, and checks access before resum
 process. A synchronous ConPTY write already in progress at lock may still deliver bytes typed
 before the lock. A Windows sign-out or user switch clears the old workspace. Logging out of macOS
 stops Deskway Host.
-The host logs when the terminal opens, is left, is returned to or closes, including the
+The host logs when a terminal opens, is left, is returned to or closes, including the
 device and the reason where applicable. These events go to the systemd journal on Linux and
 the Deskway network service log on Windows. Terminal input and output stay out of the logs.
 

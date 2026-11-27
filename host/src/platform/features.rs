@@ -104,6 +104,7 @@ impl Features {
         if self.terminal && !self.view_only {
             caps.push(wire::caps::TERMINAL.into());
             caps.push(wire::caps::TERMINAL_KEEP.into());
+            caps.push(wire::caps::TERMINALS.into());
             if self.browse {
                 caps.push(wire::caps::BROWSE.into());
                 if self.file_transfers {

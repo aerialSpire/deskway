@@ -148,6 +148,20 @@ wire_struct! {
 }
 
 wire_struct! {
+    /// A browser terminal and its last attachment.
+    pub struct TerminalStatus {
+        "id" id: u64,
+        "since" since: u64,
+        "attached" attached: bool,
+        "name" name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "cred" cred: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "left" left: Option<u64>,
+    }
+}
+
+wire_struct! {
     pub struct VouchEntry {
         "cred" cred: String,
         "alg" alg: i64,

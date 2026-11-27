@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -186,6 +187,7 @@ func (s *Server) dropComputer(id string) {
 func (s *Server) deviceList(c *conn) []proto.Device {
 	s.mu.Lock()
 	list := s.store.DevicesFor(c.user)
+	showTerminals := slices.Contains(c.caps, proto.CapTerminals)
 	holders := make([]*proto.Holder, len(list))
 	for i := range list {
 		d := &list[i]
@@ -195,6 +197,9 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 			holders[i] = h.holder
 			if !c.ai {
 				d.KeptTerminal = h.keptTerminal
+				if showTerminals {
+					d.Terminals = h.terminals
+				}
 				d.WorkspaceAccess = h.workspaceAccess
 			}
 			d.AI = aiView(d.AI, h.aiState, h.aiRefused, h.aiHolder)
@@ -208,14 +213,24 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 			list[i].Controller = s.controllerFor(c, h)
 		}
 		if kept := list[i].KeptTerminal; kept != nil {
-			name := s.store.BrowserName(c.user, kept.Cred)
-			if name == "" {
-				name = kept.Name
-			}
-			list[i].KeptTerminal = &proto.KeptTerminal{Since: kept.Since, Name: name}
+			terminal := s.terminalFor(c.user, *kept)
+			list[i].KeptTerminal = &terminal
+		}
+		list[i].Terminals = slices.Clone(list[i].Terminals)
+		for j := range list[i].Terminals {
+			terminal := &list[i].Terminals[j].KeptTerminal
+			*terminal = s.terminalFor(c.user, *terminal)
 		}
 	}
 	return list
+}
+
+func (s *Server) terminalFor(user string, terminal proto.KeptTerminal) proto.KeptTerminal {
+	if name := s.store.BrowserName(user, terminal.Cred); name != "" {
+		terminal.Name = name
+	}
+	terminal.Cred = ""
+	return terminal
 }
 
 // aiView is AI clients on an online computer as its account sees it: the switch the server

@@ -26,25 +26,39 @@ pub fn data_only(sdp: &str) -> bool {
 
 pub struct Data {
     lease: Lease,
+    greeting: Option<Vec<Control>>,
     terminal: Terminal,
-    terminal_id: Option<ChannelId>,
+    terminal_channel: Option<ChannelId>,
     files: Option<Files>,
     transfers: Option<Transfers>,
     _browser: Option<BrowserUser>,
 }
 
 impl Data {
-    pub(crate) fn new(lease: Lease, browser: BrowserUser, page: Arc<Mutex<Page>>, own: Sender<SessionEvent>) -> Self {
+    pub(crate) fn new(lease: Lease, browser: BrowserUser, page: Arc<Mutex<Page>>, own: Sender<SessionEvent>, greeting: Vec<Control>) -> Self {
         Self {
             lease: lease.clone(),
+            greeting: Some(greeting),
             terminal: Terminal::new(lease.clone(), own.clone()),
-            terminal_id: None,
+            terminal_channel: None,
             files: Some(Files {
                 call: browser.browse.clone(), lease: lease.clone(), own: own.clone(), channel: None, work: Work::Idle,
             }),
             transfers: Some(Transfers::new(browser.transfers.clone(), page, lease, own)),
             _browser: Some(browser),
         }
+    }
+
+    fn open_terminal(&mut self, id: ChannelId) -> Option<&mut Terminal> {
+        if self.terminal_channel.is_some() { return None; }
+        self.terminal_channel = Some(id);
+        Some(&mut self.terminal)
+    }
+
+    fn close_terminal(&mut self, id: ChannelId) -> bool {
+        if self.terminal_channel.take_if(|current| *current == id).is_none() { return false; }
+        self.terminal.channel_closed();
+        true
     }
 }
 
@@ -69,12 +83,13 @@ impl Role for Data {
         if reliable {
             match label {
                 "control" if cx.control().is_none() => return true,
-                wire::terminal::CHANNEL if self.terminal_id.is_none() => {
-                    self.terminal_id = Some(id);
-                    if let Some(mut channel) = cx.rtc.channel(id) {
-                        self.terminal.configure(&mut channel);
+                wire::terminal::CHANNEL => {
+                    if let Some(terminal) = self.open_terminal(id) {
+                        if let Some(mut channel) = cx.rtc.channel(id) {
+                            terminal.configure(&mut channel);
+                        }
+                        return false;
                     }
-                    return false;
                 }
                 wire::file_transfer::CHANNEL => {
                     if let Some(transfer) = &mut self.transfers {
@@ -99,13 +114,23 @@ impl Role for Data {
 
     fn channel_data(&mut self, cx: &mut Cx, d: ChannelData) -> bool {
         if cx.control() == Some(d.id) && !d.binary {
-            if let Ok(Control::End { reason, .. }) = serde_json::from_slice(&d.data) {
-                return cx.signal(Signal::PeerEnded(reason));
+            match serde_json::from_slice(&d.data) {
+                Ok(Control::Hello { caps, .. }) => {
+                    // The browser opens the shell after our hello, with its caps already known.
+                    if let Some(greeting) = self.greeting.take() {
+                        self.terminal.negotiate(&caps);
+                        for message in greeting {
+                            super::send_message(cx.rtc, Some(d.id), &message);
+                        }
+                    }
+                }
+                Ok(Control::End { reason, .. }) => return cx.signal(Signal::PeerEnded(reason)),
+                _ => {}
             }
         } else if !self.lease.holds_seat() {
             return false;
-        } else if self.terminal_id == Some(d.id) {
-            self.terminal.message(cx.active(), d);
+        } else if self.terminal_channel == Some(d.id) {
+            self.terminal.message(cx.active() && self.greeting.is_none(), d);
         } else if let Some(transfer) = self.transfers.as_mut().filter(|t| t.channel() == Some(d.id)) {
             if !transfer.receive(d.data, d.binary) {
                 cx.rtc.direct_api().close_data_channel(d.id);
@@ -122,9 +147,8 @@ impl Role for Data {
 
     fn rtc_event(&mut self, _: &mut Cx, e: Event) {
         if let Event::ChannelClose(id) = e {
-            if self.terminal_id == Some(id) {
-                self.terminal.channel_closed();
-            } else if self.files.as_ref().is_some_and(|files| files.channel == Some(id)) {
+            if self.close_terminal(id) { return; }
+            if self.files.as_ref().is_some_and(|files| files.channel == Some(id)) {
                 self.files = None;
             } else if let Some(transfer) = self.transfers.as_mut().filter(|t| t.channel() == Some(id)) {
                 transfer.detach();
@@ -139,7 +163,7 @@ impl Role for Data {
     }
 
     fn ended(&mut self, reason: Reason) {
-        self.terminal.ended(reason);
+        self.lease.end(reason.as_str());
         if let Some(mut transfer) = self.transfers.take() {
             transfer.ended(reason);
         }
@@ -149,7 +173,7 @@ impl Role for Data {
         if !cx.active() || !self.lease.holds_seat() {
             return None;
         }
-        let terminal = self.terminal_id.and_then(|id| self.terminal.poll(cx, id));
+        let terminal = self.terminal_channel.and_then(|id| self.terminal.poll(cx, id));
         let files = self.files.as_mut().and_then(|files| files.poll(cx));
         let transfer = self.transfers.as_mut().and_then(|t| t.poll(cx));
         terminal.into_iter().chain(files).chain(transfer).min()
@@ -278,13 +302,40 @@ mod tests {
         let lease = registry.admit(id.into(), "browser".into(), "device".into());
         let data = Data {
             lease: lease.clone(),
+            greeting: None,
             terminal: Terminal::new(lease.clone(), mpsc::channel().0),
-            terminal_id: None,
+            terminal_channel: None,
             files: Some(Files { call: Arc::new(call), lease, own, channel: None, work: Work::Idle }),
             transfers: None,
             _browser: None,
         };
         (data, replies)
+    }
+
+    #[test]
+    fn another_terminal_channel_can_attach_once_the_first_closes() {
+        let (updates, _) = Waker::default().channel();
+        let registry = Registry::new(|_, _| Ok(super::super::terminal::registry::fake_pty()), updates);
+        let (mut data, _) = admitted(&registry, "session", listing);
+        let rcgen::CertifiedKey { cert, signing_key } = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let mut rtc = str0m::Rtc::builder().set_dtls_cert(str0m::config::DtlsCert {
+            certificate: cert.der().to_vec(), private_key: signing_key.serialize_der(),
+        }).build(Instant::now());
+        let mut api = rtc.sdp_api();
+        let [first, early, second] = [wire::terminal::CHANNEL; 3].map(|label| api.add_channel(label.into()));
+        for (channel, allowed) in [(first, true), (early, false), (second, true)] {
+            let slot = data.open_terminal(channel);
+            assert_eq!(slot.is_some(), allowed);
+            if let Some(slot) = slot {
+                slot.message(true, ChannelData { id: channel, binary: false, data: br#"{"t":"open","rows":24,"cols":80}"#.to_vec() });
+            }
+            assert_eq!(registry.status().iter().filter(|kept| kept.attached).map(|kept| kept.id).collect::<Vec<_>>(), [1]);
+            if !allowed {
+                assert!(!data.close_terminal(early));
+                assert!(data.close_terminal(first));
+            }
+        }
+        assert_eq!(registry.status().len(), 1);
     }
 
     fn listing(_: Browse, _: &dyn Fn() -> bool) -> (PathBuf, Browse) {

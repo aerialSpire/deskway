@@ -11,6 +11,7 @@ const command = promisify(execFile);
 const user = 'workspace-trial';
 const password = 'workspace trial password';
 const buttons = '.computer-actions button';
+const terminalButton = '[data-session-view="terminal"]';
 const title = 'document.querySelector(".dialog h2")?.textContent';
 const terminal = '[...document.querySelectorAll(".xterm-rows > div")].map(row => row.textContent).join("\\n")';
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -59,8 +60,8 @@ async function shell(page, line) {
   await press(page, 'Enter', 'Enter', 13);
 }
 
-async function enterWorkspace(page, label, selector = buttons) {
-  await click(page, selector, t(label));
+async function enterWorkspace(page, label) {
+  await click(page, buttons, t(label));
   if (await page.eval(`${title} === ${q('here.confirmTitle')}`)) {
     await click(page, '.dialog button', t('here.confirmGo'));
   }
@@ -176,14 +177,41 @@ export const area = {
       await page.until(`(${terminal}).includes('interrupt-returned')`, 'new command after interrupt', 8000);
       h.check('Ctrl-C interrupts the running command', true);
 
+      const originalId = await waitFor(() => page.v(`(${device})?.terminals?.find(x => x.attached)?.id`), 'original terminal ID');
       await leave(page);
-      await page.until('!!document.querySelector(".terminal-kept button")', 'the kept terminal notice');
-      await enterWorkspace(page, 'terminal.return', '.terminal-kept button');
+      await page.until(`(${device})?.terminals?.some(x => x.id === ${originalId} && !x.attached)`, 'the detached terminal');
+      h.check('the computer page offers Terminal and Files', await page.eval(
+        `!document.querySelector('.terminal-kept button') &&
+        [...document.querySelectorAll('${buttons}')].map(e => e.textContent).join('|') === ${lit([t('terminal.label'), t('files.label')].join('|'))}`));
+      await enterWorkspace(page, 'terminal.label');
       await page.until(`(${terminal}).includes('interrupt-returned')`, 'replayed terminal output');
-      h.check('leave keeps the terminal and Return replays it', true);
+      h.check('leave keeps the terminal and Terminal replays it', true);
+
+      await click(page, terminalButton, t('terminal.label'));
+      h.check('the terminal panel marks the current terminal and ends with New terminal', await page.eval(
+        `document.querySelector('.terminal-picker .notice button:disabled')?.textContent === ${q('terminal.current')} &&
+        document.querySelector('.terminal-picker > button:last-child')?.textContent === ${q('terminal.new')}`));
+      await click(page, '.terminal-picker > button', t('terminal.new'));
+      const secondId = await waitFor(() => page.v(
+        `(${device})?.terminals?.find(x => x.attached && x.id !== ${originalId})?.id`), 'new terminal ID');
+      await page.until(`document.querySelector('${terminalButton}').textContent === ${q('terminal.numbered', { id: secondId })} &&
+        (${terminal}).includes('PS ')`, 'new terminal prompt');
+      await shell(page, "Write-Output ('second-' + 'terminal')");
+      await page.until(`(${terminal}).includes('second-terminal')`, 'second terminal output');
+      await click(page, terminalButton, t('terminal.numbered', { id: secondId }));
+      h.check('the numbered Terminal button expands the panel', await page.eval(
+        `document.querySelector('${terminalButton}').getAttribute('aria-expanded') === 'true' &&
+        !document.querySelector('${terminalButton} .route-arrow').hidden`));
+      await click(page, '.terminal-picker .notice button', t('terminal.return'));
+      await page.until(`document.querySelector('${terminalButton}').textContent === ${q('terminal.numbered', { id: originalId })} &&
+        (${terminal}).includes('interrupt-returned')`, 'return to the original terminal');
 
       await click(page, '[data-session-view]', t('files.label'));
       await page.until('!!document.querySelector(".files-path [aria-current]")', 'Files opens');
+      await click(page, terminalButton, t('terminal.numbered', { id: originalId }));
+      h.check('from Files the Terminal button returns to the terminal view', await page.eval(
+        `!document.querySelector('.terminal-stage').hidden && !document.querySelector('.terminal-picker')`));
+      await click(page, '[data-session-view]', t('files.label'));
       h.check('Files opens in the user profile', await page.eval(
         `[...document.querySelectorAll('.files-path button')].slice(1).map(e => e.textContent).join('\\\\').toLowerCase() === ${lit(realpathSync(home).toLowerCase())}`));
       await click(page, '.files-path button', '/');
@@ -271,9 +299,9 @@ export const area = {
       writeFileSync(lock, 'locked');
       await page.until(`(${device})?.workspace_access === 'locked' && !document.querySelector('.session')`, 'lock ends the data session');
       await page.until(`document.querySelector('.dialog')?.textContent.includes(${q('detail.workspaceLocked')})`, 'session lock reason');
-      h.check('lock disables Terminal, Files and Return while still offering the desktop', await page.eval(
+      h.check('lock disables Terminal and Files while still offering the desktop', await page.eval(
         `document.querySelectorAll('.computer-actions button:disabled').length === 2 &&
-        !!document.querySelector('.terminal-kept button:disabled') &&
+        !document.querySelector('.terminal-kept button') &&
         [...document.querySelectorAll('.dialog button')].some(e => e.textContent === ${q('detail.hint')})`));
       await click(page, '.dialog button', t('common.back'));
       writeFileSync(lock, 'ready');
@@ -282,9 +310,13 @@ export const area = {
       await enterWorkspace(page, 'files.label');
       await verified(join(remote, 'resume.bin'), data);
       h.check('a lock interrupts an upload and unlock resumes at its recorded offset', await page.eval('window.resumeOffset > 0'));
-      await click(page, '[data-session-view]', t('terminal.label'));
+      await click(page, terminalButton, t('terminal.label'));
       await page.until(`(${terminal}).includes('interrupt-returned')`, 'kept terminal survived lock');
-      h.check('the original terminal survives the lock', true);
+      await page.until(`document.querySelector('${terminalButton}').textContent === ${q('terminal.numbered', { id: originalId })}`, 'original terminal selected');
+      await click(page, terminalButton, t('terminal.numbered', { id: originalId }));
+      await click(page, '.terminal-picker .notice button', t('terminal.return'));
+      await page.until(`(${terminal}).includes('second-terminal')`, 'second terminal survived lock');
+      h.check('both terminals survive the lock', true);
       await leave(page, true);
 
       await host.stop();

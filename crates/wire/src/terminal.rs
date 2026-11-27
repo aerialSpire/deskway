@@ -18,8 +18,16 @@ wire_values! {
 
 wire_enum! {
     pub enum Terminal (tag "t") {
-        "open" => Open { "rows" rows: u16, "cols" cols: u16 },
+        "open" => Open {
+            "rows" rows: u16, "cols" cols: u16,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "id" id: Option<u64>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "new" new: Option<bool>,
+        },
         "opened" => Opened {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "id" id: Option<u64>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "replay" replay: Option<usize>,
             #[serde(skip_serializing_if = "Option::is_none")]

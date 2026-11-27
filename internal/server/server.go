@@ -71,7 +71,7 @@ type conn struct {
 	browser  string // browsers
 	ai       bool   // browsers: an AI client's login (aiMay)
 	watching bool
-	// Hosts: protocol version, capabilities and hardware from this connection's hello.
+	// Protocol version, capabilities and hardware from this connection's hello.
 	version int
 	caps    []string
 	machine *proto.Machine
@@ -91,6 +91,7 @@ type conn struct {
 	// A detached browser terminal, from the latest host status.
 	workspaceAccess string
 	keptTerminal    *proto.KeptTerminal
+	terminals       []proto.TerminalStatus
 	// Browsers and AI clients: where they run (locate), the id computers answer it and auditreq
 	// by, and the computers that said they are where it runs (here.go, audit.go).
 	where []string

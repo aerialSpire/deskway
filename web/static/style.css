@@ -177,6 +177,9 @@ img, svg { -webkit-user-drag: none; }
 /* ---- A computer ---- */
 .computer-actions { margin-top: var(--s3); display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--s2); }
 .terminal-kept { margin-top: var(--s3); overflow-wrap: anywhere; }
+.terminal-kept > .notice + .notice, .terminal-picker > .notice + .notice { margin-top: var(--s2); }
+.terminal-picker { overflow-wrap: anywhere; }
+.terminal-picker > .btn { margin-top: var(--s2); }
 /* Its screens: at most this high, so what is under them starts on the first screen. */
 :root { --preview-h: 45vh; }
 .preview {
@@ -423,7 +426,8 @@ img, svg { -webkit-user-drag: none; }
 .tool-status:disabled { color: var(--quiet); }
 .tool-status[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
 .route-arrow { display: inline-flex; }
-.tool-status[aria-expanded="true"] .route-arrow { transform: rotate(180deg); }
+[aria-expanded="true"] > .route-arrow { transform: rotate(180deg); }
+.tool[data-session-view="terminal"] > .route-arrow { margin-left: var(--s1); }
 .tool-count { margin-left: var(--s1); font-size: var(--fs-caption); opacity: .7; font-variant-numeric: tabular-nums; }
 /* The clipboard's state dot in line after its word */
 .tool-clip-label { display: inline-flex; align-items: center; gap: var(--s1); white-space: nowrap; }

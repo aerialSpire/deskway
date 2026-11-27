@@ -122,16 +122,16 @@ When the computer has a holder, the page asks one of these questions (`views/tak
 - otherwise: "Your {name} is controlling this computer. Take over?" (or, if the holder is still
   connecting, a question that says so).
 
-**Terminal** and **Files** offers start without force, as do picture offers when the cached
+**Terminal**, **Return** and **Files** offers start without force, as do picture offers when the cached
 holder is this device. The host's current holder decides whether the page asks about taking
 over, including if another tab of this browser is connected. Both actions open the same
 kind of session. The toolbar switches views on the one connection. An ICE restart preserves
 the file view and terminal attachment.
 
-Opening Files starts no shell. The first visit to Terminal in that session starts or
-reattaches the shell. Switching views leaves an attached terminal running. Taking over
-detaches the prior browser. The new browser reattaches to the same shell when it shows
-Terminal. A session with no terminal has an ordinary Disconnect dialog.
+Opening Files starts no shell. The first visit to Terminal returns to the most recently
+detached shell or starts one. Switching between Files and Terminal keeps the attachment. Taking over
+detaches the prior browser and leaves its shell running. A session with no terminal has an
+ordinary Disconnect dialog.
 
 The Files and Terminal views share one transfer list. Changing views keeps the list and its
 transfers running. During ICE recovery the active transfer is marked interrupted and the queue
@@ -140,16 +140,16 @@ or receives an outcome the host already recorded. If the Windows worker did not 
 upload's publish result before the reply deadline, that transfer ends in failure.
 If the established connection ends with `failed` or `gone` with unfinished transfers, the page also
 makes one non-forced admission attempt with its resume token and retains the session view.
-The new connection reattaches a terminal opened in that page at its last dimensions, including
+The new connection reattaches the same terminal at its last dimensions, including
 while Files is visible. Takeover or leaving the view ends unfinished transfers and clears the
 list. The host unlinks a partial upload when its record is dropped, including when its resume
 window expires.
 
 On Windows, a locked console or secure desktop ends the data session with the lock reason and
-offers the desktop. The computer page disables Terminal, Files and Return. The browser retains
+offers the desktop. The computer page disables the terminal actions and Files. The browser retains
 unfinished transfers on that page and uses its existing resume token on the next data
-connection after unlocking. The kept shell and its jobs continue to run. Sign-out and fast user
-switching end the previous user's shell and discard their transfer record. While the console
+connection after unlocking. Kept shells and their jobs continue to run. Sign-out and fast user
+switching end the previous user's shells and discard their transfer record. While the console
 is temporarily detached, Deskway reports the retained sign-in as locked. When nobody is signed
 in, the page says so and offers the desktop. Lock and sign-in revocations skip auto-lock.
 
@@ -158,17 +158,22 @@ the host app's session off the console. Switching back and unlocking lets the br
 Logging out of macOS ends the host and its workspace. Before login the Mac appears offline.
 View-only mode omits Terminal and Files.
 
-The host keeps one browser terminal independently of the desk session. Disconnect, the end
-of a session, or a lost terminal channel leaves the shell and its jobs running. The computer's
-page shows when the last device left and offers **Return** while the terminal is detached.
-During recovery the terminal view says that the terminal is running on the computer and
-that missed output will appear when the browser returns. An established connection that
-recovers in place continues its existing stream. Reconnecting after an end reopens the
-view that was showing when the connection ended.
+The host keeps browser terminals independently of the desk session. Disconnecting, losing
+the channel or switching terminals leaves the shell and its jobs running. The computer's
+page offers **Terminal** and **Files**. In the Terminal view, the toolbar's **Terminal** button
+opens a panel with the running shells and **New terminal**. With several shells, the button
+shows the current terminal's ID and a chevron. In Files, the button returns to the Terminal view.
+The panel marks the current shell when it opens and shows who is using or last left each shell.
+**Return** attaches to a shell and shows its recent output before live output. A terminal switch
+shows progress only in Terminal and clears it when the shell opens.
+An established connection that recovers in place continues its existing stream. Reconnecting
+after an end restores the selected terminal when it is still running and reopens the last view.
 
-The shell ends on exit, **Close the terminal and disconnect**, 24 hours without an attachment,
-host shutdown, or the Windows sign-in ending or changing users. The deliberate close is available from the attached terminal's Disconnect
-dialog. The host discards the buffer and cleans up the PTY and jobs on every terminal end.
+Each shell ends on exit or after 24 hours detached. **Close the terminal and disconnect**
+in the Disconnect dialog ends the current shell. Host shutdown or a Windows sign-out or
+user change ends all shells. The host discards the buffer and cleans up the PTY and jobs on
+every terminal end. An older host with terminal keeping shows a notice and **Return** for
+its kept shell on the computer's page.
 
 When **Each computer in its own window** is on (a per-device setting, off by default), pressing a
 computer asks nothing on this page. Instead, the computer's own window (`windows.js`,

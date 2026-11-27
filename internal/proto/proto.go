@@ -49,8 +49,9 @@ const (
 )
 
 const (
-	CapRelayRTT = "relay-rtt"
-	CapVitals   = "vitals"
+	CapRelayRTT  = "relay-rtt"
+	CapVitals    = "vitals"
+	CapTerminals = "terminals"
 )
 
 // MaxAuth bounds the opaque end-to-end authentication blob carried with offers, answers and
@@ -96,8 +97,9 @@ type Device struct {
 	// Displays attached to the computer while it is online: id, x, y, w, h, primary.
 	Displays json.RawMessage `json:"displays,omitempty"`
 	// The terminal that is running without a browser attached, while online.
-	WorkspaceAccess string        `json:"workspace_access,omitempty"`
-	KeptTerminal    *KeptTerminal `json:"kept_terminal,omitempty"`
+	WorkspaceAccess string           `json:"workspace_access,omitempty"`
+	KeptTerminal    *KeptTerminal    `json:"kept_terminal,omitempty"`
+	Terminals       []TerminalStatus `json:"terminals,omitempty"`
 	// The current socket's hello while online, or the last saved version while offline.
 	Version int      `json:"version,omitempty"`
 	App     string   `json:"app,omitempty"`
@@ -178,6 +180,14 @@ type KeptTerminal struct {
 	Cred  string `json:"cred,omitempty"` // host status only
 }
 
+// TerminalStatus describes a running browser terminal and its last attachment.
+type TerminalStatus struct {
+	KeptTerminal        // Since is the shell's creation time here.
+	ID           uint64 `json:"id"`
+	Attached     bool   `json:"attached"`
+	Left         int64  `json:"left,omitempty"`
+}
+
 // Controller is who holds a computer, as one browser of its account sees it.
 type Controller struct {
 	Device     bool   `json:"device"`     // the holder is this browser's device; else another device of the account
@@ -241,8 +251,9 @@ type Msg struct {
 	Query      json.RawMessage `json:"query,omitempty"`  // auditreq: which recorded AI calls
 	Page       json.RawMessage `json:"page,omitempty"`   // audit: a page of them, from the computer
 
-	WorkspaceAccess string        `json:"workspace_access,omitempty"`
-	KeptTerminal    *KeptTerminal `json:"kept_terminal,omitempty"` // status: a terminal running without a browser attached
+	WorkspaceAccess string           `json:"workspace_access,omitempty"`
+	KeptTerminal    *KeptTerminal    `json:"kept_terminal,omitempty"` // status: a terminal running without a browser attached
+	Terminals       []TerminalStatus `json:"terminals,omitempty"`     // status: all running browser terminals
 
 	Relays    *map[string]string `json:"relays,omitempty"` // relay-list: STUN addresses by ID; send even when empty
 	RelayRTTs map[string]int     `json:"rtts,omitempty"`   // relay-rtts: milliseconds by relay ID

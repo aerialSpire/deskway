@@ -99,4 +99,5 @@ export function renderFromServer() {
   renderWaiting = false;
   if (state.view === 'devices' || state.view === 'aiclient') { if (!dialogOpen()) render(); }
   else if (followsServer()) render();
+  else if (state.view === 'session') currentSession()?.content.refreshTerminalList?.();
 }

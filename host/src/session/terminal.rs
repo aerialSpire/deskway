@@ -11,7 +11,7 @@ use wire::terminal::{Terminal as Msg, TerminalError, FRAME, INPUT_WINDOW, OUTPUT
 
 use crate::i18n::t;
 use wire::types::Reason;
-use registry::{Closed, Lease, Shell};
+use registry::{Closed, Lease, Selection, Shell};
 use replay::History;
 
 pub mod registry;
@@ -154,9 +154,19 @@ fn retry(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted)
 }
 
+fn selection(id: Option<u64>, new: Option<bool>, peer_has_terminals: bool) -> Option<Selection> {
+    match (id, new) {
+        (None, None) => Some(Selection::LatestOrNew),
+        (Some(id), None) if peer_has_terminals => Some(Selection::Id(id)),
+        (None, Some(new)) if peer_has_terminals => Some(if new { Selection::New } else { Selection::LatestOrNew }),
+        _ => None,
+    }
+}
+
 pub struct Terminal {
     lease: Lease,
     own: Sender<SessionEvent>,
+    peer_has_terminals: bool,
     stream: Option<Stream>,
     reply: Option<Msg>,
     done: bool,
@@ -164,7 +174,11 @@ pub struct Terminal {
 
 impl Terminal {
     pub fn new(lease: Lease, own: Sender<SessionEvent>) -> Self {
-        Self { lease, own, stream: None, reply: None, done: false }
+        Self { lease, own, peer_has_terminals: false, stream: None, reply: None, done: false }
+    }
+
+    pub(super) fn negotiate(&mut self, caps: &[String]) {
+        self.peer_has_terminals = caps.iter().any(|cap| cap == wire::caps::TERMINALS);
     }
 
     fn finish(&mut self, reply: Option<Msg>) {
@@ -178,16 +192,18 @@ impl Terminal {
         self.finish(Some(Msg::Error { why }));
     }
 
-    fn open(&mut self, rows: u16, cols: u16) {
-        match self.lease.attach(rows, cols, self.own.clone()) {
-            Ok(Some((replay, dropped))) => {
+    fn open(&mut self, rows: u16, cols: u16, target: Selection) {
+        let result = self.lease.attach(target, rows, cols, self.own.clone());
+        match result {
+            Ok(Some(registry::Attachment { id, replay, dropped })) => {
                 self.reply = Some(Msg::Opened {
+                    id: self.peer_has_terminals.then_some(id),
                     replay: replay.as_ref().map(|replay| replay.len),
                     dropped: dropped.then_some(true),
                 });
                 self.stream = Some(Stream::new(rows, cols, replay));
             }
-            Ok(None) => {}
+            Ok(None) => self.finish(Some(Msg::Error { why: TerminalError::Open })),
             Err(e) => {
                 eprintln!("{}: {e}", t("terminal.open_failed"));
                 self.error(TerminalError::Open);
@@ -212,7 +228,12 @@ impl Terminal {
             return;
         }
         match serde_json::from_slice(&d.data) {
-            Ok(Msg::Open { rows, cols }) if active && rows > 0 && cols > 0 && self.stream.is_none() => self.open(rows, cols),
+            Ok(Msg::Open { rows, cols, id, new }) if active && rows > 0 && cols > 0 && self.stream.is_none() => {
+                match selection(id, new, self.peer_has_terminals) {
+                    Some(target) => self.open(rows, cols, target),
+                    None => self.error(TerminalError::Protocol),
+                }
+            }
             Ok(Msg::Resize { rows, cols }) if rows > 0 && cols > 0 => {
                 if let Some(stream) = &mut self.stream {
                     if let Some(Err(e)) = self.lease.with_shell(|shell| stream.resize(shell, rows, cols)) {
@@ -277,11 +298,9 @@ impl Terminal {
 
     pub(super) fn channel_closed(&mut self) {
         self.lease.detach(Reason::Failed.as_str());
-        self.finish(None);
-    }
-
-    pub(super) fn ended(&self, reason: Reason) {
-        self.lease.end(reason.as_str());
+        self.stream = None;
+        self.reply = None;
+        self.done = false;
     }
 
     pub(super) fn configure(&self, ch: &mut Channel<'_>) {
@@ -312,6 +331,21 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_selections_require_the_peer_capability_only_for_explicit_fields() {
+        for (id, new, legacy, capable) in [
+            (None, None, Some(Selection::LatestOrNew), Some(Selection::LatestOrNew)),
+            (Some(7), None, None, Some(Selection::Id(7))),
+            (None, Some(true), None, Some(Selection::New)),
+            (None, Some(false), None, Some(Selection::LatestOrNew)),
+            (Some(7), Some(true), None, None),
+            (Some(7), Some(false), None, None),
+        ] {
+            assert_eq!(selection(id, new, false), legacy);
+            assert_eq!(selection(id, new, true), capable);
+        }
+    }
 
     #[test]
     fn input_credit_returns_only_after_a_pty_write_and_a_sent_ack() {

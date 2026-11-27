@@ -278,6 +278,7 @@ struct Host {
     quit: bool,
     desktop: Option<Desktop>,
     terminal: Option<Terminals>,
+    server_terminals: bool,
     browser: Option<crate::workspace::Browser>,
     workspace_state: WorkspaceState,
     transfers: session::file_transfer::Registry,
@@ -440,8 +441,12 @@ impl Host {
         if self.replaced.is_empty() {
             let (holder, ai) = (self.sessions.of(Seat::Desk).holder(), self.sessions.of(Seat::Ai).holder());
             let ai_refused = self.trust.as_ref().and_then(Trust::ai_refused);
-            let kept_terminal = self.terminal.as_ref().and_then(Terminals::status);
-            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused, kept_terminal, workspace_access: self.workspace_access() });
+            let terminals = self.terminal.as_ref().map(Terminals::status);
+            let kept_terminal = terminals.iter().flatten().find_map(|terminal| Some(types::KeptTerminal {
+                since: terminal.left?, name: terminal.name.clone(), cred: terminal.cred.clone(),
+            }));
+            let terminals = if self.server_terminals { terminals } else { None };
+            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused, kept_terminal, terminals, workspace_access: self.workspace_access() });
         }
         self.report();
     }
@@ -617,11 +622,13 @@ impl Host {
                 tx
             }
             Some(BrowserSession::Data) => {
+                let mut params = params;
+                let greeting = std::mem::take(&mut params.greeting);
                 let (user, browser) = data_user.expect("data session has a workspace");
                 let lease = self.terminal.as_ref().expect("a terminal was admitted")
                     .admit_user(session.clone(), name.clone(), verified.controller.clone(), user);
                 let page = self.transfers.admit(&verified.controller, &verified.page, &session, verified.resume_until());
-                session::spawn(params, |own| session::data::Data::new(lease, browser, page, own))
+                session::spawn(params, |own| session::data::Data::new(lease, browser, page, own, greeting))
             }
             None => {
                 let client = Arc::new(ClientIdentity { device: verified.controller.clone(), name: name.clone() });
@@ -657,8 +664,16 @@ impl Host {
         let Ok(m) = serde_json::from_str::<Value>(text) else { return false };
         let session = m["session"].as_str().unwrap_or_default();
         match m["type"].as_str().unwrap_or_default() {
-            // The server's version and caps: nothing here depends on them yet.
-            "hello" => {}
+            // Send the new status field once the server says it understands it.
+            "hello" => {
+                if let Ok(Wire::Hello { caps, .. }) = serde_json::from_value(m) {
+                    let terminals = caps.iter().any(|cap| cap == wire::caps::TERMINALS);
+                    if self.server_terminals != terminals {
+                        self.server_terminals = terminals;
+                        self.send_status();
+                    }
+                }
+            }
             "challenge" => self.on_challenge(&m),
             "offer" => self.on_offer(&m),
             "restart" => {
@@ -1185,6 +1200,7 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
     let poller = &connection.poller;
     let mut events = Events::new();
     ws.send(WsMessage::text(serde_json::to_string(&host.hello())?))?;
+    host.server_terminals = false;
     host.send_status();
     let mut alive = alive::Alive::new(Instant::now());
     let mut sampling_here = false;
@@ -1299,6 +1315,7 @@ impl Host {
                     (browser.open)(rows, cols)
                 }), b.state.clone(), updates_tx.clone())
             }),
+            server_terminals: false,
             workspace_state: browser.as_ref().map_or(WorkspaceState::READY, |b| (b.state)()),
             browser,
             transfers: Default::default(),

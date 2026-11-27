@@ -87,9 +87,11 @@ Terminal and AI commands use the first `pwsh.exe` on `PATH`, then
 Files starts in your profile folder. The root lists drives, and you can browse, upload, replace
 and download files with your Windows account’s rights.
 
+**Terminal** returns to the last detached shell or starts one. In the Terminal view, press
+**Terminal** in the toolbar to return to a running shell or choose **New terminal**.
 When Windows is locked or showing a secure prompt, take over the desktop and unlock it to
-use these actions. A terminal you left keeps running while Windows is locked. When the
-Windows user signs out or changes, their terminal ends. An interrupted upload can resume from
+use these actions. Kept terminals continue to run while Windows is locked. When the
+Windows user signs out or changes, their terminals end. An interrupted upload can resume from
 the same browser page after unlocking. A computer set to view only offers desktop viewing.
 
 ## Settings in the panel
