@@ -67,6 +67,10 @@ Linux computer already trusts. See [Adding a device](security.md#adding-a-device
 Approved AI clients can also run commands, work with files and open tunnels. You approve
 the computer and manage its AI access in the browser.
 
+AI commands use `$SHELL -lc` or `/bin/sh -lc` if `SHELL` is unset. Deskway appends the
+directories the host user's interactive shell adds to PATH. A login profile that resets PATH,
+as Debian's does, drops them.
+
 ## What you need
 
 - Debian 12 or Ubuntu 22.04 or later, on x86-64 (`amd64`) or ARM64 (`arm64`), with systemd.

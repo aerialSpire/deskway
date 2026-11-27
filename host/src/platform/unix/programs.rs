@@ -1,13 +1,16 @@
 //! Unix programs use a login shell, with pipes or a controlling terminal of their own.
 
+use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -19,15 +22,106 @@ use crate::platform::pty::{PtyEvent, PtyEvents};
 use crate::workspace::procs::{Program, Started};
 
 pub fn shell(default: &str, command: Option<&str>, cwd: Option<&str>) -> Command {
-    let mut c = Command::new(std::env::var("SHELL").unwrap_or_else(|_| default.into()));
+    let program = std::env::var("SHELL").unwrap_or_else(|_| default.into());
+    let mut c = Command::new(&program);
     match command {
-        Some(command) => c.args(["-lc", command]),
+        Some(command) => {
+            static ADDED: OnceLock<Vec<OsString>> = OnceLock::new();
+            let added = ADDED.get_or_init(|| probe_paths(|| Command::new(&program)).unwrap_or_else(|error| {
+                eprintln!("cannot read the interactive shell's PATH: {error}");
+                Vec::new()
+            }));
+            if !added.is_empty() {
+                c.env("PATH", append_paths(std::env::var_os("PATH"), added));
+            }
+            c.args(["-lc", command])
+        }
         None => c.arg("-l"),
     };
     if let Some(dir) = cwd {
         c.current_dir(dir);
     }
     c
+}
+
+fn path_line(output: &[u8]) -> Option<&OsStr> {
+    output.rsplit(|&byte| byte == b'\n').find(|line| !line.is_empty()).map(OsStr::from_bytes)
+}
+
+fn added_paths(login: &OsStr, interactive: &OsStr) -> Vec<OsString> {
+    let entries = |path| std::env::split_paths(path).map(|dir| dir.into_os_string());
+    let mut seen: HashSet<_> = entries(login).collect();
+    entries(interactive).filter(|dir| seen.insert(dir.clone())).collect()
+}
+
+fn append_paths(path: Option<OsString>, added: &[OsString]) -> OsString {
+    let mut entries = path.iter().chain(added);
+    let mut path = entries.next().cloned().unwrap_or_default();
+    for dir in entries {
+        path.push(":");
+        path.push(dir);
+    }
+    path
+}
+
+fn probe_paths(shell: impl Fn() -> Command) -> io::Result<Vec<OsString>> {
+    let login = probe_path(shell(), "-lc")?;
+    let interactive = probe_path(shell(), "-ilc")?;
+    Ok(added_paths(&login, &interactive))
+}
+
+fn probe_path(mut shell: Command, flags: &str) -> io::Result<OsString> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut child = shell.args([flags, "/usr/bin/printenv PATH"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0).spawn()?;
+    let mut stdout = child.stdout.take().unwrap();
+    let output = match read_probe_output(&mut stdout, child.id() as libc::pid_t, deadline) {
+        Ok(output) => output,
+        Err(error) => {
+            kill_tree(child.id());
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(io::Error::other(format!("shell {flags} exited with {status}")));
+    }
+    path_line(&output).map(OsStr::to_os_string)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "shell did not print PATH"))
+}
+
+fn read_probe_output(stdout: &mut ChildStdout, pid: libc::pid_t, deadline: Instant) -> io::Result<Vec<u8>> {
+    let remaining = || {
+        let time = deadline.saturating_duration_since(Instant::now());
+        if time.is_zero() { Err(io::ErrorKind::TimedOut) } else { Ok(time) }
+    };
+    let mut fd = libc::pollfd { fd: stdout.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    let mut output = Vec::new();
+    let mut bytes = [0; 4096];
+    // A descendant can hold the pipe open after the shell exits. Keep the leader waitable
+    // until the pipe closes so its group can still be killed if the deadline passes.
+    loop {
+        let timeout = remaining()?.as_millis().max(1) as libc::c_int;
+        match unsafe { libc::poll(&mut fd, 1, timeout) } {
+            0 => continue,
+            -1 => {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted { return Err(error); }
+            }
+            _ => match stdout.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(n) => output.extend_from_slice(&bytes[..n]),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            },
+        }
+    }
+    // The shell can also close stdout before exiting.
+    while !exited(pid)? {
+        thread::sleep(remaining()?.min(Duration::from_millis(20)));
+    }
+    Ok(output)
 }
 
 pub fn pipe(mut c: Command) -> io::Result<Child> {
@@ -495,6 +589,59 @@ mod tests {
     use crate::workspace::procs::Table;
 
     use crate::platform::pty::{test_events, PtyEvent};
+
+    #[test]
+    fn probe_path_uses_the_last_non_empty_line() {
+        for (output, expected) in [
+            (&b""[..], None),
+            (b"\n\n", None),
+            (b"/bin:/usr/bin\n", Some(&b"/bin:/usr/bin"[..])),
+            (b"hello from the rc file\n\n /extra:/bin \n\n", Some(&b" /extra:/bin "[..])),
+            (b"startup\n/b\xffn", Some(&b"/b\xffn"[..])),
+        ] {
+            assert_eq!(path_line(output), expected.map(OsStr::from_bytes), "{output:?}");
+        }
+    }
+
+    #[test]
+    fn interactive_paths_exclude_login_entries_and_keep_order() {
+        for (login, interactive, expected) in [
+            ("/usr/bin:/bin", "/bin:/usr/bin", &[][..]),
+            ("/usr/bin:/bin", "/z:/bin:/a:/z:/usr/bin:/a", &["/z", "/a"][..]),
+            ("/usr/bin:", ":/extra:/extra:", &["/extra"][..]),
+        ] {
+            assert_eq!(added_paths(OsStr::new(login), OsStr::new(interactive)), expected, "{login:?}, {interactive:?}");
+        }
+    }
+
+    #[test]
+    fn interactive_paths_are_appended_to_the_host_path() {
+        for (path, added, expected) in [
+            (Some("/host:/bin"), &[][..], "/host:/bin"),
+            (Some("/host:/bin"), &["/z", "/a"][..], "/host:/bin:/z:/a"),
+            (None, &["/z", "/a"][..], "/z:/a"),
+            (Some(""), &["/extra"][..], ":/extra"),
+        ] {
+            let added: Vec<_> = added.iter().map(OsString::from).collect();
+            assert_eq!(append_paths(path.map(OsString::from), &added), expected, "{path:?}, {added:?}");
+        }
+    }
+
+    #[test]
+    fn probe_reads_the_interactive_shell_env_file() {
+        let home = std::env::temp_dir().join(format!("deskway-shell-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
+        std::fs::create_dir(&home).unwrap();
+        let rc = home.join("rc");
+        let result = std::fs::write(&rc, "echo startup\nexport PATH=\"$PATH:${ENV%/*}/bin\"\n").and_then(|()| {
+            probe_paths(|| {
+                let mut shell = Command::new("/bin/sh");
+                shell.env_clear().env("SHELL", "/bin/sh").env("HOME", &home).env("ENV", &rc).env("PATH", "/usr/bin:/bin");
+                shell
+            })
+        });
+        std::fs::remove_dir_all(&home).unwrap();
+        assert_eq!(result.unwrap(), [home.join("bin").into_os_string()]);
+    }
 
     fn read_until(events: &mpsc::Receiver<PtyEvent>, output: &mut Vec<u8>, end: &[u8]) {
         let deadline = Instant::now() + Duration::from_secs(4);
