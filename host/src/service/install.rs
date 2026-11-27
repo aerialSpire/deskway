@@ -260,6 +260,9 @@ fn trusted_program_acl(owner: PSID, dacl: *const ACL) -> Result<bool> {
         for index in 0..(*dacl).AceCount {
             let mut ace = std::ptr::null_mut();
             GetAce(dacl, u32::from(index), &mut ace)?;
+            if ace.is_null() {
+                return Ok(false);
+            }
             match u32::from((*ace.cast::<ACE_HEADER>()).AceType) {
                 ACCESS_DENIED_ACE_TYPE => {}
                 ACCESS_ALLOWED_ACE_TYPE => {
