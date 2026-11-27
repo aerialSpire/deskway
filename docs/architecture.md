@@ -661,7 +661,7 @@ The source of truth is the viewer's constraints.
   | `account.go` | account names and password changes |
   | `members.go` | members and their links: list, create, issue, revoke, remove |
   | `setup.go`, `links.go` | one-time account link issuance, expiry and redemption |
-  | `localca.go` | persistent name-constrained local CA, fingerprint and on-demand TLS leaves |
+  | `localca.go` | local root identity, name-constrained intermediate and on-demand TLS leaves |
   | `localguide.go` | standalone HTTP certificate guide and trust downloads |
   | `mdns.go`, `mdns_socket_*.go` | LAN discovery records, shared multicast sockets, query responses and shutdown goodbye |
   | `browsers.go` | approvals, browser keys, the device log, the device-check policy |
@@ -710,15 +710,17 @@ The source of truth is the viewer's constraints.
   browser key and redeems the login link immediately. All three kinds use the same same-origin
   JSON endpoint. Redemption commits the browser key, device log, approval and any new password
   in one state save, then sets the browser's session cookie.
-- In local mode the CA in `local-ca/` beside the state file owns the server's TLS identity.
-  Its SHA-256 fingerprint identifies the server. TLS selects and caches a leaf by its allowed
-  .local or localhost SNI name and the permitted private address on the accepted socket.
+- In local mode the root certificate in `local-ca/` beside the state file identifies the server
+  by its SHA-256 fingerprint. The constrained intermediate signs the leaves. TLS selects and
+  caches a leaf by its allowed .local or localhost SNI name and the permitted private address
+  on the accepted socket.
   The separate plain HTTP guide serves the installation steps and the DER certificate or iOS
   profile. The HTTPS listener also offers the DER certificate and leaves HTTP accessible on
   the guide port. The listeners accept local addresses and the server supplies no STUN or TURN.
-  mDNS announces `_deskway._tcp.local` with the OS hostname, HTTPS port, CA fingerprint,
-  display name, guide port and private interface addresses. It answers queries on each eligible
-  multicast interface and withdraws its records on orderly shutdown.
+  mDNS announces `_deskway._tcp.local` with the normalized hostname, HTTPS port, CA fingerprint,
+  display name, guide port and private interface addresses. It answers on-link queries with the
+  current interface addresses and withdraws its records on orderly shutdown. It joins interfaces
+  at startup.
 - Accounts (docs/accounts.md) are the admin and the members it creates. Each uses only its own
   computers, and nothing is shared between them. An account is stored under a random id; what it
   signs in with is its `name`, which is unique and can be changed (`POST /api/me/name`, after

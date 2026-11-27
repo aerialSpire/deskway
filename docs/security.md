@@ -78,14 +78,22 @@ before accepting that key.
 
 ### Local server certificates
 
-A local-mode server keeps a P-256 root CA for ten years in `local-ca/` beside its state file.
-Its private key has mode `0600` on Unix. The critical X.509 name constraints limit trust to
-the `local` and `localhost` DNS subtrees, IPv4 private, loopback and link-local ranges, and
-IPv6 loopback, unique-local and link-local ranges. A verifier that enforces the constraints
-cannot use this CA to authenticate public sites even if the key is leaked. Deskway only issues
-leaves for .local names, localhost and permitted local IP addresses. Compare the fingerprint on
-the plain HTTP installation guide with the fingerprint printed by the intended server before
-installing its CA.
+A local-mode server creates a ten-year P-256 root CA with path length 1. During creation it
+uses the root key to sign one P-256 intermediate CA and then discards it. The root key stays
+in memory during creation. The intermediate has path length 0 and critical X.509 name
+constraints that permit the `local` and `localhost` DNS subtrees, IPv4 private, loopback and
+link-local ranges, and IPv6 loopback, unique-local and link-local ranges. Verifiers that skip
+constraints on trust anchors still encounter them on the intermediate.
+
+The server keeps the two certificates and the intermediate key in `local-ca/` beside its
+state file. The key has mode `0600` on Unix, and the server refuses to load a key with group
+or other access. On Windows the key file has a protected DACL granting access to the server
+account, SYSTEM and Administrators. The intermediate signs the TLS leaves. The server sends
+the leaf and intermediate, while phones install the root certificate and hosts pin the root's
+SHA-256 fingerprint.
+
+Before installing, compare the fingerprint in the HTTP guide with the startup log on the hub
+computer itself. Verify that the downloaded root certificate also has that fingerprint.
 
 ### An account is its id
 

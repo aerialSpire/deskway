@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -39,11 +40,12 @@ var localIPs = []netip.Prefix{
 
 // LocalCA owns the local TLS identity and its in-memory leaf cache.
 type LocalCA struct {
-	cert    *x509.Certificate
-	key     *ecdsa.PrivateKey
-	name    string
-	dnsName string
-	now     func() time.Time
+	root         *x509.Certificate
+	intermediate *x509.Certificate
+	key          *ecdsa.PrivateKey
+	name         string
+	dnsName      string
+	now          func() time.Time
 
 	mu     sync.Mutex
 	leaves map[localSAN]*tls.Certificate
@@ -72,30 +74,86 @@ func OpenLocalCA(dataDir, name, hostname string) (*LocalCA, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	pair, err := tls.LoadX509KeyPair(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key"))
-	if err != nil {
-		return nil, fmt.Errorf("load local CA: %w", err)
+	if _, err := os.Lstat(filepath.Join(dir, "ca.key")); err == nil {
+		return nil, errors.New("local CA contains a root private key (ca.key); local mode requires a new CA identity")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
-	crt, err := x509.ParseCertificate(pair.Certificate[0])
+	root, err := readCACertificate(filepath.Join(dir, "ca.crt"))
 	if err != nil {
-		return nil, fmt.Errorf("parse local CA: %w", err)
+		return nil, fmt.Errorf("load local root CA: %w", err)
 	}
-	key, ok := pair.PrivateKey.(*ecdsa.PrivateKey)
-	if !ok || key.Curve != elliptic.P256() || !crt.IsCA || crt.CheckSignatureFrom(crt) != nil ||
-		!crt.PermittedDNSDomainsCritical || !slices.Equal(crt.PermittedDNSDomains, localDNS) ||
-		!slices.EqualFunc(crt.PermittedIPRanges, localIPs, func(network *net.IPNet, prefix netip.Prefix) bool {
+	intermediate, err := readCACertificate(filepath.Join(dir, "intermediate.crt"))
+	if err != nil {
+		return nil, fmt.Errorf("load local intermediate CA: %w", err)
+	}
+	keyPEM, err := readLocalKey(filepath.Join(dir, "intermediate.key"))
+	if err != nil {
+		return nil, fmt.Errorf("load local intermediate key: %w", err)
+	}
+	keyDER, err := decodeLocalPEM(keyPEM, "EC PRIVATE KEY")
+	if err != nil {
+		return nil, fmt.Errorf("load local intermediate key: %w", err)
+	}
+	key, err := x509.ParseECPrivateKey(keyDER)
+	if err != nil {
+		return nil, fmt.Errorf("parse local intermediate key: %w", err)
+	}
+	rootKey, ok := root.PublicKey.(*ecdsa.PublicKey)
+	if !ok || rootKey.Curve != elliptic.P256() || !root.IsCA || !root.BasicConstraintsValid ||
+		root.KeyUsage&x509.KeyUsageCertSign == 0 || root.MaxPathLen != 1 ||
+		!bytes.Equal(root.RawIssuer, root.RawSubject) || root.CheckSignatureFrom(root) != nil ||
+		!root.NotAfter.Equal(root.NotBefore.AddDate(10, 0, 0)) {
+		return nil, errors.New("local root must be a self-signed P-256 CA with pathLen 1 and a ten-year lifetime")
+	}
+	if key.Curve != elliptic.P256() || !key.PublicKey.Equal(intermediate.PublicKey) ||
+		key.PublicKey.Equal(rootKey) || !intermediate.IsCA || !intermediate.BasicConstraintsValid ||
+		intermediate.KeyUsage&x509.KeyUsageCertSign == 0 || !intermediate.MaxPathLenZero ||
+		!intermediate.PermittedDNSDomainsCritical || !slices.Equal(intermediate.PermittedDNSDomains, localDNS) ||
+		len(intermediate.ExcludedDNSDomains) != 0 || len(intermediate.ExcludedIPRanges) != 0 ||
+		len(intermediate.PermittedEmailAddresses) != 0 || len(intermediate.ExcludedEmailAddresses) != 0 ||
+		len(intermediate.PermittedURIDomains) != 0 || len(intermediate.ExcludedURIDomains) != 0 ||
+		!slices.EqualFunc(intermediate.PermittedIPRanges, localIPs, func(network *net.IPNet, prefix netip.Prefix) bool {
 			return network.String() == prefix.String()
 		}) {
-		return nil, errors.New("local CA must be a self-signed P-256 CA with Deskway's critical name constraints")
+		return nil, errors.New("local intermediate must be a distinct P-256 CA with a matching key, pathLen 0 and Deskway's critical name constraints")
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(root)
+	if _, err := intermediate.Verify(x509.VerifyOptions{Roots: roots}); err != nil {
+		return nil, fmt.Errorf("verify local intermediate against root: %w", err)
 	}
 	return &LocalCA{
-		cert:    crt,
-		key:     key,
-		name:    "Deskway " + name,
-		dnsName: hostname + ".local",
-		now:     time.Now,
-		leaves:  make(map[localSAN]*tls.Certificate),
+		root:         root,
+		intermediate: intermediate,
+		key:          key,
+		name:         "Deskway " + name,
+		dnsName:      hostname + ".local",
+		now:          time.Now,
+		leaves:       make(map[localSAN]*tls.Certificate),
 	}, nil
+}
+
+func decodeLocalPEM(data []byte, kind string) ([]byte, error) {
+	data = bytes.TrimSpace(data)
+	block, rest := pem.Decode(data)
+	if !bytes.HasPrefix(data, []byte("-----BEGIN "+kind+"-----")) ||
+		block == nil || block.Type != kind || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, fmt.Errorf("expected one PEM block of type %s", kind)
+	}
+	return block.Bytes, nil
+}
+
+func readCACertificate(path string) (*x509.Certificate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	der, err := decodeLocalPEM(data, "CERTIFICATE")
+	if err != nil {
+		return nil, err
+	}
+	return x509.ParseCertificate(der)
 }
 
 func createLocalCA(dir, name string) error {
@@ -103,23 +161,7 @@ func createLocalCA(dir, name string) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	crt := &x509.Certificate{
-		Subject:                     pkix.Name{CommonName: name},
-		NotBefore:                   now,
-		NotAfter:                    now.AddDate(10, 0, 0),
-		KeyUsage:                    x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid:       true,
-		IsCA:                        true,
-		MaxPathLenZero:              true,
-		PermittedDNSDomainsCritical: true,
-		PermittedDNSDomains:         localDNS,
-	}
-	for _, prefix := range localIPs {
-		ip := prefix.Addr().AsSlice()
-		crt.PermittedIPRanges = append(crt.PermittedIPRanges, &net.IPNet{IP: ip, Mask: net.CIDRMask(prefix.Bits(), len(ip)*8)})
-	}
-	der, err := x509.CreateCertificate(rand.Reader, crt, crt, &key.PublicKey, key)
+	rootDER, intermediateDER, err := createLocalChain(name, &key.PublicKey)
 	if err != nil {
 		return err
 	}
@@ -128,7 +170,7 @@ func createLocalCA(dir, name string) error {
 		return err
 	}
 
-	// Publish the two files together, so an interrupted first start cannot leave half a CA.
+	// Publish the full CA together, so an interrupted first start cannot leave half a chain.
 	parent := filepath.Dir(dir)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return err
@@ -138,11 +180,16 @@ func createLocalCA(dir, name string) error {
 		return err
 	}
 	defer os.RemoveAll(staged)
-	if err := os.WriteFile(filepath.Join(staged, "ca.key"), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	if err := writeLocalKey(filepath.Join(staged, "intermediate.key"), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(staged, "ca.crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
-		return err
+	for _, cert := range []struct {
+		file string
+		der  []byte
+	}{{"ca.crt", rootDER}, {"intermediate.crt", intermediateDER}} {
+		if err := os.WriteFile(filepath.Join(staged, cert.file), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.der}), 0o644); err != nil {
+			return err
+		}
 	}
 	if err := os.Rename(staged, dir); err != nil {
 		// If another start won the race, load what it published.
@@ -153,13 +200,56 @@ func createLocalCA(dir, name string) error {
 	return nil
 }
 
-// Fingerprint is the lowercase SHA-256 hex digest of the DER CA certificate.
+// The root key exists only here, to create the trust anchor and sign one intermediate.
+func createLocalChain(name string, intermediateKey *ecdsa.PublicKey) ([]byte, []byte, error) {
+	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now().UTC()
+	root := &x509.Certificate{
+		Subject:               pkix.Name{CommonName: name},
+		NotBefore:             now,
+		NotAfter:              now.AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLen:            1,
+	}
+	rootDER, err := x509.CreateCertificate(rand.Reader, root, root, &rootKey.PublicKey, rootKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	root, err = x509.ParseCertificate(rootDER)
+	if err != nil {
+		return nil, nil, err
+	}
+	intermediate := &x509.Certificate{
+		Subject:                     pkix.Name{CommonName: name + " Intermediate CA"},
+		NotBefore:                   root.NotBefore,
+		NotAfter:                    root.NotAfter,
+		KeyUsage:                    x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid:       true,
+		IsCA:                        true,
+		MaxPathLenZero:              true,
+		PermittedDNSDomainsCritical: true,
+		PermittedDNSDomains:         localDNS,
+	}
+	for _, prefix := range localIPs {
+		ip := prefix.Addr().AsSlice()
+		intermediate.PermittedIPRanges = append(intermediate.PermittedIPRanges, &net.IPNet{IP: ip, Mask: net.CIDRMask(prefix.Bits(), len(ip)*8)})
+	}
+	intermediateDER, err := x509.CreateCertificate(rand.Reader, intermediate, root, intermediateKey, rootKey)
+	return rootDER, intermediateDER, err
+}
+
+// Fingerprint is the lowercase SHA-256 hex digest of the DER root certificate.
 func (ca *LocalCA) Fingerprint() string {
-	digest := sha256.Sum256(ca.cert.Raw)
+	digest := sha256.Sum256(ca.root.Raw)
 	return hex.EncodeToString(digest[:])
 }
 
-// TLSConfig serves leaves for the server's local names and addresses, with the CA in the chain.
+// TLSConfig serves leaves for the server's local names and addresses, followed by the intermediate.
 func (ca *LocalCA) TLSConfig() *tls.Config {
 	return &tls.Config{GetCertificate: ca.getCertificate, NextProtos: []string{"h2", "http/1.1"}}
 }
@@ -220,7 +310,7 @@ func (ca *LocalCA) issueLeaf(san localSAN, now time.Time) (*tls.Certificate, err
 	if san.ip.IsValid() {
 		crt.IPAddresses = []net.IP{san.ip.AsSlice()}
 	}
-	der, err := x509.CreateCertificate(rand.Reader, crt, ca.cert, &key.PublicKey, ca.key)
+	der, err := x509.CreateCertificate(rand.Reader, crt, ca.intermediate, &key.PublicKey, ca.key)
 	if err != nil {
 		return nil, err
 	}
@@ -228,19 +318,22 @@ func (ca *LocalCA) issueLeaf(san localSAN, now time.Time) (*tls.Certificate, err
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Certificate{Certificate: [][]byte{der, ca.cert.Raw}, PrivateKey: key, Leaf: parsed}, nil
+	return &tls.Certificate{Certificate: [][]byte{der, ca.intermediate.Raw}, PrivateKey: key, Leaf: parsed}, nil
 }
 
 // ListenLocal restricts both ends of the listener to the addresses the local CA permits.
 func ListenLocal(addr string) (net.Listener, error) {
-	listener, err := net.Listen("tcp", addr)
+	tcp, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	ip := tcpIP(listener.Addr())
-	if !ip.IsUnspecified() && !localIP(ip) {
-		listener.Close()
-		return nil, fmt.Errorf("%s is outside the local address ranges", addr)
+	ip := tcpIP(tcp)
+	if tcp.IP != nil && !ip.IsUnspecified() && (ip.IsLoopback() || !localIP(ip)) {
+		return nil, fmt.Errorf("%s must use an unspecified address (e.g. :%d) or a private non-loopback address in local mode", addr, tcp.Port)
+	}
+	listener, err := net.ListenTCP("tcp", tcp)
+	if err != nil {
+		return nil, err
 	}
 	return localListener{listener}, nil
 }

@@ -1,9 +1,12 @@
 package server
 
 import (
+	"net"
 	"net/netip"
+	"os"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -96,6 +99,93 @@ func TestMDNSAnswers(t *testing.T) {
 				t.Fatalf("invalid multicast response: %+v", msg)
 			}
 		})
+	}
+}
+
+func TestMDNSKnownPTR(t *testing.T) {
+	records := newMDNSRecords("hub", "Hub", "", 18499, 18498)
+	ips := func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("192.168.1.2")} }
+	for _, tt := range []struct {
+		name, owner, target string
+		class               dnsmessage.Class
+		ttl                 uint32
+		legacy, wantReply   bool
+	}{
+		{"fresh", "_DESKWAY._tcp.local.", "Hub._deskway._tcp.local.", dnsmessage.ClassINET, mdnsTTL / 2, false, false},
+		{"stale", mdnsService, "hub._deskway._tcp.local.", dnsmessage.ClassINET, mdnsTTL/2 - 1, false, true},
+		{"different instance", mdnsService, "other._deskway._tcp.local.", dnsmessage.ClassINET, mdnsTTL, false, true},
+		{"different name", "_other._tcp.local.", "hub._deskway._tcp.local.", dnsmessage.ClassINET, mdnsTTL, false, true},
+		{"different class", mdnsService, "hub._deskway._tcp.local.", dnsmessage.ClassCHAOS, mdnsTTL, false, true},
+		{"legacy", mdnsService, "hub._deskway._tcp.local.", dnsmessage.ClassINET, mdnsTTL, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			query := dnsmessage.Message{
+				Questions: []dnsmessage.Question{{Name: records.ptr, Type: dnsmessage.TypePTR, Class: dnsmessage.ClassINET}},
+				Answers: []dnsmessage.Resource{{
+					Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(tt.owner), Type: dnsmessage.TypePTR, Class: tt.class, TTL: tt.ttl},
+					Body:   &dnsmessage.PTRResource{PTR: dnsmessage.MustNewName(tt.target)},
+				}},
+			}
+			packet, err := query.Pack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, _, err := records.answer(packet, ips, tt.legacy)
+			if err != nil || (len(data) > 0) != tt.wantReply {
+				t.Fatalf("answer length = %d, err = %v, want reply = %t", len(data), err, tt.wantReply)
+			}
+		})
+	}
+}
+
+func TestMDNSOnLink(t *testing.T) {
+	networks := []netip.Prefix{netip.MustParsePrefix("192.168.2.42/24"), netip.MustParsePrefix("fe80::42/64")}
+	for _, tt := range []struct {
+		source string
+		want   bool
+	}{
+		{"192.168.2.7", true},
+		{"::ffff:192.168.2.7", true},
+		{"192.168.3.7", false},
+		{"10.0.0.1", false},
+		{"fe80::1%en0", true},
+		{"fe80:0:0:1::1%en0", false},
+		{"fd00::1", false},
+	} {
+		if got := onLink(netip.MustParseAddr(tt.source), networks); got != tt.want {
+			t.Errorf("onLink(%s) = %t, want %t", tt.source, got, tt.want)
+		}
+	}
+}
+
+func TestMDNSReadsAfterOversizedDatagram(t *testing.T) {
+	m := &MDNS{}
+	var reads int
+	m.serve(&mdnsSocket{read: func([]byte) (int, int, net.Addr, error) {
+		reads++
+		if reads == 1 {
+			return 0, 0, nil, os.NewSyscallError("recvfrom", syscall.EMSGSIZE)
+		}
+		return 0, 0, nil, &net.OpError{Op: "read", Err: net.ErrClosed}
+	}})
+	if reads != 2 {
+		t.Fatalf("read %d times, want 2", reads)
+	}
+}
+
+func TestMDNSAdvertisedIPs(t *testing.T) {
+	m := &MDNS{httpsIP: netip.IPv6Unspecified(), guideIP: netip.IPv6Unspecified()}
+	iface := &net.Interface{Index: 1, Name: "lan"}
+	before := netip.MustParsePrefix("192.168.1.2/24")
+	after := netip.MustParsePrefix("192.168.1.3/24")
+	for _, network := range []netip.Prefix{before, after} {
+		if ips := m.advertisedIPs(iface, []netip.Prefix{network}); !reflect.DeepEqual(ips, []netip.Addr{network.Addr()}) {
+			t.Fatalf("advertised addresses = %v, want %v", ips, network.Addr())
+		}
+	}
+	m.httpsIP = before.Addr()
+	if ips := m.advertisedIPs(iface, []netip.Prefix{before, after}); !reflect.DeepEqual(ips, []netip.Addr{before.Addr()}) {
+		t.Fatalf("advertised addresses = %v, want only the bound address", ips)
 	}
 }
 

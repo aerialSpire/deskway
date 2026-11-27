@@ -95,7 +95,7 @@ func (ca *LocalCA) GuideHandler(web fs.FS, httpsPort uint16) (http.Handler, erro
 }
 
 func (ca *LocalCA) serveCertificate(w http.ResponseWriter, _ *http.Request) {
-	serveCAFile(w, "deskway-ca.crt", "application/x-x509-ca-cert", ca.cert.Raw)
+	serveCAFile(w, "deskway-ca.crt", "application/x-x509-ca-cert", ca.root.Raw)
 }
 
 func serveCAFile(w http.ResponseWriter, name, mime string, data []byte) {
@@ -138,5 +138,5 @@ func (ca *LocalCA) mobileconfig() []byte {
   </array>
 </dict>
 </plist>
-`, fp, uuid(digest[:16]), uuid(digest[16:]), name.String(), base64.StdEncoding.EncodeToString(ca.cert.Raw))
+`, fp, uuid(digest[:16]), uuid(digest[16:]), name.String(), base64.StdEncoding.EncodeToString(ca.root.Raw))
 }

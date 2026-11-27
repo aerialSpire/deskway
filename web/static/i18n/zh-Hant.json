@@ -657,7 +657,7 @@
   "guide.ios.trust": "前往「設定」›「一般」›「關於本機」›「憑證信任設定」，為 Deskway 憑證開啟完整信任。",
   "guide.android.install": "打開「設定」並搜尋「安裝憑證」。選擇「CA 憑證」，再選取下載的檔案。",
   "guide.other.install": "打開下載的檔案，將它安裝為受信任的根憑證。在 macOS 上，使用「鑰匙圈存取」將它設為「永遠信任」。",
-  "guide.fingerprint": "CA 指紋（SHA-256）",
+  "guide.fingerprint": "請將此 SHA-256 指紋與執行 Deskway 伺服器的電腦上顯示的指紋核對。安裝前，請確認下載的憑證具有相同的指紋。",
   "devices.picture": "畫面",
   "picture.sharp": "更清晰",
   "picture.smooth": "更流暢",

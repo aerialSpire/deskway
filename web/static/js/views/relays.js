@@ -12,7 +12,7 @@ let seq = 0;
 const CHECK_BATCH = 3;
 
 export async function renderRelays() {
-  if (!state.me?.admin) { setView('list'); return; }
+  if (!state.me?.admin || state.me.local_mode) { setView('list'); return; }
   const mine = ++seq;
   const current = () => mine === seq && state.view === 'relays';
   const results = h('div', { 'aria-live': 'polite' });

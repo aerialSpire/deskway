@@ -121,7 +121,7 @@ func (s mdnsServiceRecords) announcement(ips []netip.Addr, ttl uint32) ([]byte, 
 	return msg.Pack()
 }
 
-func (s mdnsServiceRecords) answer(packet []byte, ips func() []netip.Addr, legacy bool) ([]byte, bool, error) {
+func (s mdnsServiceRecords) answer(packet []byte, addresses func() []netip.Addr, legacy bool) ([]byte, bool, error) {
 	var query dnsmessage.Message
 	if err := query.Unpack(packet); err != nil || query.Response || query.OpCode != 0 {
 		return nil, false, nil
@@ -130,6 +130,10 @@ func (s mdnsServiceRecords) answer(packet []byte, ips func() []netip.Addr, legac
 		name := q.Name.String()
 		return strings.EqualFold(name, s.ptr.String()) || strings.EqualFold(name, s.name.String()) || strings.EqualFold(name, s.host.String())
 	}) {
+		return nil, false, nil
+	}
+	ips := addresses()
+	if len(ips) == 0 {
 		return nil, false, nil
 	}
 	reply := dnsmessage.Message{Header: dnsmessage.Header{Response: true, Authoritative: true}}
@@ -141,8 +145,16 @@ func (s mdnsServiceRecords) answer(packet []byte, ips func() []netip.Addr, legac
 	unicast := true
 	withRelated := false
 	var related []dnsmessage.Resource
-	for _, record := range s.records(ips(), ttl, !legacy) {
+	for _, record := range s.records(ips, ttl, !legacy) {
 		kind := record.Header.Type
+		// RFC 6762 §7.1. The service PTR is a shared record.
+		if kind == dnsmessage.TypePTR && !legacy && slices.ContainsFunc(query.Answers, func(known dnsmessage.Resource) bool {
+			ptr, ok := known.Body.(*dnsmessage.PTRResource)
+			return ok && known.Header.Class == dnsmessage.ClassINET && known.Header.TTL >= mdnsTTL/2 &&
+				strings.EqualFold(known.Header.Name.String(), s.ptr.String()) && strings.EqualFold(ptr.PTR.String(), s.name.String())
+		}) {
+			continue
+		}
 		matched := false
 		for _, q := range query.Questions {
 			class := q.Class &^ mdnsClassBit
@@ -250,20 +262,21 @@ func newMDNSSocket(iface *net.Interface, group *net.UDPAddr) (*mdnsSocket, error
 	return sk, nil
 }
 
-func interfaceIPs(iface *net.Interface) []netip.Addr {
+func interfaceNetworks(iface *net.Interface) []netip.Prefix {
 	addrs, _ := iface.Addrs()
-	var ips []netip.Addr
+	var networks []netip.Prefix
 	for _, addr := range addrs {
-		if ip, _, err := net.ParseCIDR(addr.String()); err == nil {
-			a, _ := netip.AddrFromSlice(ip)
-			ips = append(ips, a.Unmap())
+		if prefix, err := netip.ParsePrefix(addr.String()); err == nil {
+			networks = append(networks, prefix)
 		}
 	}
-	return ips
+	return networks
 }
 
-func (sk *mdnsSocket) localIPs() []netip.Addr {
-	return slices.DeleteFunc(interfaceIPs(sk.iface), func(ip netip.Addr) bool { return !localIP(ip) })
+func onLink(src netip.Addr, networks []netip.Prefix) bool {
+	src = src.Unmap().WithZone("")
+	return !src.IsUnspecified() && !src.IsMulticast() &&
+		slices.ContainsFunc(networks, func(network netip.Prefix) bool { return network.Contains(src) })
 }
 
 func (sk *mdnsSocket) send(packet []byte, addr *net.UDPAddr, err error) {
@@ -279,30 +292,55 @@ func (sk *mdnsSocket) send(packet []byte, addr *net.UDPAddr, err error) {
 // MDNS advertises a local-mode server on the machine's multicast interfaces.
 type MDNS struct {
 	records mdnsServiceRecords
+	httpsIP netip.Addr
+	guideIP netip.Addr
 	sockets []*mdnsSocket
 	readers sync.WaitGroup
+
+	replyMu sync.RWMutex
+	closing bool
+}
+
+func (m *MDNS) advertisedIPs(iface *net.Interface, networks []netip.Prefix) []netip.Addr {
+	matches := func(bind, ip netip.Addr) bool {
+		zone := bind.Zone()
+		return bind.IsUnspecified() || bind.WithZone("") == ip &&
+			(zone == "" || zone == iface.Name || zone == strconv.Itoa(iface.Index))
+	}
+	var ips []netip.Addr
+	for _, network := range networks {
+		ip := network.Addr()
+		if localIP(ip) && matches(m.httpsIP, ip) && matches(m.guideIP, ip) {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
 }
 
 // StartMDNS announces the service and starts answering queries. A failed interface is reported
 // independently, so an unavailable multicast family does not stop the HTTPS service.
-func StartMDNS(host, name, fingerprint string, https, guide uint16) (*MDNS, error) {
+func StartMDNS(host, name, fingerprint string, https, guide *net.TCPAddr) (*MDNS, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
-	m := &MDNS{records: newMDNSRecords(host, name, fingerprint, https, guide)}
+	m := &MDNS{
+		records: newMDNSRecords(host, name, fingerprint, uint16(https.Port), uint16(guide.Port)),
+		httpsIP: tcpIP(https),
+		guideIP: tcpIP(guide),
+	}
 	for i := range interfaces {
 		iface := &interfaces[i]
 		if iface.Flags&(net.FlagUp|net.FlagMulticast|net.FlagLoopback) != net.FlagUp|net.FlagMulticast {
 			continue
 		}
-		ips := interfaceIPs(iface)
+		networks := interfaceNetworks(iface)
 		for _, group := range []*net.UDPAddr{
 			{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort},
 			{IP: netip.MustParseAddr("ff02::fb").AsSlice(), Port: mdnsPort},
 		} {
 			v4 := group.IP.To4() != nil
-			if !slices.ContainsFunc(ips, func(ip netip.Addr) bool { return ip.Is4() == v4 }) {
+			if !slices.ContainsFunc(networks, func(network netip.Prefix) bool { return network.Addr().Is4() == v4 }) {
 				continue
 			}
 			sk, err := newMDNSSocket(iface, group)
@@ -311,8 +349,10 @@ func StartMDNS(host, name, fingerprint string, https, guide uint16) (*MDNS, erro
 				continue
 			}
 			m.sockets = append(m.sockets, sk)
-			packet, err := m.records.announcement(sk.localIPs(), mdnsTTL)
-			sk.send(packet, group, err)
+			if ips := m.advertisedIPs(iface, networks); len(ips) > 0 {
+				packet, err := m.records.announcement(ips, mdnsTTL)
+				sk.send(packet, group, err)
+			}
 			m.readers.Go(func() { m.serve(sk) })
 		}
 	}
@@ -327,35 +367,46 @@ func (m *MDNS) serve(sk *mdnsSocket) {
 	for {
 		n, iface, from, err := sk.read(buf[:])
 		if err != nil {
-			return
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			continue
 		}
 		if iface != 0 && iface != sk.iface.Index {
 			continue
 		}
 		src := from.(*net.UDPAddr)
-		if !localIP(src.AddrPort().Addr()) {
-			continue
-		}
-		packet, unicast, err := m.records.answer(buf[:n], sk.localIPs, src.Port != mdnsPort)
+		packet, unicast, err := m.records.answer(buf[:n], func() []netip.Addr {
+			networks := interfaceNetworks(sk.iface)
+			if !onLink(src.AddrPort().Addr(), networks) {
+				return nil
+			}
+			return m.advertisedIPs(sk.iface, networks)
+		}, src.Port != mdnsPort)
 		if packet != nil || err != nil {
 			dest := sk.group
 			if unicast {
 				dest = src
 			}
-			sk.send(packet, dest, err)
+			m.replyMu.RLock()
+			if !m.closing {
+				sk.send(packet, dest, err)
+			}
+			m.replyMu.RUnlock()
 		}
 	}
 }
 
 // Close stops answering, sends the TTL-zero goodbye and closes the sockets.
 func (m *MDNS) Close() {
+	m.replyMu.Lock()
+	m.closing = true
+	m.replyMu.Unlock()
 	for _, sk := range m.sockets {
-		_ = sk.conn.SetReadDeadline(time.Now())
-	}
-	m.readers.Wait()
-	for _, sk := range m.sockets {
-		packet, err := m.records.announcement(sk.localIPs(), 0)
+		ips := m.advertisedIPs(sk.iface, interfaceNetworks(sk.iface))
+		packet, err := m.records.announcement(ips, 0)
 		sk.send(packet, sk.group, err)
 		sk.conn.Close()
 	}
+	m.readers.Wait()
 }

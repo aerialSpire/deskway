@@ -10,19 +10,30 @@ deskway-server -local -listen :18499 -guide-listen :18498 -local-name "Office co
 ```
 
 `-listen` sets the HTTPS address. `-guide-listen` is required and sets the plain HTTP
-address for the certificate setup page. Use a LAN address or leave the address before the port
-empty to listen on all LAN interfaces. `-local-name` defaults to the computer's hostname and
-accepts up to 40 UTF-8 characters. Omit `-domain`, `-tls-cert`, `-tls-key`, `-public-ip`
-and `-stun` in local mode.
+address for the certificate setup page. Set both listeners to the same private, non-loopback
+LAN address or leave the address before the port empty to listen on all LAN interfaces. The
+default `-listen 127.0.0.1:8080` is refused in local mode. `-local-name` defaults to the
+computer's hostname and accepts up to 40 UTF-8 characters. Omit `-domain`, `-tls-cert`,
+`-tls-key`, `-public-ip` and `-stun` in local mode.
 
-On a phone, open `http://HOSTNAME.local:18498/` or use the server's LAN IP with the same port.
-Compare the CA fingerprint shown by the guide with the one printed by the server. Follow the
-guide to install the certificate, then choose **Continue** to open Deskway over HTTPS. Keep
+On a phone, open the normalized `.local` hostname, for example `http://sean-asus.local:18498/`
+for a computer named `SEAN_ASUS`. Normalization lowercases ASCII letters and replaces runs of
+unsupported characters with a hyphen. You can also use the server's LAN IP with the same port.
+mDNS answers use current addresses for interfaces it joined at startup. Restart the server
+to advertise on a new interface.
+
+Compare the CA fingerprint shown by the guide with the one in the startup log on the hub
+computer itself. Verify that the downloaded root certificate has the same SHA-256 fingerprint
+before installing it. For the DER certificate, you can use
+`openssl x509 -inform DER -in deskway-ca.crt -noout -fingerprint -sha256`. Follow the guide
+to install the certificate, then choose **Continue** to open Deskway over HTTPS. Keep
 `local-ca/` beside the state file when backing up the server so devices keep trusting it.
+If you tested an earlier build that stored a root key, move its `local-ca/` directory aside
+before starting this version. Devices must install or pin the newly generated root.
 
-Run `deskway-server admin-link -data FILE -url https://HOSTNAME.local:18499` to set up the
-admin. Once an admin exists, add `-login` to issue a one-time link that signs in the browser
-without changing the password. Open it within two minutes.
+Run `deskway-server admin-link -data FILE -url https://sean-asus.local:18499` with your hub's
+normalized hostname to set up the admin. Once an admin exists, add `-login` to issue a one-time
+link that signs in the browser without changing the password. Open it within two minutes.
 
 ## Quick install
 

@@ -22,7 +22,7 @@ export function accountMenu() {
       item(t('account.title'), () => setView('account')),
       item(t('devices.title'), () => setView('devices')),
       state.me.admin && item(t('members.title'), () => setView('members')),
-      state.me.admin && item(t('relays.title'), () => setView('relays')),
+      state.me.admin && !state.me.local_mode && item(t('relays.title'), () => setView('relays')),
       install && menuSeparator(), install,
       menuSeparator(),
       item(t('menu.signOut'), async () => { await api('POST', '/api/logout').catch(() => {}); showLogin(); }),

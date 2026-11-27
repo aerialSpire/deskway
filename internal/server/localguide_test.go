@@ -43,13 +43,13 @@ func TestLocalGuideRoutes(t *testing.T) {
 			}
 			switch {
 			case tt.path == "/" && tt.status == 200:
-				for _, value := range []string{ca.Fingerprint(), `data-https-port="18499"`, "Trust the Deskway certificate", "data:text/css"} {
+				for _, value := range []string{ca.Fingerprint(), `data-https-port="18499"`, "Trust the Deskway certificate", "shown on the hub computer", "data:text/css"} {
 					if !strings.Contains(w.Body.String(), value) {
 						t.Fatalf("missing %q from guide", value)
 					}
 				}
 			case tt.path == "/local/ca.crt" && tt.status == 200:
-				if !bytes.Equal(w.Body.Bytes(), ca.cert.Raw) {
+				if !bytes.Equal(w.Body.Bytes(), ca.root.Raw) {
 					t.Fatal("expected DER CA")
 				}
 			}
@@ -69,6 +69,23 @@ func TestLocalHTTPSCertificateRoute(t *testing.T) {
 		t.Fatal("HSTS would prevent access to the HTTP guide on the same hostname")
 	}
 	want(t, "relay enrollment disabled", f.status(f.browser(), "POST", "/api/relays/join", nil), http.StatusMethodNotAllowed)
+}
+
+func TestMeReportsLocalMode(t *testing.T) {
+	for _, local := range []bool{false, true} {
+		f := newHTTPFixture(t, func(s *Server) {
+			if local {
+				s.EnableLocalMode(testLocalCA(t))
+			}
+		}, httptest.NewTLSServer)
+		res := f.do(f.signedIn("me"), "GET", "/api/me", nil)
+		want(t, "account payload", res.StatusCode, http.StatusOK)
+		var me map[string]any
+		f.decode(res, &me)
+		if me["local_mode"] != local {
+			t.Fatalf("local_mode = %v, want %t", me["local_mode"], local)
+		}
+	}
 }
 
 func TestLocalMobileconfig(t *testing.T) {
@@ -106,7 +123,7 @@ func TestLocalMobileconfig(t *testing.T) {
 		t.Fatalf("invalid certificate payload: %+v", cert)
 	}
 	der, err := base64.StdEncoding.DecodeString(cert.Data[0])
-	if err != nil || !bytes.Equal(der, ca.cert.Raw) {
+	if err != nil || !bytes.Equal(der, ca.root.Raw) {
 		t.Fatal("root payload did not contain the CA")
 	}
 }

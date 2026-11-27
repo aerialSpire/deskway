@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -103,15 +104,22 @@ func main() {
 	}
 
 	var (
-		tlsConfig            *tls.Config
-		https, guide         net.Listener
-		guideServer          *http.Server
-		ca                   *server.LocalCA
-		hostname             string
-		httpsPort, guidePort uint16
+		tlsConfig    *tls.Config
+		https, guide net.Listener
+		guideServer  *http.Server
+		ca           *server.LocalCA
+		hostname     string
 	)
 	switch {
 	case *local:
+		https, err = server.ListenLocal(*listen)
+		if err != nil {
+			log.Fatalf("-listen: %v", err)
+		}
+		guide, err = server.ListenLocal(*guideAddr)
+		if err != nil {
+			log.Fatalf("-guide-listen: %v", err)
+		}
 		hostname, err = server.LocalHostname()
 		if err != nil {
 			log.Fatal(err)
@@ -123,16 +131,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		https, err = server.ListenLocal(*listen)
-		if err != nil {
-			log.Fatal(err)
-		}
-		guide, err = server.ListenLocal(*guideAddr)
-		if err != nil {
-			log.Fatal(err)
-		}
-		httpsPort = uint16(https.Addr().(*net.TCPAddr).Port)
-		guidePort = uint16(guide.Addr().(*net.TCPAddr).Port)
+		httpsPort := uint16(https.Addr().(*net.TCPAddr).Port)
 		handler, err := ca.GuideHandler(web.Files(), httpsPort)
 		if err != nil {
 			log.Fatal(err)
@@ -263,7 +262,7 @@ func main() {
 			log.Printf("no admin yet, run deskway-server admin-link -data %q -url %s", *dataPath, origin)
 		}
 		var mdnsErr error
-		mdns, mdnsErr = server.StartMDNS(hostname, *localName, fingerprint, httpsPort, guidePort)
+		mdns, mdnsErr = server.StartMDNS(hostname, *localName, fingerprint, https.Addr().(*net.TCPAddr), guide.Addr().(*net.TCPAddr))
 		if mdnsErr != nil {
 			log.Printf("mDNS for %s.local: %v", hostname, mdnsErr)
 		} else {
@@ -281,10 +280,12 @@ func main() {
 	s.StopMCP()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	var shutdown sync.WaitGroup
 	if guideServer != nil {
-		_ = guideServer.Shutdown(ctx)
+		shutdown.Go(func() { _ = guideServer.Shutdown(ctx) })
 	}
 	_ = srv.Shutdown(ctx)
+	shutdown.Wait()
 	s.Shutdown()
 	if serveError != nil && !errors.Is(serveError, http.ErrServerClosed) {
 		log.Fatal(serveError)

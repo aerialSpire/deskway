@@ -657,7 +657,7 @@
   "guide.ios.trust": "In Settings › General › About › Certificate Trust Settings, turn on full trust for the Deskway certificate.",
   "guide.android.install": "Open Settings and search for “Install a certificate”. Choose CA certificate and select the downloaded file.",
   "guide.other.install": "Open the downloaded file and install it as a trusted root certificate. On macOS, use Keychain Access to set it to Always Trust.",
-  "guide.fingerprint": "CA fingerprint (SHA-256)",
+  "guide.fingerprint": "Compare this SHA-256 fingerprint with the one shown on the hub computer. Check that the downloaded certificate has the same fingerprint before installing it.",
   "devices.picture": "Picture",
   "picture.sharp": "Sharper",
   "picture.smooth": "Smoother",
