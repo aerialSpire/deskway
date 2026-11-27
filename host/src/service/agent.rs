@@ -51,6 +51,6 @@ fn serve_once(key_path: &std::path::Path, dev: bool) -> Result<()> {
     let (events, from_local) = channel();
     // Dropped when the network side vanishes, perhaps in the middle of a session: `Local`
     // ends that session.
-    let local = Local::new(events);
+    let local = Local::new(events, dev);
     remote::serve(&pipe, &local, from_local)
 }

@@ -20,6 +20,8 @@ pub struct Local {
     clipboard: Arc<super::NativeClipboard>,
     events: Sender<PlatformEvent>,
     state: Mutex<State>,
+    #[cfg(windows)]
+    dev: bool,
     /// The system's notice that displays changed, passed to the capture loop.
     _displays: super::DisplayWatch,
 }
@@ -56,7 +58,7 @@ fn obeyed(owner: Option<&str>, ai: Option<&str>, call: &Call) -> Option<Hand> {
 
 impl Local {
     /// Starts the pipelines. They report through `events`, and end when this is dropped.
-    pub fn new(events: Sender<PlatformEvent>) -> Local {
+    pub fn new(events: Sender<PlatformEvent>, #[cfg(windows)] dev: bool) -> Local {
         // Capture observes applied input independently of the session transport.
         let applied = input::AppliedInput::default();
         let video = video::spawn::<super::NativeCapture, super::NativeEncoder>(events.clone(), applied.clone());
@@ -72,6 +74,8 @@ impl Local {
             clipboard,
             events,
             state: Mutex::new(State::default()),
+            #[cfg(windows)]
+            dev,
             _displays: displays,
         }
     }
@@ -216,6 +220,17 @@ impl Forward for Local {
                 }
             }
             Call::Language { code } => crate::i18n::set(code.as_deref()),
+            Call::SyncServerRoot {} => {
+                #[cfg(windows)]
+                {
+                    let dir = if self.dev { crate::config::dir() } else { Ok(crate::service::machine_dir()) };
+                    let error = dir.and_then(|dir| super::sync_server_root(dir, self.dev)).err().map(|e| {
+                        eprintln!("server root: {e:#}");
+                        format!("{e:#}")
+                    });
+                    let _ = self.events.send(PlatformEvent::ServerRootSynced { error });
+                }
+            }
         }
     }
 }

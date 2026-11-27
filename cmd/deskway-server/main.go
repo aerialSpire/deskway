@@ -47,7 +47,7 @@ func main() {
 	}
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Usage: deskway-server [flags]")
-		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin-link [-if-needed | -login] [-data FILE] -url ORIGIN")
+		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server admin-link [-if-needed [-check] | -login | -enroll] [-data FILE] -url ORIGIN")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server upgrade-check [-data FILE]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       deskway-server remote-mcp-check [-data FILE] [-clients DIR]")
 		fmt.Fprintln(flag.CommandLine.Output(), "       "+upgradeUsage)
@@ -56,23 +56,24 @@ func main() {
 	}
 	dataPath, clients, fetch := clientOptions(flag.CommandLine)
 	var (
-		listen    = flag.String("listen", "127.0.0.1:8080", "HTTP or HTTPS listen address")
-		local     = flag.Bool("local", false, "use LAN HTTPS with a local CA, without STUN or TURN")
-		guideAddr = flag.String("guide-listen", "", "local mode's plain HTTP certificate guide listen address")
-		localName = flag.String("local-name", "", "local mode's advertised computer name (up to 40 characters; defaults to the hostname)")
-		remoteMCP = flag.Bool("remote-mcp", false, "allow applications to connect to this server over MCP with OAuth")
-		mcpOrigin = flag.String("mcp-public-url", "", "public HTTPS origin for remote MCP when the server cannot infer it")
-		domain    = flag.String("domain", "", "domain name; gets a Let's Encrypt certificate automatically (listen on :443)")
-		tlsCert   = flag.String("tls-cert", "", "TLS certificate file")
-		tlsKey    = flag.String("tls-key", "", "TLS key file")
-		turnHost  = flag.String("public-host", "", "public TURN hostname for a TLS certificate without a single concrete DNS name")
-		publicIP  = flag.String("public-ip", "", "public IP; enables the TURN relay")
-		turnPort  = flag.Int("turn-port", turnDefaultPort, "TURN port (UDP and TCP)")
-		turnMin   = flag.Int("turn-min-port", turnDefaultMin, "lowest TURN relay port")
-		turnMax   = flag.Int("turn-max-port", turnDefaultMax, "highest TURN relay port")
-		turnPriv  = flag.Bool("turn-allow-private-for-tests", false, "let TURN reach private addresses; for tests on one machine only")
-		stun      = flag.String("stun", "", "comma-separated STUN URLs when TURN is off")
-		relayMbps = flag.Int("relay-account-mbps", 30, "each account's share of the TURN relay, both directions together, in Mbit/s")
+		listen     = flag.String("listen", "127.0.0.1:8080", "HTTP or HTTPS listen address")
+		local      = flag.Bool("local", false, "use LAN HTTPS with a local CA, without STUN or TURN")
+		guideAddr  = flag.String("guide-listen", "", "local mode's plain HTTP certificate guide listen address")
+		localName  = flag.String("local-name", "", "local mode's advertised computer name (up to 40 characters; defaults to the hostname)")
+		supervised = flag.Bool("host-supervised", false, "local mode managed by Deskway Host over stdin and stdout")
+		remoteMCP  = flag.Bool("remote-mcp", false, "allow applications to connect to this server over MCP with OAuth")
+		mcpOrigin  = flag.String("mcp-public-url", "", "public HTTPS origin for remote MCP when the server cannot infer it")
+		domain     = flag.String("domain", "", "domain name; gets a Let's Encrypt certificate automatically (listen on :443)")
+		tlsCert    = flag.String("tls-cert", "", "TLS certificate file")
+		tlsKey     = flag.String("tls-key", "", "TLS key file")
+		turnHost   = flag.String("public-host", "", "public TURN hostname for a TLS certificate without a single concrete DNS name")
+		publicIP   = flag.String("public-ip", "", "public IP; enables the TURN relay")
+		turnPort   = flag.Int("turn-port", turnDefaultPort, "TURN port (UDP and TCP)")
+		turnMin    = flag.Int("turn-min-port", turnDefaultMin, "lowest TURN relay port")
+		turnMax    = flag.Int("turn-max-port", turnDefaultMax, "highest TURN relay port")
+		turnPriv   = flag.Bool("turn-allow-private-for-tests", false, "let TURN reach private addresses; for tests on one machine only")
+		stun       = flag.String("stun", "", "comma-separated STUN URLs when TURN is off")
+		relayMbps  = flag.Int("relay-account-mbps", 30, "each account's share of the TURN relay, both directions together, in Mbit/s")
 	)
 	flag.Parse()
 	if flag.NArg() != 0 {
@@ -90,10 +91,13 @@ func main() {
 		var err error
 		https, guide, err = server.ListenLocal(*listen, *guideAddr)
 		if err != nil {
+			if *supervised {
+				reportHostBindError(os.Stdout, err)
+			}
 			log.Fatal(err)
 		}
-	} else if *guideAddr != "" || *localName != "" {
-		log.Fatal("-guide-listen and -local-name require -local")
+	} else if *guideAddr != "" || *localName != "" || *supervised {
+		log.Fatal("-guide-listen, -local-name and -host-supervised require -local")
 	}
 
 	// The server holds the state file for as long as it runs.
@@ -128,6 +132,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		hostname = ca.Hostname()
 		httpsPort := uint16(https.Addr().(*net.TCPAddr).Port)
 		handler, err := ca.GuideHandler(web.Files(), httpsPort)
 		if err != nil {
@@ -191,8 +196,17 @@ func main() {
 	}
 
 	s := server.New(store, turnCfg, stunURLs, web.Files())
+	var mdns *server.MDNS
 	if ca != nil {
-		s.EnableLocalMode(ca)
+		fingerprint := ca.Fingerprint()
+		guideTCP := guide.Addr().(*net.TCPAddr)
+		mdns, err = server.StartMDNS(hostname, *localName, fingerprint, https.Addr().(*net.TCPAddr), guideTCP)
+		if err != nil {
+			log.Printf("mDNS for %s.local: %v", hostname, err)
+		} else {
+			log.Printf("mDNS advertising %s.local", hostname)
+		}
+		s.EnableLocalMode(ca, uint16(guideTCP.Port), mdns)
 	}
 	s.ServeClients(clientDirectory(*dataPath, *clients), *fetch)
 	if *remoteMCP {
@@ -246,10 +260,8 @@ func main() {
 			serveErr <- srv.ListenAndServe()
 		}
 	}()
-	var mdns *server.MDNS
 	if ca != nil {
-		fingerprint := ca.Fingerprint()
-		log.Printf("local CA SHA-256 fingerprint %s", fingerprint)
+		log.Printf("local CA SHA-256 fingerprint %s", ca.Fingerprint())
 		if !store.HasAdmin() {
 			host, port, _ := net.SplitHostPort(actualAddr)
 			if net.ParseIP(host).IsUnspecified() {
@@ -258,13 +270,9 @@ func main() {
 			origin := "https://" + net.JoinHostPort(host, port)
 			log.Printf("no admin yet, run deskway-server admin-link -data %q -url %s", *dataPath, origin)
 		}
-		var mdnsErr error
-		mdns, mdnsErr = server.StartMDNS(hostname, *localName, fingerprint, https.Addr().(*net.TCPAddr), guide.Addr().(*net.TCPAddr))
-		if mdnsErr != nil {
-			log.Printf("mDNS for %s.local: %v", hostname, mdnsErr)
-		} else {
-			log.Printf("mDNS advertising %s.local", hostname)
-		}
+	}
+	if *supervised {
+		go serveHost(s, ca, stop)
 	}
 	var serveError error
 	select {
@@ -367,10 +375,12 @@ func adminLinkCommand(args []string, out io.Writer) int {
 	dataPath := flags.String("data", "deskway-data/state.json", "state file")
 	origin := flags.String("url", "", "Deskway HTTPS origin (HTTP is allowed on loopback)")
 	ifNeeded := flags.Bool("if-needed", false, "issue a link only when the admin needs a password")
+	check := flags.Bool("check", false, "with -if-needed, report setup without issuing a link")
 	login := flags.Bool("login", false, "issue a two-minute sign-in link for the existing admin")
+	enroll := flags.Bool("enroll", false, "issue a ten-minute computer enrollment link for the existing admin")
 	flags.Parse(args)
 	u, err := url.Parse(*origin)
-	if flags.NArg() != 0 || *ifNeeded && *login || err != nil || u.Hostname() == "" || u.User != nil ||
+	if flags.NArg() != 0 || *ifNeeded && (*login || *enroll) || *login && *enroll || *check && !*ifNeeded || err != nil || u.Hostname() == "" || u.User != nil ||
 		(u.Path != "" && u.Path != "/") || u.ForceQuery || u.RawQuery != "" || strings.Contains(*origin, "#") {
 		flags.Usage()
 		return 2
@@ -380,11 +390,24 @@ func adminLinkCommand(args []string, out io.Writer) int {
 		flags.Usage()
 		return 2
 	}
+	if *check {
+		needed, err := server.AdminNeedsSetup(*dataPath)
+		if err != nil {
+			log.Print(err)
+			return 1
+		}
+		if needed {
+			fmt.Fprintln(out, "setup")
+		}
+		return 0
+	}
 	issue := server.IssueAdminLink
 	if *ifNeeded {
 		issue = server.IssueAdminLinkIfNeeded
 	} else if *login {
 		issue = server.IssueAdminLoginLink
+	} else if *enroll {
+		issue = server.IssueAdminEnrollLink
 	}
 	link, err := issue(*dataPath)
 	if err != nil {

@@ -44,6 +44,27 @@ The Deskway Host panel opens when installation finishes. To open it later, choos
    address and code. Approve it there, or on the **My devices** page, only if the codes match.
 3. The panel shows **Online**. The computer now appears in the browser's list of computers.
 
+For a [local server](self-hosting.md#local-mode), choose it under **Found on this network**
+to fill **Server address**. A single result is selected automatically. You can also paste the
+whole `https://name.local:port#ca=<64 hex digits>` address using the fingerprint from the
+hub's startup log. The Host uses the verified root for its own connections. To open that hub
+in a browser on this computer, follow the hub's [certificate guide](self-hosting.md#local-mode).
+
+To serve your own network, choose **Run local service** and then **Complete setup**.
+Windows asks for administrator approval to start the local service. Only the Windows account
+whose panel requested the start and members of Administrators can open the **Complete setup** or
+**View** links. Windows asks for permission to add this hub's root to machine-wide browser
+trust. Signing out or uninstalling removes a root the Host added. The Host joins automatically
+after you set the admin password in your browser. The installer allows inbound connections
+to the bundled server on Private networks.
+
+An elevated Host sign-out also turns off the local service and restores the automatic startup
+and sleep prevention settings, just as stopping the local service does.
+
+The stop dialog keeps the hub's data by default. Check **Also delete the local service data**,
+choose **Stop and delete**, and approve the administrator prompt to erase it and sign the
+Host out of the hub.
+
 ## 4. Allow the devices you control from
 
 A computer accepts control only from devices that were added to it at the computer itself. The
@@ -75,6 +96,7 @@ the same browser page after unlocking. A computer set to view only offers deskto
 | Setting | What it does |
 |---|---|
 | **Start with Windows** | On by default. When off, the host doesn't run after a restart and shows as offline |
+| **Run local service** | Serves this network. While it runs, automatic startup and sleep prevention stay on |
 | **Keep this computer awake** | Requests that Windows prevent idle sleep while Deskway Host runs. The display may still turn off |
 | **Lock when disconnected** | Locks Windows when a remote desktop session ends |
 | **Sign out** | Stops this computer using the account. The account keeps it: signing in again with the same account brings it back as it was. Removing it on **My devices** takes it off the account |
@@ -103,6 +125,8 @@ offers **Update**. Sign-in details and allowed devices are kept.
 Run `DeskwayHost-Setup-windows-x64.exe` again, or use **Settings → Apps → Deskway Host → Uninstall**, then choose
 **Uninstall**. The installer keeps this computer's sign-in details and allowed devices for a later
 reinstall unless you check the option to delete them.
+The uninstall dialog has its own **Also delete the local service data** checkbox for
+`%ProgramData%\Deskway\local-server\`.
 
 ## Building from source
 
@@ -115,6 +139,8 @@ cargo build --locked --release -p deskway-host
 
 The result is `target\release\deskway-host.exe`. Copy or rename it to `DeskwayHost-Setup-windows-x64.exe` and run
 it. When the program's file name contains "setup", it opens the installer.
+To include the local server, build `./cmd/deskway-server` with Go and set `DESKWAY_SERVER_EXE`
+to the absolute path of the resulting `deskway-server.exe` before building the Host.
 
 To try Deskway without installing the service, run `scripts\try-local.ps1`. It builds and starts
 a server and the host on one Windows computer. On the first run, open the link it prints and

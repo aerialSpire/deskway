@@ -11,7 +11,8 @@
 //! Installed but not signed in, the service waits for a sign-in and tells the panels so.
 
 use std::sync::mpsc::{channel, Receiver};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -20,13 +21,15 @@ use windows_service::service::UserEventCode;
 
 use super::ipc::{self, Pipe, AGENT_PIPE, UI_PIPE};
 use crate::config::Config;
-use crate::platform::Remote;
+use crate::local_server;
+use crate::platform::{Platform, PlatformEvent, Remote};
 use crate::settings::{PanelRequest, Settings};
 use crate::signal::{self, Control, Status};
 use crate::wake::Wake;
 
 /// The host's queue, so the service can end it when it stops.
-static HOST: OnceLock<Wake<Control>> = OnceLock::new();
+static HOST: Mutex<Option<Wake<Control>>> = Mutex::new(None);
+static STOPPING: AtomicBool = AtomicBool::new(false);
 
 pub const NET_SERVICE: &str = "DeskwayNet";
 pub const AGENT_SERVICE: &str = "Deskway";
@@ -44,6 +47,13 @@ pub enum ToPanel {
     SignedOut(Option<crate::config::Kept>),
     /// Deskway is being installed again or removed: the panel quits.
     Exit,
+    /// The agent's last browser trust error, if any.
+    RootProblem(Option<String>),
+    Local(local_server::State),
+    LocalOwner(Result<String, String>),
+    LocalAccess(bool),
+    LocalReply(local_server::Request, Result<local_server::Reply, String>),
+    DevLeft(Result<(), String>),
 }
 
 /// Runs the network service until the process is stopped.
@@ -51,36 +61,89 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     if !dev {
         crate::config::use_dir(crate::service::machine_dir());
         super::harden::network();
+        super::KillJob::keep_service_children()?;
     }
     crate::i18n::from_config();
-    // The panels can connect while the computer is not signed in yet; what they ask waits for it.
-    let for_panels = Arc::new(OnceLock::new());
-    serve_ui(dev, for_panels.clone())?;
-    let cfg = signed_in();
+    let for_panels = Arc::new(Mutex::new(None::<Arc<Settings>>));
+
+    let (events, from_agent) = channel();
+    let host_events = Arc::new(Mutex::new(None::<std::sync::mpsc::Sender<PlatformEvent>>));
+    let to_host = host_events.clone();
+    let platform = Remote::new(events);
+    std::thread::spawn(move || {
+        for event in from_agent {
+            if let PlatformEvent::ServerRootSynced { error } = event {
+                PANELS.root_problem(error);
+            } else if let Some(host) = to_host.lock().unwrap().as_ref() {
+                let _ = host.send(event);
+            }
+        }
+    });
+    serve_agent(dev, platform.clone())?;
+    let dir = crate::config::dir()?;
+    let agent = platform.clone();
+    let apply_settings = for_panels.clone();
+    let local = Arc::new(local_server::Handle::start(
+        dir.clone(), |state| PANELS.local(state),
+        move |on| {
+            if !dev && super::install::autostart() != Some(on) {
+                agent.autostart(on);
+                let until = std::time::Instant::now() + Duration::from_secs(3);
+                while super::install::autostart() != Some(on) {
+                    anyhow::ensure!(std::time::Instant::now() < until, "automatic startup setting was not applied");
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+            Ok(())
+        },
+        move || !dev && super::install::autostart().unwrap_or(false),
+        |_| {},
+        dev_clear_sign_in,
+        move |cfg| {
+            if let (Some(settings), Some(cfg)) = (apply_settings.lock().unwrap().clone(), cfg) {
+                if let Err(e) = settings.apply_saved(cfg) {
+                    eprintln!("{e:#}");
+                }
+            }
+        },
+    )?);
+    let watch = Arc::downgrade(&local);
+    super::watch::watch_file(&dir, "host.json", move || {
+        let Some(local) = watch.upgrade() else { return false };
+        local.changed();
+        true
+    })?;
+    serve_ui(dev, for_panels.clone(), Arc::downgrade(&local), platform.clone())?;
+    while let Some(cfg) = signed_in() {
+        let (to_host, platform_events) = channel();
+        *host_events.lock().unwrap() = Some(to_host);
+        run_host(dev, view_only, &dir, cfg, platform.clone(), platform_events, &for_panels)?;
+        *for_panels.lock().unwrap() = None;
+        *HOST.lock().unwrap() = None;
+        *host_events.lock().unwrap() = None;
+        if !dev {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn run_host(
+    dev: bool, view_only: bool, dir: &std::path::Path, cfg: Config,
+    platform: Arc<Remote>, platform_events: Receiver<PlatformEvent>,
+    for_panels: &Mutex<Option<Arc<Settings>>>,
+) -> Result<()> {
     crate::i18n::from_config();
     PANELS.status(Status::offline(&cfg));
     let (control_tx, control_rx) = signal::control_channel();
-    let _ = HOST.set(control_tx.clone());
+    *HOST.lock().unwrap() = Some(control_tx.clone());
 
-    let (events, platform_events) = channel();
-    let platform = Remote::new(events);
-    let dir = crate::config::dir()?;
-    let (settings, awake) = Settings::start(dir.clone(), &cfg, Some(platform.clone()), control_tx.clone());
+    let (settings, awake) = Settings::start(dir.to_path_buf(), &cfg, Some(platform.clone()), control_tx.clone());
     if let Err(e) = awake {
         eprintln!("{e:#}");
     }
     let settings = Arc::new(settings);
-    let _ = for_panels.set(settings.clone());
-
-    // An administrator's command line (`--set-lang`) changes the file, not the pipe.
-    let watched = settings.clone();
-    super::watch::watch_file(&dir, "host.json", move || {
-        if let Err(e) = watched.reload() {
-            eprintln!("{e:#}");
-        }
-        true
-    })?;
-    serve_agent(dev, platform.clone())?;
+    *for_panels.lock().unwrap() = Some(settings.clone());
 
     // Run by hand (`--dev`), this process is the person; as the service it is not, and the
     // person's workspace is the user worker's.
@@ -115,20 +178,25 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     let workspace = Some(workspace);
     let desktop = Some(signal::DesktopParams { features: crate::platform::DESKTOP, platform, events: platform_events, can_host: Box::new(|| true) });
     let params = signal::Params { cfg, view_only, desktop, browser: Some(browser), notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
-    signal::run(params, control_rx);
+    if !STOPPING.load(Ordering::Acquire) {
+        signal::run(params, control_rx);
+    }
     Ok(())
 }
 
 /// The sign-in, waited for: until a person signs this computer in from a panel, the panels are
 /// told it is signed out. Signing out restarts the service, which waits here again.
-fn signed_in() -> Config {
-    loop {
+fn signed_in() -> Option<Config> {
+    while !STOPPING.load(Ordering::Acquire) {
         if let Ok(cfg) = Config::load() {
-            return cfg;
+            if cfg.connection().is_ok() {
+                return Some(cfg);
+            }
         }
         PANELS.signed_out(Config::kept());
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_millis(250));
     }
+    None
 }
 
 /// The panels connected now, and what they were last told.
@@ -136,11 +204,23 @@ struct Panels {
     list: Mutex<Vec<Arc<Pipe>>>,
     left: Condvar,
     latest: Mutex<Option<ToPanel>>,
+    root_problem: Mutex<Option<String>>,
+    local: Mutex<Option<local_server::State>>,
 }
 
-static PANELS: Panels = Panels { list: Mutex::new(Vec::new()), left: Condvar::new(), latest: Mutex::new(None) };
+static PANELS: Panels = Panels { list: Mutex::new(Vec::new()), left: Condvar::new(), latest: Mutex::new(None), root_problem: Mutex::new(None), local: Mutex::new(None) };
 
 impl Panels {
+    fn local(&self, state: local_server::State) {
+        *self.local.lock().unwrap() = Some(state.clone());
+        self.send(&ToPanel::Local(state));
+    }
+
+    fn root_problem(&self, error: Option<String>) {
+        *self.root_problem.lock().unwrap() = error.clone();
+        self.send(&ToPanel::RootProblem(error));
+    }
+
     fn status(&self, st: Status) {
         *self.latest.lock().unwrap() = Some(ToPanel::Status(st.clone()));
         self.send(&ToPanel::Status(st));
@@ -171,6 +251,11 @@ impl Panels {
         if let Some(m) = self.latest.lock().unwrap().clone() {
             let _ = p.send_json(&m);
         }
+        let root_problem = self.root_problem.lock().unwrap();
+        let _ = p.send_json(&ToPanel::RootProblem(root_problem.clone()));
+        if let Some(state) = self.local.lock().unwrap().clone() {
+            let _ = p.send_json(&ToPanel::Local(state));
+        }
         self.list.lock().unwrap().push(p);
     }
 
@@ -191,7 +276,8 @@ impl Panels {
 /// The service is stopping: the session in progress ends, and its browser is told so instead
 /// of trying to reconnect.
 pub fn stop() {
-    if let Some(host) = HOST.get() {
+    STOPPING.store(true, Ordering::Release);
+    if let Some(host) = HOST.lock().unwrap().as_ref() {
         let _ = host.send(Control::Quit);
     }
 }
@@ -274,7 +360,14 @@ fn serve_worker(remote: Arc<crate::workspace::remote::Remote>, kind: super::work
     Ok(())
 }
 
-fn serve_ui(dev: bool, settings: Arc<OnceLock<Arc<Settings>>>) -> Result<()> {
+fn dev_clear_sign_in(dir: &std::path::Path) -> Result<()> {
+    if let Some(host) = HOST.lock().unwrap().as_ref() {
+        let _ = host.send(Control::Quit);
+    }
+    crate::config::remove_sign_in_root(dir).and(crate::platform::sync_dev_browser_root(dir, None))
+}
+
+fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<local_server::Handle>, agent: Arc<Remote>) -> Result<()> {
     let ui_name = ipc::pipe_name(UI_PIPE, dev);
     // SYSTEM and this service have full access. Signed-in (interactive) users may read and
     // write, but 0x12019B leaves out FILE_CREATE_PIPE_INSTANCE: they cannot add servers of their own.
@@ -307,10 +400,57 @@ fn serve_ui(dev: bool, settings: Arc<OnceLock<Arc<Settings>>>) -> Result<()> {
             };
             PANELS.join(pipe.clone());
             let settings = settings.clone();
+            let local = local.clone();
+            let agent = agent.clone();
             std::thread::spawn(move || {
+                let admin_link_allowed = || -> Result<bool> {
+                    let owner = if dev {
+                        Some(ipc::own_sid()?)
+                    } else {
+                        Config::local_service(&super::machine_dir())?.and_then(|s| s.owner)
+                    };
+                    pipe.allows_admin_link(owner.as_deref())
+                };
                 while let Ok(r) = pipe.recv_json::<PanelRequest>() {
+                    if r == PanelRequest::LocalOwner {
+                        let owner = local_server::localized(pipe.client_sid(), "local.owner_failed")
+                            .map_err(|e| e.to_string());
+                        let _ = pipe.send_json(&ToPanel::LocalOwner(owner));
+                        continue;
+                    }
+                    if r == PanelRequest::LocalAccess {
+                        let _ = pipe.send_json(&ToPanel::LocalAccess(admin_link_allowed().unwrap_or(false)));
+                        continue;
+                    }
+                    if let PanelRequest::Local(request) = r {
+                        use local_server::Request::*;
+                        if matches!(request, Start | StopAndDelete) && !dev {
+                            let _ = pipe.send_json(&ToPanel::LocalReply(request, Err(crate::i18n::t("err.need_admin"))));
+                        } else if matches!(request, Setup | Open) && !admin_link_allowed().unwrap_or(false) {
+                            let _ = pipe.send_json(&ToPanel::LocalReply(request, Err(crate::i18n::t("local.link_restricted"))));
+                        } else if let Some(local) = local.upgrade() {
+                            let reply = pipe.clone();
+                            local.request(request, None, move |r| {
+                                let _ = reply.send_json(&ToPanel::LocalReply(request, r));
+                            });
+                        }
+                        continue;
+                    }
+                    if r == PanelRequest::SyncLocalRoot {
+                        agent.sync_server_root();
+                        continue;
+                    }
+                    if r == PanelRequest::DevLeave {
+                        if dev {
+                            let result = crate::config::dir()
+                                .and_then(|dir| Config::sign_out().and_then(|()| dev_clear_sign_in(&dir)))
+                                .map_err(|e| format!("{e:#}"));
+                            let _ = pipe.send_json(&ToPanel::DevLeft(result));
+                        }
+                        continue;
+                    }
                     // Not signed in yet: there is nothing to change.
-                    let Some(settings) = settings.get() else { continue };
+                    let Some(settings) = settings.lock().unwrap().clone() else { continue };
                     if let Err(e) = settings.handle(r) {
                         eprintln!("{e:#}");
                     }
@@ -339,10 +479,12 @@ pub struct UiClient {
 impl UiClient {
     /// Connects, and checks the pipe really belongs to the running network service: a program
     /// that grabbed the name first could otherwise show a false status.
-    pub fn connect() -> Result<(UiClient, Receiver<ToPanel>)> {
-        let pipe = Arc::new(Pipe::connect(UI_PIPE).with_context(|| crate::i18n::t("status.service_down"))?);
-        let expected = service_pid(NET_SERVICE)?;
-        anyhow::ensure!(pipe.server_pid()? == expected, crate::i18n::t("err.pipe_taken"));
+    pub fn connect(dev: bool) -> Result<(UiClient, Receiver<ToPanel>)> {
+        let pipe = Arc::new(Pipe::connect(&ipc::pipe_name(UI_PIPE, dev)).with_context(|| crate::i18n::t("status.service_down"))?);
+        if !dev {
+            let expected = service_pid(NET_SERVICE)?;
+            anyhow::ensure!(pipe.server_pid()? == expected, crate::i18n::t("err.pipe_taken"));
+        }
         let (tx, rx) = channel();
         let p = pipe.clone();
         std::thread::spawn(move || {
@@ -352,6 +494,7 @@ impl UiClient {
                 }
             }
         });
+        pipe.send_json(&PanelRequest::LocalAccess)?;
         Ok((UiClient { pipe }, rx))
     }
 

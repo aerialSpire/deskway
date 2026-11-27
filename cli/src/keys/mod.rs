@@ -50,11 +50,16 @@ impl DeviceKey {
             let scalar = native::open(&kept.cred, &kept.sealed).context("the device key cannot be read")?;
             return Ok(DeviceKey { key: SigningKey::from_slice(&scalar).context("the device key is damaged")?, cred: kept.cred });
         }
+        let device = Self::generate()?;
+        let sealed = native::seal(&device.cred, &device.key.to_bytes())?;
+        crate::store::write_private(path, &serde_json::to_vec(&Kept { cred: device.cred.clone(), sealed })?)?;
+        Ok(device)
+    }
+
+    pub fn generate() -> Result<Self> {
         let cred = URL_SAFE_NO_PAD.encode(wire::crypto::random::<16>());
         let key = SigningKey::from_slice(&wire::crypto::random::<32>()).context("make a device key")?;
-        let sealed = native::seal(&cred, &key.to_bytes())?;
-        crate::store::write_private(path, &serde_json::to_vec(&Kept { cred: cred.clone(), sealed })?)?;
-        Ok(DeviceKey { cred, key })
+        Ok(Self { cred, key })
     }
 
     /// Forgets the key (signing out for good: a new sign-in makes a new device).

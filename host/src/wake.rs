@@ -14,14 +14,32 @@ impl Waker {
 
     pub(crate) fn channel<T>(&self) -> (Wake<T>, Receiver<T>) {
         let (tx, rx) = mpsc::channel();
-        (Wake { tx, wake: self.clone() }, rx)
+        (Wake { tx: Arc::new(tx), wake: self.clone() }, rx)
     }
 }
 
 /// A channel sender that notifies the receiving thread's poller after enqueueing.
 pub(crate) struct Wake<T> {
-    tx: Sender<T>,
+    tx: Arc<Sender<T>>,
     wake: Waker,
+}
+
+/// A sender for a worker that must not keep its consumer's queue open.
+pub(crate) struct WeakWake<T> {
+    tx: Weak<Sender<T>>,
+    wake: Waker,
+}
+
+impl<T> Clone for WeakWake<T> {
+    fn clone(&self) -> Self {
+        Self { tx: self.tx.clone(), wake: self.wake.clone() }
+    }
+}
+
+impl<T> WeakWake<T> {
+    pub(crate) fn upgrade(&self) -> Option<Wake<T>> {
+        Some(Wake { tx: self.tx.upgrade()?, wake: self.wake.clone() })
+    }
 }
 
 impl<T> Clone for Wake<T> {
@@ -31,6 +49,10 @@ impl<T> Clone for Wake<T> {
 }
 
 impl<T> Wake<T> {
+    pub(crate) fn downgrade(&self) -> WeakWake<T> {
+        WeakWake { tx: Arc::downgrade(&self.tx), wake: self.wake.clone() }
+    }
+
     pub(crate) fn send(&self, message: T) -> Result<(), SendError<T>> {
         self.tx.send(message)?;
         if let Some(poller) = self.wake.0.lock().unwrap().upgrade() {

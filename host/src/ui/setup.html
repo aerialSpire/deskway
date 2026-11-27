@@ -60,6 +60,7 @@ const page = (s) => {
   if (s.page === 'uninstall') {
     return [picture('logo'), h('h1', null, t('setup.title_uninstall')), h('p', null, t('setup.uninstall_body')),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'purge' }), h('span', null, t('setup.purge'))),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'purge-local' }), h('span', null, t('local.stop_delete'))),
       h('div', { class: 'error', role: 'alert' }, s.error), grow(),
       actions(btn('cancel', t('common.cancel')), btn('do-uninstall', t('setup.uninstall'), true)), h('div', { class: 'note' }, t('setup.uninstall_note'))];
   }
@@ -92,7 +93,7 @@ window.render = (s) => {
   const on = (id, f) => { const b = $(id); if (b) b.addEventListener('click', f); };
   on('go', () => send({ cmd: 'install' }));
   on('to-uninstall', () => send({ cmd: 'show-uninstall' }));
-  on('do-uninstall', () => send({ cmd: 'uninstall', purge: $('purge').checked }));
+  on('do-uninstall', () => send({ cmd: 'uninstall', purge: $('purge').checked, purge_local: $('purge-local').checked }));
   on('retry', () => send({ cmd: 'retry' }));
   on('cancel', () => send({ cmd: 'close' }));
   on('finish', () => send({ cmd: 'finish' }));
@@ -102,8 +103,10 @@ window.render = (s) => {
 // A new language redraws the page; the choice to remove the data stays.
 followLanguage(() => {
   const purge = $('purge') && $('purge').checked;
+  const purgeLocal = $('purge-local') && $('purge-local').checked;
   if (window.last) window.render(window.last);
   if ($('purge')) $('purge').checked = purge;
+  if ($('purge-local')) $('purge-local').checked = purgeLocal;
 }, $('lang'));
 $('close').addEventListener('click', () => send({ cmd: 'close' }));
 // There is no system title bar: the top strip moves the window.

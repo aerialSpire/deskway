@@ -92,7 +92,7 @@ of them allow AI control.
 
 | Command | What it does |
 |---|---|
-| `deskway login --server URL --user NAME [--name NAME]` | Signs this machine in; a browser approves it |
+| `deskway login URL --user NAME [--name NAME]` | Signs this machine in. Use the full pinned address for a [local server](self-hosting.md#local-mode). A browser approves the sign-in. |
 | `deskway logout [--forget]` | Signs out. `--forget` also deletes the device key |
 | `deskway mcp` | The MCP server an AI client starts (stdio) |
 | `deskway gateway --listen IP:PORT` | Serves MCP over HTTP on loopback for remote AI clients |

@@ -58,6 +58,19 @@ after an update.
    page, only if it shows the same code.
 3. The panel shows **Online**. The Mac appears in the browser's list of computers.
 
+For a [local server](self-hosting.md#local-mode), choose it under **Found on this network**
+to fill **Server address**. A single result is selected automatically. You can also paste the
+whole `https://name.local:port#ca=<64 hex digits>` address using the fingerprint from the
+hub's startup log. The Host uses the verified root for its own connections. To open that hub
+in a browser on this Mac, follow the hub's [certificate guide](self-hosting.md#local-mode).
+
+To serve your own network, choose **Run local service** and then **Complete setup**. Approve
+the prompt to trust this hub's root for SSL in your login keychain and set the admin password
+in the browser. The Host joins automatically. Local service keeps **Open at login** and **Keep this computer awake** on.
+To remove the server's files and sign out of the hub, check **Also delete the local service data**
+in the stop dialog, then choose **Stop and delete**.
+The files are in `~/Library/Application Support/Deskway/local-server/`.
+
 ## 4. Allow the devices you control from
 
 A Mac accepts control only from devices that were added to it at the Mac itself.
@@ -81,7 +94,7 @@ Finishing setup turns on **Open at login** and **Keep this computer awake**.
   or higher. Active sessions keep their own requests. The display may still turn off between
   sessions. A desk session wakes the display.
 
-You can turn each setting on or off separately. Signing out in the panel also removes the login item and stops keeping
+You can turn each setting on or off separately when the local service is stopped. Signing out in the panel also removes the login item and stops keeping
 the Mac awake. If
 macOS refuses to remove the login item, use **Try again to stop opening at login**.
 
@@ -131,13 +144,18 @@ Quit Deskway Host (**Quit** in its menu bar menu), download the new release's DM
 
 ## Uninstalling
 
-Remove the Mac on **My devices** in the browser, quit Deskway Host, and move `Deskway.app` from
-Applications to the Trash. (**Sign out** in the panel keeps the Mac on the account: signing in
-again with the same account brings it back as it was.) To remove its settings too, delete `~/Library/Application Support/Deskway`.
+If this Mac runs the local service, use the stop dialog before uninstalling. To erase
+the hub's data and sign the Mac out of the hub, select **Also delete the local service data**.
+By default the data stays in `~/Library/Application Support/Deskway/local-server/`.
+
+Click **Sign out** in the Host panel. If this Mac ran its own hub, approve any macOS prompt
+to remove the root Deskway Host added. Then remove the Mac on **My devices** in the browser,
+quit Deskway Host, and move `Deskway.app` from Applications to the Trash. To remove its
+settings too, delete `~/Library/Application Support/Deskway`.
 
 ## Building from source
 
-On an Apple silicon Mac with macOS 15 or later, [Rust](https://rustup.rs/) and Apple's
+On an Apple silicon Mac with macOS 15 or later, [Rust](https://rustup.rs/), Go and Apple's
 command-line developer tools (`xcode-select --install`):
 
 ```sh

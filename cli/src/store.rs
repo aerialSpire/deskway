@@ -1,5 +1,6 @@
 //! What `deskway` keeps on this machine, in a folder only its user can read: the account it
-//! signed in to (`account.json`, with its two cookies), the computers' host keys as first seen
+//! signed in to (`account.json`, with its two cookies and any pinned server root), the
+//! computers' host keys as first seen
 //! (`hostkeys.json`), where the local proxy listens (`proxy.json`), and the device key (`keys`).
 //!
 //! The platform chooses the default folder. `DESKWAY_CLI_HOME` puts it elsewhere
@@ -64,8 +65,10 @@ fn lock_account(dir: &Path) -> Result<File> {
 /// The account this AI client signed in to.
 #[derive(Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
 pub struct Account {
-    /// The server, as `https://host`.
+    /// The sign-in address, including its local root fingerprint when pinned.
     pub server: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_root: Option<String>,
     pub user: String,
     /// This device's name, as the account's devices list it.
     pub name: String,
@@ -75,6 +78,10 @@ pub struct Account {
 }
 
 impl Account {
+    pub fn connection(&self) -> Result<deskway_server_connection::Connection> {
+        deskway_server_connection::Address::parse(&self.server)?.connection(self.server_root.as_deref())
+    }
+
     pub fn load() -> Result<Account> {
         Self::load_from(&dir()?)
     }

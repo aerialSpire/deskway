@@ -27,8 +27,6 @@ import (
 
 const localCertBackdate = time.Hour
 
-var localDNS = []string{"local", "localhost"}
-
 var localIPs = []netip.Prefix{
 	netip.MustParsePrefix("10.0.0.0/8"),
 	netip.MustParsePrefix("172.16.0.0/12"),
@@ -64,12 +62,12 @@ func OpenLocalCA(dataDir, name, hostname string) (*LocalCA, error) {
 		strings.ContainsFunc(name, unicode.IsControl) {
 		return nil, errors.New("-local-name must contain 1–40 UTF-8 characters without control characters")
 	}
-	if !dnsLabel(hostname) {
-		return nil, fmt.Errorf("invalid local hostname %q", hostname)
-	}
 	dir := filepath.Join(dataDir, "local-ca")
 	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
-		if err := createLocalCA(dir, "Deskway "+name); err != nil {
+		if !dnsLabel(hostname) {
+			return nil, fmt.Errorf("invalid local hostname %q", hostname)
+		}
+		if err := createLocalCA(dir, "Deskway "+name, hostname+".local"); err != nil {
 			return nil, fmt.Errorf("create local CA: %w", err)
 		}
 	} else if err != nil {
@@ -87,6 +85,15 @@ func OpenLocalCA(dataDir, name, hostname string) (*LocalCA, error) {
 	intermediate, err := readCACertificate(filepath.Join(dir, "intermediate.crt"))
 	if err != nil {
 		return nil, fmt.Errorf("load local intermediate CA: %w", err)
+	}
+	// The signed constraint stores the DNS name chosen when the CA was created.
+	dns := intermediate.PermittedDNSDomains
+	if len(dns) != 2 || dns[1] != "localhost" {
+		return nil, errors.New("local intermediate must constrain DNS to the hub name and localhost")
+	}
+	hostname, ok := strings.CutSuffix(dns[0], ".local")
+	if !ok || !dnsLabel(hostname) {
+		return nil, errors.New("local intermediate has an invalid hub DNS name constraint")
 	}
 	keyPEM, err := readLocalKey(filepath.Join(dir, "intermediate.key"))
 	if err != nil {
@@ -110,8 +117,9 @@ func OpenLocalCA(dataDir, name, hostname string) (*LocalCA, error) {
 	if key.Curve != elliptic.P256() || !key.PublicKey.Equal(intermediate.PublicKey) ||
 		key.PublicKey.Equal(rootKey) || !intermediate.IsCA || !intermediate.BasicConstraintsValid ||
 		intermediate.KeyUsage&x509.KeyUsageCertSign == 0 || !intermediate.MaxPathLenZero ||
-		!intermediate.PermittedDNSDomainsCritical || !slices.Equal(intermediate.PermittedDNSDomains, localDNS) ||
-		len(intermediate.ExcludedDNSDomains) != 0 || len(intermediate.ExcludedIPRanges) != 0 ||
+		!intermediate.PermittedDNSDomainsCritical ||
+		!slices.Equal(intermediate.ExcludedDNSDomains, []string{"." + dns[0], ".localhost"}) ||
+		len(intermediate.ExcludedIPRanges) != 0 ||
 		len(intermediate.PermittedEmailAddresses) != 0 || len(intermediate.ExcludedEmailAddresses) != 0 ||
 		len(intermediate.PermittedURIDomains) != 0 || len(intermediate.ExcludedURIDomains) != 0 ||
 		!slices.EqualFunc(intermediate.PermittedIPRanges, localIPs, func(network *net.IPNet, prefix netip.Prefix) bool {
@@ -132,7 +140,7 @@ func OpenLocalCA(dataDir, name, hostname string) (*LocalCA, error) {
 		root:         root,
 		intermediate: intermediate,
 		key:          key,
-		dnsName:      hostname + ".local",
+		dnsName:      dns[0],
 		now:          time.Now,
 		leaves:       make(map[localSAN]*tls.Certificate),
 	}, nil
@@ -160,12 +168,12 @@ func readCACertificate(path string) (*x509.Certificate, error) {
 	return x509.ParseCertificate(der)
 }
 
-func createLocalCA(dir, name string) error {
+func createLocalCA(dir, name, dnsName string) error {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return err
 	}
-	rootDER, intermediateDER, err := createLocalChain(name, &key.PublicKey)
+	rootDER, intermediateDER, err := createLocalChain(name, dnsName, &key.PublicKey)
 	if err != nil {
 		return err
 	}
@@ -205,7 +213,7 @@ func createLocalCA(dir, name string) error {
 }
 
 // The root key exists only here, to create the trust anchor and sign one intermediate.
-func createLocalChain(name string, intermediateKey *ecdsa.PublicKey) ([]byte, []byte, error) {
+func createLocalChain(name, dnsName string, intermediateKey *ecdsa.PublicKey) ([]byte, []byte, error) {
 	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, err
@@ -239,7 +247,9 @@ func createLocalChain(name string, intermediateKey *ecdsa.PublicKey) ([]byte, []
 		IsCA:                        true,
 		MaxPathLenZero:              true,
 		PermittedDNSDomainsCritical: true,
-		PermittedDNSDomains:         localDNS,
+		PermittedDNSDomains:         []string{dnsName, "localhost"},
+		// A permitted DNS name also covers its subdomains unless they are excluded.
+		ExcludedDNSDomains: []string{"." + dnsName, ".localhost"},
 	}
 	for _, prefix := range localIPs {
 		ip := prefix.Addr().AsSlice()
@@ -247,6 +257,11 @@ func createLocalChain(name string, intermediateKey *ecdsa.PublicKey) ([]byte, []
 	}
 	intermediateDER, err := x509.CreateCertificate(rand.Reader, intermediate, root, intermediateKey, rootKey)
 	return rootDER, intermediateDER, err
+}
+
+// Hostname is the DNS label fixed when the CA was created.
+func (ca *LocalCA) Hostname() string {
+	return strings.TrimSuffix(ca.dnsName, ".local")
 }
 
 // Fingerprint is the lowercase SHA-256 hex digest of the DER root certificate.

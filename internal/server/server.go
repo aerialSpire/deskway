@@ -31,7 +31,6 @@ type Server struct {
 	store  *Store
 	turn   TURNConfig
 	stun   []string
-	local  *LocalCA
 	relays relayState
 	web    fs.FS
 	build  string // which client files are served: their hash, told to every browser
@@ -43,6 +42,10 @@ type Server struct {
 	programs *clientPrograms
 	mcp      *remoteMCP
 	sessions *Sessions
+
+	local          *LocalCA
+	localGuidePort uint16
+	localMDNS      *MDNS
 
 	mu       sync.Mutex
 	hosts    map[string]*conn
@@ -154,12 +157,32 @@ func (s *Server) Shutdown() {
 	s.sessions.close()
 }
 
-// EnableLocalMode confines this server to direct peer connections and adds its CA download.
+// EnableLocalMode confines this server to direct peer connections and adds its CA download
+// and a link to the HTTP guide. Discovery may be unavailable.
 // Call it before serving requests.
-func (s *Server) EnableLocalMode(ca *LocalCA) {
+func (s *Server) EnableLocalMode(ca *LocalCA, guidePort uint16, mdns *MDNS) {
 	s.local = ca
+	s.localGuidePort = guidePort
+	s.localMDNS = mdns
 	s.turn = TURNConfig{}
 	s.stun = nil
+}
+
+// LocalUsage reports live connections other than the supervising Host.
+func (s *Server) LocalUsage(hub string) (computers, browsers int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{})
+	for c := range s.clients {
+		if !c.ai {
+			seen[c.browser] = struct{}{}
+		}
+	}
+	computers = len(s.hosts)
+	if hub != "" && s.hosts[hub] != nil {
+		computers--
+	}
+	return computers, len(seen)
 }
 
 // Handler returns the HTTP routes.
@@ -209,6 +232,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/computers/{id}", s.requireLogin(s.handleComputerRemove))
 	mux.HandleFunc("POST /api/computers/{id}/ai", s.requireLogin(s.handleAISwitch))
 	mux.HandleFunc("POST /api/host/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /api/computers/enroll", s.handleEnroll)
 	mux.HandleFunc("POST /api/host/leave", s.handleLeave)
 	mux.HandleFunc("GET /ws/client", s.requireClient(s.handleClientWS))
 	mux.HandleFunc("GET /ws/host", s.handleHostWS)

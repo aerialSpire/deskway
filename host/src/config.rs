@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use deskway_server_connection::{Address, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -7,6 +8,8 @@ use std::sync::Mutex;
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Config {
     pub server: String,
+    #[serde(skip)]
+    pub server_root: Option<String>,
     pub id: String,
     pub token: String,
     pub name: String,
@@ -70,7 +73,7 @@ pub fn write_private(path: &std::path::Path, data: &[u8]) -> Result<()> {
     }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
@@ -88,37 +91,59 @@ pub fn dir() -> Result<PathBuf> {
     if let Some(d) = DIR.get() {
         return Ok(d.clone());
     }
-    let base = std::env::var_os("DESKWAY_HOME")
+    let custom = std::env::var_os("DESKWAY_HOME");
+    let base = custom.as_ref()
         .map(PathBuf::from)
         .or_else(crate::platform::config_dir)
         .context("no config directory")?;
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
     builder.create(&base)?;
+    #[cfg(unix)]
+    if custom.is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::fs::File::open(&base)?;
+        if directory.metadata()?.permissions().mode() & 0o077 != 0 {
+            directory.set_permissions(std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
     Ok(base)
 }
 
 /// The config's file name, in its folder.
 const FILE: &str = "host.json";
+pub const ROOT_FILE: &str = "host-ca.pem";
 
 impl Config {
+    pub fn connection(&self) -> Result<Connection> {
+        Address::parse(&self.server)?.connection(self.server_root.as_deref())
+    }
+
     pub fn load() -> Result<Config> {
         Self::load_from(&dir()?)
     }
 
     /// The config kept in `dir` (the service's, read by the installer window).
     pub fn load_from(dir: &Path) -> Result<Config> {
-        Config::load_from_file(&dir.join(FILE))
+        let mut config = Config::load_from_file(&dir.join(FILE))?;
+        if Address::parse(&config.server)?.is_pinned() {
+            match std::fs::read_to_string(root_path(dir)) {
+                Ok(root) => config.server_root = Some(root),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context("read the local server root"),
+            }
+        }
+        Ok(config)
     }
 
     pub fn save(&self) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
-        self.write_to(&dir()?)
+        self.write_sign_in(&dir()?)
     }
 
     /// Update just the selected settings. The panel and session can write independently.
@@ -131,12 +156,93 @@ impl Config {
         let _write = CONFIG_WRITE.lock().unwrap();
         let mut config = Self::load_from(dir)?;
         change(&mut config);
+        #[cfg(desktop_host)]
+        if Self::local_service(dir)?.is_some_and(|local| local.enabled) {
+            config.prevent_sleep = true;
+        }
         config.write_to(dir)?;
         Ok(config)
     }
 
     fn write_to(&self, dir: &Path) -> Result<()> {
-        write_private(&dir.join(FILE), &serde_json::to_vec_pretty(self)?)
+        let value = serde_json::to_value(self)?;
+        #[cfg(desktop_host)]
+        let value = {
+            let mut value = value;
+            if let Some(local) = Self::local_service(dir)? {
+                value["local_service"] = serde_json::to_value(local)?;
+            }
+            value
+        };
+        write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn local_service(dir: &Path) -> Result<Option<crate::local_server::Setting>> {
+        Ok(serde_json::from_value(host_document(dir)?["local_service"].clone())?)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn set_local_service(dir: &Path, local: &crate::local_server::Setting) -> Result<()> {
+        let _write = CONFIG_WRITE.lock().unwrap();
+        let mut value = host_document(dir)?;
+        set_local_service_value(&mut value, local)?;
+        write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn local_snapshot(dir: &Path) -> Result<(Option<crate::local_server::Setting>, Option<Self>, bool)> {
+        let value = host_document(dir)?;
+        let local = serde_json::from_value(value["local_service"].clone())?;
+        let awake = value["prevent_sleep"].as_bool().unwrap_or_default();
+        let config = value.get("server").is_some().then(|| serde_json::from_value(value)).transpose()?;
+        Ok((local, config, awake))
+    }
+
+    #[cfg(desktop_host)]
+    pub fn retire_local_data(dir: &Path, rename: impl FnOnce() -> std::io::Result<()>) -> Result<bool> {
+        use crate::local_server::{is_own_with_setting, localized};
+
+        let _write = CONFIG_WRITE.lock().unwrap();
+        let path = dir.join(FILE);
+        let save = |value: &serde_json::Value| write_private(&path, &serde_json::to_vec_pretty(value)?);
+        let (before, after, own) = localized((|| {
+            let before = host_document(dir)?;
+            let mut local: crate::local_server::Setting =
+                serde_json::from_value::<Option<_>>(before["local_service"].clone())?.unwrap_or_default();
+            let own = before["server"].as_str().is_none_or(|address|
+                is_own_with_setting(dir, address, Some(&local)));
+            local.enabled = false;
+            let mut after = if own {
+                serde_json::json!({ "prevent_sleep": before["prevent_sleep"].as_bool().unwrap_or_default() })
+            } else {
+                before.clone()
+            };
+            set_local_service_value(&mut after, &local)?;
+            Ok((before, after, own))
+        })(), "local.delete_save_failed")?;
+        // The off switch and sign-out take effect together, before the data can disappear.
+        localized(save(&after), "local.delete_save_failed")?;
+        if let Err(error) = rename() {
+            localized(save(&before), "local.delete_restore_failed")?;
+            return localized(Err(error.into()), "local.delete_move_failed");
+        }
+        Ok(own)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn prevent_sleep_setting(dir: &Path) -> Result<bool> {
+        Ok(host_document(dir)?["prevent_sleep"].as_bool().unwrap_or_default())
+    }
+
+    fn write_sign_in(&self, dir: &Path) -> Result<()> {
+        let address = Address::parse(&self.server)?;
+        if address.is_pinned() {
+            let root = self.server_root.as_deref().context("the pinned local server root is missing")?;
+            address.connection(Some(root))?;
+            write_private(&root_path(dir), root.as_bytes())?;
+        }
+        self.write_to(dir)
     }
 
     /// Signs this computer out here: it stops using its account until someone signs in again.
@@ -150,6 +256,21 @@ impl Config {
 
     fn sign_out_in(dir: &Path) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
+        Self::keep_sign_in(dir)
+    }
+
+    fn keep_sign_in(dir: &Path) -> Result<()> {
+        #[cfg(desktop_host)]
+        if let Some(local) = Self::local_service(dir)? {
+            let config = match Self::load_from_file(&dir.join(FILE)) {
+                Ok(config) => config,
+                Err(e) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => return Ok(()),
+                Err(e) => return Err(e),
+            };
+            write_private(&dir.join(KEPT), &serde_json::to_vec_pretty(&config)?)?;
+            let value = serde_json::json!({ "local_service": local, "prevent_sleep": config.prevent_sleep });
+            return write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?);
+        }
         match std::fs::rename(dir.join(FILE), dir.join(KEPT)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).context("keep the sign-in"),
             _ => Ok(()),
@@ -175,6 +296,7 @@ impl Config {
         let cfg = match kept {
             Some(mut k) => {
                 k.account = new.account;
+                k.server_root = new.server_root;
                 // Signing out took the login item away; signing in sets it up again.
                 #[cfg(target_os = "macos")]
                 {
@@ -189,7 +311,13 @@ impl Config {
             }
         };
         let _write = CONFIG_WRITE.lock().unwrap();
-        cfg.write_to(dir)?;
+        #[cfg(desktop_host)]
+        let cfg = if Self::local_service(dir)?.is_some_and(|local| local.enabled) {
+            Self { prevent_sleep: true, ..cfg }
+        } else {
+            cfg
+        };
+        cfg.write_sign_in(dir)?;
         let _ = std::fs::remove_file(dir.join(KEPT));
         Ok(cfg)
     }
@@ -203,17 +331,67 @@ impl Config {
     /// of the computer itself stay.
     pub fn forget_in(dir: &Path) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
+        #[cfg(desktop_host)]
+        let local = match Self::local_service(dir) {
+            Ok(local) => local,
+            Err(e) if e.downcast_ref::<serde_json::Error>().is_some() => None,
+            Err(e) => return Err(e),
+        };
         for f in ACCOUNT {
+            #[cfg(desktop_host)]
+            if *f == FILE {
+                if let Some(local) = &local {
+                    let value = serde_json::json!({ "local_service": local });
+                    write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)?;
+                    continue;
+                }
+            }
             match std::fs::remove_file(dir.join(f)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("remove {f}")),
                 _ => {}
             }
         }
-        Ok(())
+        remove_sign_in_root(dir)
     }
 
     fn load_from_file(path: &Path) -> Result<Config> {
-        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+        let file = std::fs::File::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if file.metadata()?.permissions().mode() & 0o077 != 0 {
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+        let value: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(file))?;
+        #[cfg(desktop_host)]
+        if value.get("local_service").is_some() && value.get("server").is_none() {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
+        }
+        Ok(serde_json::from_value(value)?)
+    }
+}
+
+#[cfg(desktop_host)]
+fn set_local_service_value(value: &mut serde_json::Value, local: &crate::local_server::Setting) -> Result<()> {
+    if local.enabled {
+        value["prevent_sleep"] = serde_json::Value::Bool(true);
+    } else if let Some(previous) = local.previous {
+        value["prevent_sleep"] = serde_json::Value::Bool(previous.prevent_sleep);
+    }
+    value["local_service"] = serde_json::to_value(local)?;
+    Ok(())
+}
+
+#[cfg(desktop_host)]
+fn host_document(dir: &Path) -> Result<serde_json::Value> {
+    match std::fs::File::open(dir.join(FILE)) {
+        Ok(file) => {
+            let object: serde_json::Map<String, serde_json::Value> = serde_json::from_reader(file)?;
+            Ok(serde_json::Value::Object(object))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -235,6 +413,17 @@ const KEPT: &str = "signed-out.json";
 /// not read.
 const ACCOUNT: &[&str] = &[FILE, KEPT, "host-key", "controllers.json", "blocked.json", "adopted", "pairing.json", "ai.json", "audit.jsonl", "audit.old.jsonl"];
 
+pub fn root_path(dir: &Path) -> PathBuf {
+    dir.join(ROOT_FILE)
+}
+
+pub fn remove_sign_in_root(dir: &Path) -> Result<()> {
+    match std::fs::remove_file(root_path(dir)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).context("remove the local server root"),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +441,65 @@ mod tests {
         std::fs::write(d.join(FILE), r#"{"server":"https://s.example","id":"H1","token":"t","name":""}"#).unwrap();
         let c = Config::load_from(&d).unwrap();
         assert!(!c.auto_lock && !c.clip_share && !c.prevent_sleep && c.lang.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sign_in_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp("sign-in-mode");
+        let path = dir.join(FILE);
+        sign_in("H1", "t", "me").write_to(&dir).unwrap();
+        let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(), 0o600);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(Config::load_from(&dir).unwrap().token, "t");
+        assert_eq!(mode(), 0o600);
+    }
+
+    #[test]
+    fn a_pinned_sign_in_keeps_its_address_and_a_separate_pem() {
+        use wire::crypto::{hex, sha256};
+
+        let dir = temp("pinned");
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let root = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
+        let mut cfg = sign_in("H1", "t", "me");
+        cfg.server = format!("https://hub.local:18599#ca={}", hex(&sha256(root.der())));
+        let address = Address::parse(&cfg.server).unwrap();
+        let pem = address.pin_root(root.der()).unwrap();
+        cfg.server_root = Some(pem.clone());
+        Config::settle_in(&dir, cfg).unwrap();
+        let stored = Config::load_from(&dir).unwrap();
+        assert_eq!(stored.server, address.saved());
+        assert_eq!(stored.server_root.as_deref(), Some(pem.as_str()));
+        assert_eq!(std::fs::read_to_string(root_path(&dir)).unwrap(), pem);
+        assert!(!std::fs::read_to_string(dir.join(FILE)).unwrap().contains("CERTIFICATE"));
+        stored.connection().unwrap();
+    }
+
+    #[cfg(desktop_host)]
+    #[test]
+    fn the_hubs_kept_address_uses_the_der_fingerprint_of_its_pem_file() {
+        use crate::local_server::{self, Setting};
+        use wire::crypto::{hex, sha256};
+
+        let dir = temp("hub-root");
+        let ca = local_server::data_dir(&dir).join("local-ca");
+        std::fs::create_dir_all(&ca).unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let root = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
+        let address = format!("https://localhost:18599#ca={}", hex(&sha256(root.der())));
+        let pem = Address::parse(&address).unwrap().pin_root(root.der()).unwrap();
+        std::fs::write(ca.join("ca.crt"), pem).unwrap();
+        for enabled in [true, false] {
+            Config::set_local_service(&dir, &Setting { https: Some(18599), guide: Some(18598), enabled, ..Default::default() }).unwrap();
+            assert!(local_server::is_own(&dir, &address));
+            assert!(!local_server::is_own(&dir, &address.replace("18599", "18600")));
+        }
     }
 
     #[test]

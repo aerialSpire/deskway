@@ -214,13 +214,17 @@ pub fn run(mode: Mode) -> Result<()> {
                     }
                     "uninstall" => {
                         let purge = m["purge"].as_bool().unwrap_or(false);
+                        let purge_local = m["purge_local"].as_bool().unwrap_or(false);
                         st.steps = vec!["setup.step_confirm", "setup.step_remove"];
                         st.now = 0;
                         st.page = "working";
                         render(&st);
                         let p = proxy.clone();
                         std::thread::spawn(move || {
-                            let r = elevated(if purge { "uninstall --purge" } else { "uninstall" }, &p, 0, 1);
+                            let mut args = String::from("uninstall");
+                            if purge { args.push_str(" --purge"); }
+                            if purge_local { args.push_str(" --purge-local"); }
+                            let r = elevated(&args, &p, 0, 1);
                             let _ = p.send_event(Msg::Finished(r.map(|_| purge)));
                         });
                     }

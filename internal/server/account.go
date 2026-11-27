@@ -12,9 +12,15 @@ import (
 
 // me is what a browser is told about its account: the name it signs in with, the display name,
 // and whether it is the admin (who manages the members, members.go).
-func (s *Server) me(user string) map[string]any {
+func (s *Server) me(user, host string) map[string]any {
 	me := map[string]any{"user": s.store.Name(user), "display": s.store.Display(user), "admin": s.store.IsAdmin(user)}
 	me["local_mode"] = s.local != nil
+	if s.local != nil {
+		me["local_ca_fingerprint"] = s.local.Fingerprint()
+		if guide := localGuideURL(host, s.localGuidePort, s.localMDNS.privateIPv4); guide != "" {
+			me["local_guide_url"] = guide
+		}
+	}
 	if s.mcp != nil {
 		me["remote_mcp"] = s.mcp.resource
 	}
@@ -22,7 +28,7 @@ func (s *Server) me(user string) map[string]any {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.me(userOf(r)))
+	writeJSON(w, s.me(userOf(r), r.Host))
 }
 
 // handleAccountName changes what the account signs in with, after its password.
@@ -42,7 +48,7 @@ func (s *Server) handleAccountName(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("server: account %s now signs in as %q", user, name)
 	s.sendAccount(user)
-	writeJSON(w, s.me(user))
+	writeJSON(w, s.me(user, r.Host))
 }
 
 // handleDisplay changes the name others see.
@@ -64,7 +70,7 @@ func (s *Server) handleDisplay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sendAccount(user)
-	writeJSON(w, s.me(user))
+	writeJSON(w, s.me(user, r.Host))
 }
 
 // handlePassword changes the account password. Computers keep working: they sign in with their

@@ -8,22 +8,23 @@
 //! reconnecting, the status names the holders again so the server can route them.
 
 use std::io::ErrorKind;
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use deskway_server_connection::Address;
 use polling::{Event, Events, Poller};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message as WsMessage, WebSocket};
 
 use crate::audit::Audit;
 use crate::auth::{AiState, Trust};
 use crate::config::Config;
+use crate::discovery::{Browse, Change};
 use crate::display::DisplayInfo;
 use crate::mcp::{Facts, SharedFacts};
 use crate::platform::{BrowserSession, Desk, DeskParams, DesktopFeatures, Features, Platform, PlatformEvent, Replies, WorkspaceState};
@@ -35,7 +36,7 @@ use crate::session::{self, SessionEvent, SessionUpdate};
 use crate::session::terminal::registry::Registry as Terminals;
 use crate::settings::{PanelRequest, Settings};
 use crate::vitals::{self, Sample};
-use crate::wake::{Wake, Waker};
+use crate::wake::{Wake, Waker, WeakWake};
 
 mod alive;
 mod registry;
@@ -153,6 +154,8 @@ pub enum Control {
     SetAutoStart(bool),
     /// A setting changed: the panel shows it.
     Report,
+    /// The pinned local server announced itself while signaling was offline.
+    ServerAnnounced,
     Quit,
 }
 
@@ -187,7 +190,7 @@ impl Router {
             PlatformEvent::Capturing { .. } | PlatformEvent::Desktop(_) => (true, true),
             PlatformEvent::Thumbnail { .. } | PlatformEvent::DisplaysChanged(_) | PlatformEvent::TransferNote(_) => (false, true),
             // Answers: handed over in `route`, before this is asked.
-            PlatformEvent::Snapshot { .. } | PlatformEvent::SnapshotFailed { .. } | PlatformEvent::InputDone { .. } => (false, false),
+            PlatformEvent::Snapshot { .. } | PlatformEvent::SnapshotFailed { .. } | PlatformEvent::InputDone { .. } | PlatformEvent::ServerRootSynced { .. } => (false, false),
         }
     }
 
@@ -943,6 +946,7 @@ impl Host {
                 self.report();
             }
             Control::Report => self.report(),
+            Control::ServerAnnounced => {}
             Control::Quit => {
                 self.quit = true;
                 if let Some(terminal) = &mut self.terminal {
@@ -987,16 +991,91 @@ fn tcp(ws: &Socket) -> &TcpStream {
     }
 }
 
-fn connect(cfg: &Config) -> Result<Socket> {
-    let base = cfg.server.replacen("http", "ws", 1);
-    let mut req = format!("{base}/ws/host?id={}", cfg.id).into_client_request()?;
-    req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.token).parse().context("token header")?);
-    let (ws, _) = tungstenite::connect(req)?;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
+#[derive(Default)]
+struct Connecting {
+    cancelled: bool,
+    socket: Option<TcpStream>,
+}
+
+fn time_left(deadline: Instant) -> std::io::Result<Duration> {
+    deadline.checked_duration_since(Instant::now()).filter(|left| !left.is_zero())
+        .ok_or_else(|| std::io::Error::new(ErrorKind::TimedOut, "signaling connection timed out"))
+}
+
+fn connect(cfg: &Config, deadline: Instant, attempt: &Mutex<Connecting>) -> Result<Socket> {
+    let ws = cfg.connection()?.websocket_with_tcp(&format!("/ws/host?id={}", cfg.id), |req| {
+        req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.token).parse().context("token header")?);
+        Ok(())
+    }, |host, port| {
+        let mut error = None;
+        for addr in (host, port).to_socket_addrs().context("resolve signaling hostname")? {
+            if attempt.lock().unwrap().cancelled {
+                anyhow::bail!("signaling connection cancelled");
+            }
+            match TcpStream::connect_timeout(&addr, time_left(deadline)?) {
+                Ok(stream) => {
+                    let left = time_left(deadline)?;
+                    stream.set_read_timeout(Some(left))?;
+                    stream.set_write_timeout(Some(left))?;
+                    let mut attempt = attempt.lock().unwrap();
+                    anyhow::ensure!(!attempt.cancelled, "signaling connection cancelled");
+                    attempt.socket = Some(stream.try_clone()?);
+                    return Ok(stream);
+                }
+                Err(e) => error = Some(e),
+            }
+        }
+        Err(error.context("signaling hostname resolved to no addresses")?.into())
+    })?;
     tcp(&ws).set_write_timeout(Some(alive::WRITE_TIMEOUT))?;
     // A blocking TLS write can also need to read, so bound that wait too.
     tcp(&ws).set_read_timeout(Some(alive::WRITE_TIMEOUT))?;
-    tcp(&ws).set_nodelay(true)?;
     Ok(ws)
+}
+
+/// Wait on the control queue and the result together. Shutting down the registered socket
+/// interrupts both TLS and HTTP upgrade, even if the peer keeps sending partial data.
+fn await_connection(host: &mut Host, q: &Queues, timeout: Duration) -> Result<Option<Socket>> {
+    let deadline = Instant::now() + timeout;
+    let poller = Arc::new(Poller::new()?);
+    q.wake.attach(&poller);
+    let (done, result) = q.wake.channel();
+    let attempt = Arc::new(Mutex::new(Connecting::default()));
+    let worker = attempt.clone();
+    let cfg = host.cfg.clone();
+    std::thread::Builder::new().name("signal-connect".into()).spawn(move || {
+        let _ = done.send(connect(&cfg, deadline, &worker));
+    })?;
+
+    let outcome = (|| {
+        let mut events = Events::new();
+        loop {
+            let first = match q.control.try_recv() {
+                Ok(control) => Some(control),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Control::Quit),
+            };
+            q.drain_local(host, first);
+            if host.quit {
+                return Ok(None);
+            }
+            let left = time_left(deadline)?;
+            match result.try_recv() {
+                Ok(result) => return result.map(Some),
+                Err(TryRecvError::Disconnected) => anyhow::bail!("signaling connection worker stopped"),
+                Err(TryRecvError::Empty) => {}
+            }
+            poller.wait(&mut events, Some(left))?;
+        }
+    })();
+    let mut attempt = attempt.lock().unwrap();
+    attempt.cancelled = true;
+    if let Some(socket) = attempt.socket.take().filter(|_| !matches!(&outcome, Ok(Some(_)))) {
+        let _ = socket.shutdown(Shutdown::Both);
+    }
+    outcome
 }
 
 struct Connection<'a> {
@@ -1029,12 +1108,14 @@ impl Drop for Connection<'_> {
 pub struct Controls {
     rx: Receiver<Control>,
     wake: Waker,
+    sender: WeakWake<Control>,
 }
 
 pub fn control_channel() -> (Wake<Control>, Controls) {
     let wake = Waker::default();
     let (tx, rx) = wake.channel();
-    (tx, Controls { rx, wake })
+    let sender = tx.downgrade();
+    (tx, Controls { rx, wake, sender })
 }
 
 struct Queues {
@@ -1047,26 +1128,52 @@ struct Queues {
 }
 
 impl Queues {
-    fn drain_control(&self, host: &mut Host) {
-        while let Ok(c) = self.control.try_recv() {
+    fn drain_control(&self, host: &mut Host, first: Option<Control>) -> bool {
+        let mut announced = false;
+        for c in first.into_iter().chain(self.control.try_iter()) {
+            announced |= c == Control::ServerAnnounced;
             host.on_control(c);
         }
+        announced
     }
 
     fn on_message(&self, host: &mut Host, text: &str) -> bool {
-        self.drain_control(host);
+        self.drain_control(host, None);
         !host.quit && host.on_message(text)
     }
 
     /// What can be handled without the server.
-    fn drain_local(&self, host: &mut Host) {
+    fn drain_local(&self, host: &mut Host, first: Option<Control>) -> bool {
         host.transfers.expire(Instant::now());
-        self.drain_control(host);
+        let announced = self.drain_control(host, first);
         while let Ok(u) = self.updates.try_recv() {
             host.on_update(u);
         }
         while let Ok(on) = self.share.try_recv() {
             host.browser_set_clip_share(on);
+        }
+        announced
+    }
+
+    fn wait_for_retry(&self, host: &mut Host, deadline: Instant) {
+        while !host.quit {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let first = match self.control.recv_timeout(left.min(Duration::from_millis(200))) {
+                Ok(c) => Some(c),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => Some(Control::Quit),
+            };
+            let announced = self.drain_local(host, first);
+            // Displays and notes still count offline; thumbnails have nowhere to go.
+            for e in self.platform.iter().flat_map(Receiver::try_iter) {
+                let _ = host.on_platform(e, None);
+            }
+            if announced {
+                break;
+            }
         }
     }
 }
@@ -1108,7 +1215,7 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
             alive::Due::Ping => ws.send(WsMessage::Ping(alive.ping_payload(now).to_vec().into()))?,
             alive::Due::Gone => anyhow::bail!("the server said nothing for {}s", alive::SILENT.as_secs()),
         }
-        q.drain_local(host);
+        q.drain_local(host, None);
         if let Some(samples) = &host.sampling {
             let result = samples.try_recv();
             if !matches!(result, Err(TryRecvError::Empty)) {
@@ -1164,7 +1271,7 @@ impl Host {
     /// folder (None refuses every offer).
     fn new(p: Params, trust: Option<Trust>, controls: Controls) -> (Host, Queues) {
         let Params { cfg, view_only, desktop, browser, notify, settings, workspace, admin } = p;
-        let Controls { rx: control, wake } = controls;
+        let Controls { rx: control, wake, .. } = controls;
         let (out_tx, out) = wake.channel();
         let (updates_tx, updates) = wake.channel();
         let (share_tx, share) = wake.channel();
@@ -1217,17 +1324,47 @@ impl Host {
     }
 }
 
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+
+struct AnnouncementWake {
+    pin: String,
+    sender: WeakWake<Control>,
+    last_wake: Mutex<Option<Instant>>,
+}
+
+impl AnnouncementWake {
+    fn on_change(&self, change: Change, now: Instant) {
+        let Change::Update { server: Some(server), .. } = change else { return };
+        if server.address.fingerprint() != Some(self.pin.as_str()) {
+            return;
+        }
+        let mut last_wake = self.last_wake.lock().unwrap();
+        if last_wake.is_some_and(|last| now.duration_since(last) < MAX_RETRY_DELAY) {
+            return;
+        }
+        if self.sender.upgrade().is_some_and(|tx| tx.send(Control::ServerAnnounced).is_ok()) {
+            *last_wake = Some(now);
+        }
+    }
+}
+
 /// Runs the host until it is told to quit or `control` closes.
 pub fn run(p: Params, control: Controls) {
     let trust = crate::config::dir().and_then(|d| Trust::open(d, &p.cfg.id, &p.cfg.server)).map_err(|e| eprintln!("trust store unavailable, refusing all sessions: {e:#}")).ok();
+    let address = Address::parse(&p.cfg.server).ok();
+    let announcement = address.as_ref().and_then(Address::fingerprint).map(|pin| Arc::new(AnnouncementWake {
+        pin: pin.into(), sender: control.sender.clone(), last_wake: Mutex::new(None),
+    }));
     let (mut host, q) = Host::new(p, trust, control);
     let cfg = host.cfg.clone();
     let view_only = host.view_only;
     let mut delay = Duration::from_secs(1);
+    let mut browse = None;
     eprintln!("Deskway host: {} -> {}{}", cfg.name, cfg.server, if view_only { " (view only)" } else { "" });
     while !host.quit {
-        match connect(&cfg) {
-            Ok(mut ws) => {
+        match await_connection(&mut host, &q, CONNECT_TIMEOUT) {
+            Ok(Some(mut ws)) => {
+                browse = None;
                 eprintln!("connected");
                 host.problem = None;
                 host.online = true;
@@ -1243,6 +1380,7 @@ pub fn run(p: Params, control: Controls) {
                     desk.platform.thumbnails(false);
                 }
             }
+            Ok(None) => break,
             Err(e) => {
                 host.waiting = e.downcast_ref::<tungstenite::Error>().is_some_and(|e| matches!(e, tungstenite::Error::Http(r) if r.status() == 403));
                 host.problem = if host.waiting { None } else { Some(describe(&e)) };
@@ -1255,28 +1393,19 @@ pub fn run(p: Params, control: Controls) {
                 host.report();
             }
         }
-        // Sleeps on the control queue so the local panel stays responsive while offline.
-        let wake = Instant::now() + delay;
-        while !host.quit {
-            let left = wake.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            match q.control.recv_timeout(left.min(Duration::from_millis(200))) {
-                Ok(c) => host.on_control(c),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => host.on_control(Control::Quit),
-            }
-            q.drain_local(&mut host);
-            // Displays and notes still count offline; thumbnails have nowhere to go.
-            for e in q.platform.iter().flat_map(Receiver::try_iter) {
-                let _ = host.on_platform(e, None);
+        // A fresh announcement can shorten a retry wait. Keep its cooldown across reconnects.
+        if !host.quit && browse.is_none() {
+            if let Some(announcement) = announcement.clone() {
+                browse = Browse::start(move |change| announcement.on_change(change, Instant::now()))
+                    .map_err(|e| eprintln!("cannot browse for the local server: {e:#}")).ok();
             }
         }
+        q.wait_for_retry(&mut host, Instant::now() + delay);
         if !host.waiting {
-            delay = (delay * 2).min(Duration::from_secs(30));
+            delay = (delay * 2).min(MAX_RETRY_DELAY);
         }
     }
+    drop(browse);
     // Without signaling, still wait for session-owned resources to be released before exit.
     while host.has_sessions() {
         let Ok(update) = q.updates.recv() else { break };
@@ -1293,7 +1422,7 @@ fn refusal(e: &anyhow::Error) -> Reason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc::channel;
     use std::thread;
@@ -1311,6 +1440,32 @@ mod tests {
     }
 
     /// A host as `run` makes it, offline, in a folder of its own; `trust` decides who may connect.
+    #[test]
+    fn stalled_tls_and_websocket_handshakes_time_out_or_quit() {
+        for (scheme, quit) in [("https", false), ("http", false), ("https", true), ("http", true)] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut test = Test::new(&format!("connect-{scheme}-{quit}"), false, false);
+            test.host.cfg.server = format!("{scheme}://{}", listener.local_addr().unwrap());
+            let control = test.control.clone();
+            let (done, result) = channel();
+            let timeout = Duration::from_millis(if quit { 10_000 } else { 350 });
+            let worker = thread::spawn(move || {
+                done.send(await_connection(&mut test.host, &test.q, timeout)).unwrap();
+            });
+            let (mut socket, _) = listener.accept().unwrap();
+            if quit {
+                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                assert!(socket.read(&mut [0; 4096]).unwrap() > 0);
+                control.send(Control::Quit).unwrap();
+                assert!(result.recv_timeout(Duration::from_secs(2)).unwrap().unwrap().is_none());
+            } else {
+                assert!(result.recv_timeout(Duration::from_secs(2)).unwrap().is_err());
+            }
+            drop(socket);
+            worker.join().unwrap();
+        }
+    }
+
     struct Test {
         host: Host,
         q: Queues,
@@ -1367,7 +1522,8 @@ mod tests {
             let control = self.control.clone();
             let (done, host) = channel();
             thread::spawn(move || {
-                let result = connect(&self.host.cfg).and_then(|mut ws| serve(&mut ws, &mut self.host, &self.q));
+                let result = await_connection(&mut self.host, &self.q, CONNECT_TIMEOUT)
+                    .and_then(|ws| ws.map_or(Ok(()), |mut ws| serve(&mut ws, &mut self.host, &self.q)));
                 let _ = done.send(result);
             });
             let (socket, _) = listener.accept().unwrap();
@@ -1461,6 +1617,38 @@ mod tests {
             self.host.sessions.of_mut(seat).established(id);
             rx
         }
+    }
+
+    #[test]
+    fn matching_local_announcement_interrupts_retry_wait() {
+        let mut t = Test::new("local-retry", false, false);
+        let pin = "ab".repeat(32);
+        let announce = |name: &str, fingerprint: &str| Change::Update {
+            instance: format!("{name}._deskway._tcp.local."),
+            server: Some(crate::discovery::Server {
+                name: name.into(),
+                address: Address::parse(&format!("https://hub.local:18499#ca={fingerprint}")).unwrap(),
+            }),
+        };
+        let wake = AnnouncementWake { pin: pin.clone(), sender: t.control.downgrade(), last_wake: Mutex::new(None) };
+        let now = Instant::now();
+        wake.on_change(Change::Update { instance: "hub._deskway._tcp.local.".into(), server: None }, now);
+        wake.on_change(announce("hub", &"cd".repeat(32)), now);
+        assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
+
+        // A notification already queued behind other work must still end the wait.
+        t.control.send(Control::Report).unwrap();
+        wake.on_change(announce("hub", &pin), now);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        t.q.wait_for_retry(&mut t.host, deadline);
+        assert!(Instant::now() < deadline);
+        assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
+
+        wake.on_change(Change::Reset, now);
+        wake.on_change(announce("renamed-hub", &pin), now + MAX_RETRY_DELAY - Duration::from_millis(1));
+        assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
+        wake.on_change(announce("renamed-hub", &pin), now + MAX_RETRY_DELAY);
+        assert_eq!(t.q.control.try_recv().unwrap(), Control::ServerAnnounced);
     }
 
     #[test]

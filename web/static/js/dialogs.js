@@ -32,19 +32,28 @@ export function dialog(title, text, actions) {
 export const gotIt = (title, text, { primary = false, also = null } = {}) =>
   dialog(title, text, [{ label: t('common.gotIt'), primary }, also]);
 
-export function scanOpenDialog() {
-  const url = location.origin + '/';
+export async function scanOpenDialog(me) {
+  const body = h('div', {}, me ? t('common.loading') : null);
+  const overlay = dialog(t('scanOpen.title'), body, [{ label: t('common.close') }]);
+  if (me) {
+    try {
+      const res = await fetch('/api/me', { cache: 'no-store' });
+      if (res.ok) me = await res.json();
+    } catch { /* Keep the last address when the server cannot answer. */ }
+    if ($dialogs.firstElementChild !== overlay) return;
+  }
+  const guide = me?.local_mode && me.local_guide_url;
+  const url = guide || location.origin + '/';
   const code = qrcode(0, 'M');
   code.addData(url);
   code.make();
   const image = svg(code.createSvgTag({ cellSize: 1, scalable: true }));
   image.setAttribute('shape-rendering', 'crispEdges');
   image.setAttribute('aria-hidden', 'true');
-  dialog(t('scanOpen.title'), h('div', {},
+  body.replaceChildren(
     h('div', { class: 'qr' }, image),
-    h('p', { class: 'qr-lead' }, t('scanOpen.lead')),
-    h('p', { class: 'qr-addr' }, copyableCode(url))),
-  [{ label: t('common.close') }]);
+    h('p', { class: 'qr-lead' }, t(guide ? 'scanOpen.localLead' : 'scanOpen.lead')),
+    h('p', { class: 'qr-addr' }, copyableCode(url)));
 }
 
 // A small form in a dialog: fields, an error line, and a submit that may fail and stay open.

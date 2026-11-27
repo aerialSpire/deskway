@@ -7,10 +7,12 @@
 //! make the page's state; the page's messages are [`PageMessage`]s, and the requests among them
 //! that the host carries out are [`PanelRequest`]s.
 
+use std::collections::{BTreeSet, HashMap};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
@@ -20,12 +22,14 @@ use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, MouseButton, TrayIconBuilder, TrayIconEvent};
 use wry::{WebContext, WebView, WebViewBuilder};
 
+use crate::discovery::{Browse, Change};
 use crate::i18n::{self, t};
 use crate::platform::ui as native;
 use crate::settings::PanelRequest;
 use crate::signal::Status;
 
 mod indicator;
+mod local;
 #[cfg(target_os = "macos")]
 mod inprocess;
 #[cfg(windows)]
@@ -86,6 +90,7 @@ pub enum UiEvent {
     Refresh,
     /// The backend's own events.
     Backend(BackendEvent),
+    LocalServersChanged(Weak<LocalServersSnapshot>),
 }
 
 /// What a page sends (`cmd`).
@@ -115,6 +120,8 @@ pub enum PageMessage {
     Unpair,
     RemoveDevice { id: String },
     StartService,
+    FindLocalServers,
+    LocalService { action: crate::local_server::Request },
     Login { server: String, user: String, password: String },
     Leave,
     ScreenRequest,
@@ -156,6 +163,7 @@ trait Backend {
     /// The facts of this computer the panel shows besides the host's status (whether it is
     /// signed in, how it starts, what it may do).
     fn extras(&self) -> Value;
+    fn local(&self) -> &local::Panel;
     /// A request for the host. True if the panel should be drawn again now.
     fn request(&mut self, r: PanelRequest) -> bool;
     /// A page message that is the backend's own. True if the panel should be drawn again now.
@@ -209,6 +217,86 @@ fn panel_state(status: Option<&Status>, extras: Value) -> Value {
     state
 }
 
+fn root_problem(error: Option<&str>) -> Option<String> {
+    error.map(|e| crate::i18n::tf("err.root_trust", &[("e", e.to_string())]))
+}
+
+const MAX_LOCAL_SERVERS: usize = 32;
+
+#[derive(Clone, PartialEq, Serialize)]
+struct LocalServer {
+    name: String,
+    address: String,
+}
+
+#[derive(Default)]
+struct LocalServers {
+    by_instance: HashMap<String, LocalServer>,
+    by_name: BTreeSet<(String, String)>,
+}
+
+impl LocalServers {
+    fn update(&mut self, change: Change) -> bool {
+        let Change::Update { instance, server } = change else {
+            let changed = !self.by_instance.is_empty();
+            self.by_instance.clear();
+            self.by_name.clear();
+            return changed;
+        };
+        let next = server.map(|s| LocalServer { name: s.name, address: s.address.saved() });
+        if self.by_instance.get(&instance) == next.as_ref() {
+            return false;
+        }
+        if let Some(old) = self.by_instance.remove(&instance) {
+            self.by_name.remove(&(old.name, instance.clone()));
+        }
+        if let Some(server) = next {
+            self.by_name.insert((server.name.clone(), instance.clone()));
+            self.by_instance.insert(instance, server);
+        }
+        true
+    }
+
+    fn snapshot(&self) -> Vec<LocalServer> {
+        self.by_name.iter().take(MAX_LOCAL_SERVERS)
+            .map(|(_, instance)| self.by_instance[instance].clone())
+            .collect()
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct LocalServersSnapshot(Mutex<Option<Vec<LocalServer>>>);
+
+impl LocalServersSnapshot {
+    /// Only the first update to an empty slot needs to post an event.
+    fn replace(&self, latest: Vec<LocalServer>) -> bool {
+        self.0.lock().unwrap().replace(latest).is_none()
+    }
+
+    fn take(&self) -> Option<Vec<LocalServer>> {
+        self.0.lock().unwrap().take()
+    }
+}
+
+struct LocalDiscovery {
+    _browse: Option<Browse>,
+    results: Arc<LocalServersSnapshot>,
+}
+
+impl LocalDiscovery {
+    fn start(proxy: EventLoopProxy<UiEvent>) -> Self {
+        let results = Arc::new(LocalServersSnapshot::default());
+        let slot = results.clone();
+        let mut found = LocalServers::default();
+        let browse = Browse::start(move |change| {
+            if found.update(change) && slot.replace(found.snapshot()) {
+                let _ = proxy.send_event(UiEvent::LocalServersChanged(Arc::downgrade(&slot)));
+            }
+        }).map_err(|e| eprintln!("cannot browse for local servers: {e:#}")).ok();
+        Self { _browse: browse, results }
+    }
+}
+
 struct App {
     backend: HostBackend,
     /// The host's last status; None before the first, or while it cannot be reached.
@@ -259,6 +347,27 @@ impl PanelFrame {
 struct PanelPage {
     view: WebView,
     ready: bool,
+    showing_sign_in: bool,
+    discovery: Option<LocalDiscovery>,
+}
+
+impl PanelPage {
+    fn discover(&mut self, on: bool, proxy: &EventLoopProxy<UiEvent>) {
+        if on == self.discovery.is_some() {
+            return;
+        }
+        self.discovery = on.then(|| LocalDiscovery::start(proxy.clone()));
+        let _ = self.view.evaluate_script(&format!("searchLocalServers({on})"));
+    }
+
+    fn show_local_servers(&self, source: Weak<LocalServersSnapshot>) {
+        let results = self.discovery.as_ref()
+            .filter(|discovery| source.ptr_eq(&Arc::downgrade(&discovery.results)))
+            .and_then(|discovery| discovery.results.take());
+        if let Some(results) = results {
+            let _ = self.view.evaluate_script(&format!("showLocalServers({})", json!(results)));
+        }
+    }
 }
 
 impl Panel {
@@ -287,7 +396,12 @@ impl Panel {
                 })
                 .build(window);
             match view {
-                Ok(view) => self.page = Some(PanelPage { view, ready: false }),
+                Ok(view) => self.page = Some(PanelPage {
+                    view,
+                    ready: false,
+                    showing_sign_in: false,
+                    discovery: None,
+                }),
                 Err(e) => {
                     self.release();
                     return Err(e.into());
@@ -327,9 +441,20 @@ impl Panel {
         }
     }
 
-    fn render(&self, app: &App) {
-        if let Some(page) = self.page.as_ref().filter(|page| page.ready) {
-            let _ = page.view.evaluate_script(&format!("render({})", app.state()));
+    fn render(&mut self, app: &App) {
+        if let Some(page) = self.page.as_mut().filter(|page| page.ready) {
+            let state = app.state();
+            // The local service can hide sign-in before the computer is enrolled.
+            page.showing_sign_in = state["enrolled"] == false && state["local"]["state"]["enabled"] != true;
+            let _ = page.view.evaluate_script(&format!("render({state})"));
+        }
+    }
+
+    fn sync_discovery(&mut self, proxy: &EventLoopProxy<UiEvent>) {
+        if let Some(page) = &mut self.page {
+            let on = page.showing_sign_in && self.close_at.is_none() && self.frame.as_ref()
+                .is_some_and(|frame| frame.window.is_visible() && !frame.window.is_minimized());
+            page.discover(on, proxy);
         }
     }
 }
@@ -349,7 +474,13 @@ fn follow_language(app: &mut App, panel: &Panel, indicator: &mut Option<Indicato
     }
 }
 
-pub fn run(at_login: bool) -> Result<()> {
+fn tray_icon(badge: Option<bool>) -> Result<Icon> {
+    let size = native::tray_size();
+    let pixels = crate::icon::rgba_with_badge(size, native::TRAY_TEMPLATE, badge);
+    Ok(Icon::from_rgba(pixels, size, size)?)
+}
+
+pub fn run(at_login: bool, dev: bool) -> Result<()> {
     let mut event_loop = EventLoopBuilder::<UiEvent>::with_user_event().build();
     native::configure_event_loop(&mut event_loop);
     let proxy = event_loop.create_proxy();
@@ -364,10 +495,14 @@ pub fn run(at_login: bool) -> Result<()> {
     let open_item = MenuItem::new(t("tray.open"), true, None);
     let quit_item = MenuItem::new(t("tray.quit"), true, None);
     let menu = Menu::new();
+    #[cfg(target_os = "macos")]
+    let tray_status = MenuItem::new(crate::product::NAME, false, None);
+    #[cfg(target_os = "macos")]
+    menu.append(&tray_status)?;
     menu.append(&open_item)?;
     menu.append(&quit_item)?;
     let tray = TrayIconBuilder::new()
-        .with_icon(Icon::from_rgba(native::tray_rgba(32), 32, 32)?)
+        .with_icon(tray_icon(None)?)
         .with_tooltip(crate::product::NAME)
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
@@ -385,13 +520,14 @@ pub fn run(at_login: bool) -> Result<()> {
         let _ = p.send_event(UiEvent::Menu(e.id));
     }));
 
-    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login), status: None, shown: i18n::current() };
+    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login, dev), status: None, shown: i18n::current() };
     if app.backend.start() {
         let _ = proxy.send_event(UiEvent::TrayOpen);
     }
 
     let mut indicator: Option<Indicator> = None;
-    let _tray = tray;
+    let mut tray_badge = None;
+    let mut tray_tooltip = String::new();
 
     event_loop.run(move |event, target, flow| {
         if panel.close_at.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -452,6 +588,7 @@ pub fn run(at_login: bool) -> Result<()> {
                     panel.show(target, &mut ctx, &proxy);
                     panel.render(&app);
                 } else if id == quit_id {
+                    panel.release();
                     app.backend.quit();
                     // Lets the signaling thread tell the viewer, so it does not keep reconnecting.
                     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -479,7 +616,13 @@ pub fn run(at_login: bool) -> Result<()> {
                 if app.backend.event(e) {
                     panel.render(&app);
                 } else {
+                    panel.release();
                     *flow = ControlFlow::Exit;
+                }
+            }
+            Event::UserEvent(UiEvent::LocalServersChanged(source)) => {
+                if let Some(page) = &panel.page {
+                    page.show_local_servers(source);
                 }
             }
             Event::UserEvent(UiEvent::Ipc(text)) => {
@@ -488,6 +631,8 @@ pub fn run(at_login: bool) -> Result<()> {
                     PageMessage::Ready => {
                         if let Some(page) = &mut panel.page {
                             page.ready = true;
+                            // A reload starts with an empty list and needs a fresh browse.
+                            page.discovery = None;
                         }
                         // The language may have changed while the page was loading.
                         panel.relabel();
@@ -525,6 +670,11 @@ pub fn run(at_login: bool) -> Result<()> {
                     PageMessage::Minimize => {
                         if let Some(window) = panel.window() { native::minimize_panel(window); }
                     }
+                    PageMessage::FindLocalServers => {
+                        if let Some(page) = &mut panel.page {
+                            page.discovery = None;
+                        }
+                    }
                     // Only the folder the host named; the page cannot choose another.
                     PageMessage::OpenFolder => {
                         if let Some((_, Some(folder))) = indicator.as_ref().and_then(|i| i.note.clone()) {
@@ -551,7 +701,35 @@ pub fn run(at_login: bool) -> Result<()> {
             }
             _ => {}
         }
+        let badge = app.backend.local().state.as_ref().and_then(crate::local_server::State::badge);
+        if badge != tray_badge {
+            if let Ok(icon) = tray_icon(badge) {
+                #[cfg(windows)]
+                let _ = tray.set_icon(Some(icon));
+                #[cfg(target_os = "macos")]
+                let _ = tray.set_icon_with_as_template(Some(icon), native::TRAY_TEMPLATE);
+            }
+            tray_badge = badge;
+        }
+        let local = app.backend.local().state.as_ref();
+        let tooltip_key = match badge {
+            Some(true) => Some("local.running"),
+            Some(false) => Some("local.failed"),
+            None if local.is_some_and(|s| s.own && !s.enabled) => Some("local.stopped"),
+            None if app.status.as_ref().is_some_and(|s| s.online) => Some("status.online"),
+            None => None,
+        };
+        let tooltip = tooltip_key.map_or_else(|| crate::product::NAME.to_owned(), |key| {
+            format!("{} · {}", crate::product::NAME, t(key))
+        });
+        if tooltip != tray_tooltip {
+            let _ = tray.set_tooltip(Some(tooltip.clone()));
+            #[cfg(target_os = "macos")]
+            tray_status.set_text(tooltip_key.map_or_else(|| crate::product::NAME.to_owned(), t));
+            tray_tooltip = tooltip;
+        }
         if *flow != ControlFlow::Exit {
+            panel.sync_discovery(&proxy);
             *flow = panel.close_at.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         }
     })
@@ -584,6 +762,33 @@ pub fn indicator_test() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_server_updates_keep_one_pending_snapshot_sorted_and_capped() {
+        let mut found = LocalServers::default();
+        let slot = LocalServersSnapshot::default();
+        for i in (0..40).rev() {
+            assert!(found.update(Change::Update {
+                instance: format!("instance-{}", 40 - i),
+                server: Some(crate::discovery::Server {
+                    name: format!("Hub {i:02}"),
+                    address: deskway_server_connection::Address::parse("https://hub.local:18499").unwrap(),
+                }),
+            }));
+            assert_eq!(slot.replace(found.snapshot()), i == 39);
+        }
+        let names: Vec<_> = slot.take().unwrap().into_iter().map(|server| server.name).collect();
+        assert_eq!(names, (0..32).map(|i| format!("Hub {i:02}")).collect::<Vec<_>>());
+        assert!(slot.take().is_none());
+
+        assert!(found.update(Change::Update { instance: "instance-40".into(), server: None }));
+        assert!(slot.replace(found.snapshot()));
+        assert_eq!(slot.take().unwrap().last().unwrap().name, "Hub 32");
+
+        assert!(found.update(Change::Reset));
+        assert!(slot.replace(found.snapshot()));
+        assert!(slot.take().unwrap().is_empty());
+    }
 
     #[test]
     fn every_window_takes_the_design_and_page_code_from_their_one_file() {

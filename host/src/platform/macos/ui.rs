@@ -95,8 +95,8 @@ pub const TRAY_TEMPLATE: bool = true;
 /// A transfer note has a window of its own, which stays in the remote stream.
 pub const NOTE_WINDOW: bool = true;
 
-pub fn tray_rgba(size: u32) -> Vec<u8> {
-    crate::icon::rgba(size, true)
+pub fn tray_size() -> u32 {
+    32
 }
 
 pub fn configure_event_loop<T: 'static>(event_loop: &mut EventLoop<T>) {
@@ -489,6 +489,12 @@ pub fn open_login_settings() {
 /// Shows a folder in Finder.
 pub fn open_folder(path: &str) {
     let _ = std::process::Command::new("open").arg(path).spawn();
+}
+
+pub fn open_browser(url: &str) -> anyhow::Result<()> {
+    let status = std::process::Command::new("/usr/bin/open").arg(url).status()?;
+    anyhow::ensure!(status.success(), "cannot open the system browser");
+    Ok(())
 }
 
 #[cfg(test)]

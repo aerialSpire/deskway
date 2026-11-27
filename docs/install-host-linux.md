@@ -111,6 +111,12 @@ sudo -H -u deskway-host /usr/local/bin/deskway-host enroll \
   --server https://desk.example.net --user me --name "Build server"
 ```
 
+For a [local server](self-hosting.md#local-mode), pass the whole
+`https://name.local:port#ca=<64 hex digits>` address to `--server`. Use the fingerprint
+from the hub's startup log. Enrollment saves the verified root in the Host's state directory
+for its own connections. To open the hub in a browser on this computer, follow the hub's
+[certificate guide](self-hosting.md#local-mode).
+
 Enrollment saves the computer's sign-in and exits. The host and enrollment use the same state
 directory, `$XDG_STATE_HOME/deskway` or `~/.local/state/deskway` under the host user. The commands
 here use the home-directory default. If you set `XDG_STATE_HOME`, use the same absolute value

@@ -86,7 +86,7 @@ type mdnsServiceRecords struct {
 func newMDNSRecords(host, name, fingerprint string, https, guide uint16) mdnsServiceRecords {
 	return mdnsServiceRecords{
 		https: https,
-		txt:   []string{"v=1", "fp=" + fingerprint, "name=" + name, "guide=" + strconv.Itoa(int(guide))},
+		txt:   []string{"v=1", "fp=" + fingerprint, "name=" + strings.TrimSpace(name), "guide=" + strconv.Itoa(int(guide))},
 		host:  dnsmessage.MustNewName(host + ".local."),
 		name:  dnsmessage.MustNewName(host + "." + mdnsService),
 		ptr:   dnsmessage.MustNewName(mdnsService),
@@ -315,6 +315,20 @@ func (m *MDNS) advertisedIPs(iface *net.Interface, networks []netip.Prefix) []ne
 		}
 	}
 	return ips
+}
+
+// privateIPv4 returns a current LAN address from one of the interfaces we joined.
+func (m *MDNS) privateIPv4() netip.Addr {
+	if m != nil {
+		for _, sk := range m.sockets {
+			for _, ip := range m.advertisedIPs(sk.iface, interfaceNetworks(sk.iface)) {
+				if ip.Is4() && ip.IsPrivate() {
+					return ip
+				}
+			}
+		}
+	}
+	return netip.Addr{}
 }
 
 // StartMDNS announces the service and starts answering queries. A failed interface is reported

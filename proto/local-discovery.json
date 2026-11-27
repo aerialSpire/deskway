@@ -1,0 +1,25 @@
+{
+  "service": "_deskway._tcp.local.",
+  "txt": {
+    "meaning": "DNS-SD TXT record for a local Deskway server.",
+    "fields": {
+      "v": { "type": "string", "optional": false, "enum": ["1"], "meaning": "Discovery protocol version." },
+      "fp": { "type": "string", "optional": false, "pattern": "^[0-9A-Fa-f]{64}$", "meaning": "SHA-256 fingerprint of the DER-encoded root certificate, in hexadecimal." },
+      "name": { "type": "string", "optional": false, "minLength": 1, "maxLength": 40, "meaning": "UTF-8 display name measured in Unicode scalar values, with no leading or trailing whitespace and no control characters." },
+      "guide": { "type": "string", "optional": true, "pattern": "^[0-9]+$", "meaning": "Plain HTTP certificate guide port in decimal, from 1 to 65535." }
+    }
+  },
+  "records": {
+    "srv": {
+      "host": "sean-asus.local.",
+      "port": 18499
+    },
+    "txt": {
+      "v": "1",
+      "fp": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "客廳",
+      "guide": "18498"
+    }
+  },
+  "address": "https://sean-asus.local:18499#ca=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

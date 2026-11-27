@@ -1,0 +1,19 @@
+[package]
+name = "deskway-server-connection"
+version = "0.1.2"
+edition = "2021"
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow = "1"
+deskway-wire = { path = "../wire" }
+native-tls = "0.2"
+pem-rfc7468 = { version = "0.7", features = ["std"] }
+tungstenite = { version = "0.27", features = ["native-tls"] }
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+url = "2"
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

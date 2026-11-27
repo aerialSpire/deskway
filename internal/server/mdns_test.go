@@ -1,10 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"net"
 	"net/netip"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -32,13 +34,56 @@ func TestHostnameLabel(t *testing.T) {
 }
 
 func TestMDNSAnswers(t *testing.T) {
-	fingerprint := strings.Repeat("a", 64)
-	records := newMDNSRecords(hostnameLabel("SEAN_ASUS"), "客廳", fingerprint, 18499, 18498)
+	var contract struct {
+		Service string
+		TXT     struct {
+			Fields map[string]struct {
+				Type     string
+				Optional *bool
+			}
+		}
+		Records struct {
+			SRV struct {
+				Host string
+				Port uint16
+			}
+			TXT map[string]string
+		}
+	}
+	data, err := os.ReadFile("../../proto/local-discovery.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &contract); err != nil {
+		t.Fatal(err)
+	}
+	srv, txt := contract.Records.SRV, contract.Records.TXT
+	for key, field := range contract.TXT.Fields {
+		if field.Type != "string" || field.Optional == nil {
+			t.Fatalf("invalid TXT field definition for %q: %+v", key, field)
+		}
+		if _, present := txt[key]; !present && !*field.Optional {
+			t.Fatalf("test vector is missing required TXT field %q", key)
+		}
+	}
+	for key := range txt {
+		if _, defined := contract.TXT.Fields[key]; !defined {
+			t.Fatalf("test vector uses undefined TXT field %q", key)
+		}
+	}
+	guide, err := strconv.ParseUint(txt["guide"], 10, 16)
+	if err != nil || guide == 0 {
+		t.Fatalf("invalid guide port in test vector: %q", txt["guide"])
+	}
+	records := newMDNSRecords(hostnameLabel("SEAN_ASUS"), " "+txt["name"]+" ", txt["fp"], srv.Port, uint16(guide))
+	if got := records.ptr.String(); got != contract.Service {
+		t.Fatalf("service type = %q, want %q", got, contract.Service)
+	}
 	v4 := netip.MustParseAddr("192.168.1.2")
 	v6 := netip.MustParseAddr("fd00::2")
 	ips := func() []netip.Addr { return []netip.Addr{v4, v6} }
-	instance := "sean-asus._deskway._tcp.local."
-	host := "sean-asus.local."
+	host := srv.Host
+	instance := strings.TrimSuffix(host, ".local.") + "." + contract.Service
 	for _, tt := range []struct {
 		name       string
 		kind       dnsmessage.Type
@@ -48,8 +93,8 @@ func TestMDNSAnswers(t *testing.T) {
 		additional int
 	}{
 		{"_Deskway._TCP.local.", dnsmessage.TypePTR, dnsmessage.ClassINET, false, &dnsmessage.PTRResource{PTR: dnsmessage.MustNewName(instance)}, 4},
-		{instance, dnsmessage.TypeSRV, dnsmessage.ClassINET, false, &dnsmessage.SRVResource{Port: 18499, Target: dnsmessage.MustNewName(host)}, 3},
-		{instance, dnsmessage.TypeTXT, dnsmessage.ClassINET, false, &dnsmessage.TXTResource{TXT: []string{"v=1", "fp=" + fingerprint, "name=客廳", "guide=18498"}}, 0},
+		{instance, dnsmessage.TypeSRV, dnsmessage.ClassINET, false, &dnsmessage.SRVResource{Port: srv.Port, Target: dnsmessage.MustNewName(host)}, 3},
+		{instance, dnsmessage.TypeTXT, dnsmessage.ClassINET, false, &dnsmessage.TXTResource{TXT: []string{"v=" + txt["v"], "fp=" + txt["fp"], "name=" + txt["name"], "guide=" + txt["guide"]}}, 0},
 		{host, dnsmessage.TypeA, dnsmessage.ClassINET, false, &dnsmessage.AResource{A: v4.As4()}, 0},
 		{host, dnsmessage.TypeAAAA, dnsmessage.ClassINET | mdnsClassBit, false, &dnsmessage.AAAAResource{AAAA: v6.As16()}, 0},
 		{host, dnsmessage.TypeA, dnsmessage.ClassINET, true, &dnsmessage.AResource{A: v4.As4()}, 0},

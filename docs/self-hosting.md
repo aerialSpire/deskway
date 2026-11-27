@@ -5,6 +5,20 @@
 Run the server on a computer on your home or office network. Local mode uses direct
 connections on that network, with no domain, public server, STUN or TURN.
 
+On Windows and macOS, open Deskway Host and choose **Run local service**. Select
+**Complete setup** and set the admin password in your browser. The Host joins its own
+server automatically, and **View** opens the account in your default browser. Accept the
+system's certificate prompt when asked. Starting also turns on automatic startup and
+sleep prevention. **Stop** and turning off the Settings switch open the same confirmation.
+The checkbox is off by default, so the account, computers and local address are available
+the next time you start the service. Choose **Also delete the local service data** and
+**Stop and delete** to erase the accounts, computers and approved devices and sign this
+Host out of its hub. Starting again requires setup.
+The Host moves the data folder aside before applying these changes. If the move fails, the
+data and settings stay intact. The Host retries any leftover file cleanup at startup.
+
+On a headless machine, run the server yourself:
+
 ```sh
 deskway-server -local -listen :18499 -guide-listen :18498 -local-name "Office computer"
 ```
@@ -16,7 +30,10 @@ all LAN interfaces. The default `-listen 127.0.0.1:8080` is refused in local mod
 `-local-name` defaults to the computer's hostname and accepts up to 40 UTF-8 characters.
 Omit `-domain`, `-tls-cert`, `-tls-key`, `-public-ip` and `-stun` in local mode.
 
-On a phone, open the normalized `.local` hostname, for example `http://sean-asus.local:18498/`
+In the signed-in web client, use **Scan to open** to share the certificate guide's plain HTTP
+address as a QR code when the hub has a private IPv4 address.
+
+You can also open the normalized `.local` hostname, for example `http://sean-asus.local:18498/`
 for a computer named `SEAN_ASUS`. Normalization lowercases ASCII letters and replaces runs of
 unsupported characters with a hyphen. You can also use the server's LAN IP with the same port.
 mDNS answers use current addresses for interfaces it joined at startup. Restart the server
@@ -32,6 +49,22 @@ to install the certificate, then choose **Continue** to open Deskway over HTTPS.
 Run `deskway-server admin-link -data FILE -url https://sean-asus.local:18499` with your hub's
 normalized hostname to set up the admin. Once an admin exists, add `-login` to issue a one-time
 link that signs in the browser without changing the password. Open it within two minutes.
+
+The Host uses `admin-link -enroll` to join the hub. This command issues a single-use
+computer enrollment token for the existing admin. The token is valid for ten minutes
+and approves the computer as part of enrollment. Keep admin links private.
+
+To join from the Deskway Host panel, choose the local server under **Found on this network**.
+The panel fills **Server address** with the full address and selects a single result automatically.
+To enter the address yourself, use `https://sean-asus.local:18499#ca=<64 hex digits>` with the
+fingerprint from the hub's startup log. Paste it into **Server address**, pass it to
+`deskway-host enroll --server`, or run `deskway login '<address>' --user me`. Confirm the usual
+six-digit approval in a signed-in browser.
+
+Host and CLI verify and keep the pinned root automatically. Host also adds the root for
+browsers on Windows and macOS. On macOS, approve the system prompt to enable browser
+trust. Host removes that certificate from the store on sign-out. Linux Host and the CLI
+keep trust within their own state.
 
 ## Quick install
 

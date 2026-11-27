@@ -63,7 +63,8 @@ export const topbar = (...end) => h('header', { class: 'topbar' },
   h('div', { class: 'brand' }, 'Deskway'),
   h('div', { class: 'topbar-end' },
     h('button', {
-      class: 'btn icon', type: 'button', 'aria-label': t('scanOpen.title'), 'aria-haspopup': 'dialog', onclick: scanOpenDialog,
+      class: 'btn icon', type: 'button', 'aria-label': t('scanOpen.title'), 'aria-haspopup': 'dialog',
+      onclick: () => scanOpenDialog(state.me),
     }, svg(ICONS.qr)),
     ...end));
 

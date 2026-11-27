@@ -15,6 +15,8 @@
 // --server-exe and --server-state add the check that a server restart keeps the session.
 // --areas previous-protocol uses a fresh account with a previous-version host.
 // --areas vitals uses a desktop host with workspace access and saves list and detail screenshots.
+// Run --areas scan-open against fresh public-mode and local-mode test servers, each with its own
+// --url, --server-exe and --server-state. Use a local-mode server with a private IPv4 address.
 // --areas relay --relay-tls uses only TURN over the HTTPS port. Start the host with
 // DESKWAY_TEST_RELAY=tls and give --url the HTTPS address advertised for TURN.
 // Silently drop the host's UDP and TCP traffic to the server's usual TURN port.
@@ -36,7 +38,7 @@ const AREAS = ['auth', 'session', 'transfer', 'clipboard', 'keyboard', 'input', 
 // Run only when named. clipboard-host uses the real clipboard of the computer running the
 // tests; relay needs a fresh member account and a host started for it; first-use runs its
 // own local server and Windows hosts.
-const OPT_IN = ['clipboard-host', 'relay', 'host-restart', 'first-use', 'previous-protocol', 'windows-workspace', 'vitals'];
+const OPT_IN = ['clipboard-host', 'relay', 'host-restart', 'first-use', 'previous-protocol', 'windows-workspace', 'vitals', 'scan-open'];
 const opts = options();
 const modules = Object.fromEntries(await Promise.all([...AREAS, ...OPT_IN].map(async (name) => [name, (await import(`./${name}.test.mjs`)).area])));
 const wanted = new Set();

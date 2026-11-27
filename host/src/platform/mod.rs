@@ -226,9 +226,12 @@ platform! {
 
     // ---- system ----
     /// Start with the computer or not.
-    fn autostart(on: bool) => AutoStart;
+    fn autostart(on: bool) => AutoStart, keep autostart;
     /// The language of the notes shown at this computer: a catalog code, or None for the system's.
     fn language(code: Option<String>) => Language, keep language;
+    /// Applies the enrollment's browser trust using the agent's protected certificate files.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn sync_server_root() => SyncServerRoot, keep server_root;
     }
 }
 
@@ -343,6 +346,7 @@ pub enum PlatformEvent {
     SnapshotFailed { id: String },
     /// The input sent before `input_done(id)` has been carried out.
     InputDone { id: String },
+    ServerRootSynced { error: Option<String> },
     /// Every display attached.
     DisplaysChanged(Vec<DisplayInfo>),
     /// The desktop that has input now.

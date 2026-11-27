@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -20,6 +21,9 @@ use crate::i18n::t;
 use super::net::{AGENT_SERVICE, NET_SERVICE};
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+pub const TRUST_DIR: &str = "server-trust";
+const SERVER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/deskway-server.bin"));
+const FIREWALL_RULE: &str = "Deskway Local Service";
 
 pub fn program_dir() -> PathBuf {
     crate::platform::known_folder(crate::platform::KnownFolder::ProgramFiles).join("Deskway")
@@ -145,18 +149,28 @@ pub fn owner_of(path: &Path) -> Result<String> {
 
 const ADMINS: &str = "S-1-5-32-544";
 const SYSTEM: &str = "S-1-5-18";
+const PROGRAM_SDDL: &str = "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)(A;OICI;FRFX;;;SU)";
+const PROGRAM_FILE_SDDL: &str = "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)(A;;FRFX;;;SU)";
+
+fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+}
+
+fn move_untrusted(path: &Path) -> Result<()> {
+    let aside = path.with_extension(format!("untrusted-{}", std::process::id()));
+    eprintln!("moving untrusted {} to {}", path.display(), aside.display());
+    std::fs::rename(path, aside).with_context(|| format!("move aside {}", path.display()))
+}
 
 /// A folder only SYSTEM or administrators could have made. Anything else found at that path
 /// (for example made in advance by a normal user, with files they still own inside) is moved
 /// aside, never adopted.
 fn fresh_dir(path: &Path, sddl: &str) -> Result<()> {
-    if std::fs::symlink_metadata(path).is_ok() {
-        let owner = owner_of(path)?;
-        let is_link = std::fs::symlink_metadata(path)?.file_type().is_symlink();
-        if is_link || (owner != ADMINS && owner != SYSTEM) {
-            let aside = path.with_extension(format!("untrusted-{}", std::process::id()));
-            eprintln!("{} belongs to {owner}; moving it to {}", path.display(), aside.display());
-            std::fs::rename(path, &aside).with_context(|| format!("move aside {}", path.display()))?;
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if is_reparse_point(&meta) || !meta.is_dir() || !matches!(owner_of(path)?.as_str(), ADMINS | SYSTEM) {
+            move_untrusted(path)?;
         }
     }
     if std::fs::symlink_metadata(path).is_err() {
@@ -177,7 +191,7 @@ fn fresh_dir(path: &Path, sddl: &str) -> Result<()> {
 /// permissions down to everything inside.
 fn protect(path: &Path, sddl: &str) -> Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() {
+    if is_reparse_point(&meta) {
         bail!("{} is a link, refusing to use it", path.display());
     }
     unsafe {
@@ -203,6 +217,91 @@ fn protect(path: &Path, sddl: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Both the directory and executable must deny ordinary users write and replacement access.
+pub(crate) fn check_server_program(exe: &Path) -> Result<()> {
+    let dir = program_dir();
+    anyhow::ensure!(exe == dir.join(crate::local_server::SERVER_EXE), "unexpected local server path: {}", exe.display());
+    check_program_acl(&dir, true)?;
+    check_program_acl(exe, false)
+}
+
+fn check_program_acl(path: &Path, directory: bool) -> Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        !is_reparse_point(&meta) && if directory { meta.is_dir() } else { meta.is_file() },
+        "unsafe local server path: {}", path.display()
+    );
+    unsafe {
+        let mut owner = PSID::default();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        let mut dacl = std::ptr::null_mut();
+        let status = GetNamedSecurityInfoW(&HSTRING::from(path.as_os_str()), SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, Some(&mut owner), None, Some(&mut dacl), None, &mut sd);
+        anyhow::ensure!(status == ERROR_SUCCESS, "read permissions on {}: {status:?}", path.display());
+        let safe = trusted_program_acl(owner, dacl);
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        anyhow::ensure!(safe?, "ordinary users can modify {}", path.display());
+    }
+    Ok(())
+}
+
+fn trusted_program_acl(owner: PSID, dacl: *const ACL) -> Result<bool> {
+    use windows::Win32::Storage::FileSystem::{FILE_GENERIC_EXECUTE, FILE_GENERIC_READ};
+    use windows::Win32::System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE};
+    unsafe {
+        let trusted = |sid| IsWellKnownSid(sid, WinBuiltinAdministratorsSid).as_bool()
+            || IsWellKnownSid(sid, WinLocalSystemSid).as_bool();
+        if !trusted(owner) || dacl.is_null() {
+            return Ok(false);
+        }
+        let read_execute = FILE_GENERIC_READ.0 | FILE_GENERIC_EXECUTE.0 | GENERIC_READ.0 | GENERIC_EXECUTE.0;
+        for index in 0..(*dacl).AceCount {
+            let mut ace = std::ptr::null_mut();
+            GetAce(dacl, u32::from(index), &mut ace)?;
+            let Some(ace) = std::ptr::NonNull::new(ace) else {
+                return Ok(false);
+            };
+            match u32::from(ace.cast::<ACE_HEADER>().as_ref().AceType) {
+                ACCESS_DENIED_ACE_TYPE => {}
+                ACCESS_ALLOWED_ACE_TYPE => {
+                    let ace = ace.cast::<ACCESS_ALLOWED_ACE>().as_ref();
+                    let sid = PSID(std::ptr::addr_of!(ace.SidStart).cast_mut().cast());
+                    if ace.Mask & !read_execute != 0 && !trusted(sid) {
+                        return Ok(false);
+                    }
+                }
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn program_acl_requires_a_trusted_owner_and_blocks_write_and_replacement() {
+    let safe = |sddl: &str| unsafe {
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(&HSTRING::from(sddl), SDDL_REVISION_1, &mut sd, None).unwrap();
+        let mut owner = PSID::default();
+        let mut dacl = std::ptr::null_mut();
+        let mut defaulted = windows::core::BOOL(0);
+        let mut present = windows::core::BOOL(0);
+        GetSecurityDescriptorOwner(sd, &mut owner, &mut defaulted).unwrap();
+        GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted).unwrap();
+        let result = trusted_program_acl(owner, dacl).unwrap();
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        result
+    };
+    assert!(safe(PROGRAM_SDDL));
+    assert!(safe(PROGRAM_FILE_SDDL));
+    assert!(!safe("O:BUD:P(A;;FA;;;BA)(A;;FRFX;;;BU)"));
+    assert!(!safe("O:BAD:P(A;;FA;;;BA)(A;;GW;;;BU)"));
+    assert!(!safe("O:BAD:P(A;;FA;;;BA)(A;;0x40;;;AU)")); // FILE_DELETE_CHILD
+    assert!(!safe("O:BAD:P(A;;FA;;;BA)(A;OIIO;WD;;;AU)")); // inherited WRITE_DAC
+    assert!(!safe("O:BA")); // missing DACL
 }
 
 /// Data folder: SYSTEM and administrators full control, the network service may change files,
@@ -232,6 +331,19 @@ pub fn secure_service_dir() -> Result<()> {
     protect(&dir.join("service"), &service_sddl()?)
 }
 
+/// Only the elevated enrollment can authorize a root. The network service can read it for TLS.
+pub fn check_trust_dir(dir: &Path) -> Result<()> {
+    use std::os::windows::fs::MetadataExt;
+    use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    let owner = owner_of(dir)?;
+    let meta = std::fs::symlink_metadata(dir)?;
+    anyhow::ensure!(
+        (owner == ADMINS || owner == SYSTEM) && meta.is_dir() && meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 == 0,
+        "invalid permissions on {}", dir.display()
+    );
+    Ok(())
+}
+
 fn set_sid_and_privileges(svc: &windows_service::service::Service, restricted: bool, privileges: &[&str]) -> Result<()> {
     unsafe {
         let h = SC_HANDLE(svc.raw_handle() as _);
@@ -256,29 +368,69 @@ fn create_or_update(m: &ServiceManager, info: &ServiceInfo, description: &str) -
         Err(_) => m.create_service(info, access)?,
     };
     svc.set_description(description)?;
-    svc.update_failure_actions(ServiceFailureActions {
+    restore_recovery(&svc)?;
+    Ok(svc)
+}
+
+fn recovery_actions() -> ServiceFailureActions {
+    ServiceFailureActions {
         reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(24 * 3600)),
         reboot_msg: None,
         command: None,
         actions: Some(vec![ServiceAction { action_type: ServiceActionType::Restart, delay: Duration::from_secs(5) }; 3]),
-    })?;
-    Ok(svc)
+    }
+}
+
+fn restore_recovery(svc: &windows_service::service::Service) -> Result<()> {
+    svc.update_failure_actions(recovery_actions()).context("restore service recovery actions")
+}
+
+fn restart_with_recovery(restore: impl FnOnce(ServiceFailureActions) -> Result<()>, start: impl FnOnce() -> Result<()>) -> Result<()> {
+    restore(recovery_actions())?;
+    start()
+}
+
+#[cfg(test)]
+#[test]
+fn reopening_stopped_services_restores_scm_recovery_before_starting() {
+    let restored = std::cell::Cell::new(false);
+    restart_with_recovery(|policy| {
+        let actions = policy.actions.unwrap();
+        assert_eq!(actions.len(), 3);
+        assert!(actions.iter().all(|action| matches!(action.action_type, ServiceActionType::Restart)
+            && action.delay == Duration::from_secs(5)));
+        assert!(matches!(policy.reset_period, ServiceFailureResetPeriod::After(d) if d == Duration::from_secs(24 * 3600)));
+        restored.set(true);
+        Ok(())
+    }, || {
+        assert!(restored.get());
+        Ok(())
+    }).unwrap();
+    assert!(restart_with_recovery(|_| anyhow::bail!("cannot restore"), || panic!("started without recovery")).is_err());
 }
 
 /// Stops a service and waits until it has. Its recovery actions go first: a version that ends
 /// without reporting Stopped looks crashed, and the service manager would start it again 5 s
 /// later, in the middle of an install or an uninstall. Installing sets them again.
-fn stop_and_wait(m: &ServiceManager, name: &str) {
-    if let Ok(s) = m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::CHANGE_CONFIG) {
-        let _ = s.update_failure_actions(ServiceFailureActions { reset_period: ServiceFailureResetPeriod::Never, reboot_msg: None, command: None, actions: Some(Vec::new()) });
-        let _ = s.stop();
-        for _ in 0..50 {
-            if s.query_status().map(|st| st.current_state == ServiceState::Stopped).unwrap_or(true) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
+fn stop_and_wait(m: &ServiceManager, name: &str) -> Result<()> {
+    let s = match m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::CHANGE_CONFIG) {
+        Ok(s) => s,
+        Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST.0 as i32) => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("open {name}")),
+    };
+    let _ = s.update_failure_actions(ServiceFailureActions { reset_period: ServiceFailureResetPeriod::Never, reboot_msg: None, command: None, actions: Some(Vec::new()) });
+    match s.query_status()?.current_state {
+        ServiceState::Stopped => return Ok(()),
+        ServiceState::StopPending => {}
+        _ => { s.stop().with_context(|| format!("stop {name}"))?; }
     }
+    for _ in 0..50 {
+        if s.query_status()?.current_state == ServiceState::Stopped {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    bail!("{name} did not stop");
 }
 
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Deskway";
@@ -399,6 +551,51 @@ pub fn set_autostart(on: bool) -> Result<()> {
     }
 }
 
+fn install_local_firewall(exe: &Path) -> Result<()> {
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = [0u16; 260];
+    let len = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    anyhow::ensure!(len > 0 && len < buffer.len(), "find the Windows system directory");
+    let netsh = PathBuf::from(String::from_utf16(&buffer[..len])?).join("netsh.exe");
+    let program = format!("program={}", exe.display());
+    let name = format!("name={FIREWALL_RULE}");
+    let _ = Command::new(&netsh)
+        .args(["advfirewall", "firewall", "delete", "rule", &name, &program])
+        .output()?;
+    let output = Command::new(netsh)
+        .args(["advfirewall", "firewall", "add", "rule", &name, &program, "dir=in", "action=allow", "profile=private", "enable=yes"])
+        .output()?;
+    anyhow::ensure!(output.status.success(), "add the local service firewall rule: {}", String::from_utf8_lossy(&output.stdout).trim());
+    Ok(())
+}
+
+fn remove_local_firewall(exe: &Path) -> Result<()> {
+    use windows::core::BSTR;
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows::Win32::NetworkManagement::WindowsFirewall::{INetFwPolicy2, NetFwPolicy2};
+    use windows::Win32::System::Com::*;
+
+    let remove = || -> Result<()> {
+        let policy: INetFwPolicy2 = unsafe { CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER)? };
+        let name = BSTR::from(FIREWALL_RULE);
+        let rules = unsafe { policy.Rules()? };
+        let rule = match unsafe { rules.Item(&name) } {
+            Ok(rule) => rule,
+            Err(e) if e.code() == ERROR_FILE_NOT_FOUND.to_hresult() => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let program = unsafe { rule.ApplicationName()? }.to_string();
+        if program.eq_ignore_ascii_case(&exe.to_string_lossy()) {
+            unsafe { rules.Remove(&name)? };
+        }
+        Ok(())
+    };
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+    let result = remove();
+    unsafe { CoUninitialize() };
+    result.context("remove the local service firewall rule")
+}
+
 /// Opened by hand after automatic start was turned off: it starts with Windows again, and
 /// runs now. Administrator.
 pub fn start_services() -> Result<()> {
@@ -408,11 +605,26 @@ pub fn start_services() -> Result<()> {
 
 /// Starts both services, the network one first, unless one already runs.
 fn run_services(m: &ServiceManager) -> Result<()> {
+    let mut errors = Vec::new();
     for name in [NET_SERVICE, AGENT_SERVICE] {
-        let s = m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
-        if s.query_status()?.current_state != ServiceState::Running {
-            s.start(&[] as &[&str]).with_context(|| format!("start {name}"))?;
+        let start = || -> Result<()> {
+            let s = m.open_service(name, ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)?;
+            restart_with_recovery(
+                |actions| s.update_failure_actions(actions).context("restore service recovery actions"),
+                || {
+                    if s.query_status()?.current_state != ServiceState::Running {
+                        s.start(&[] as &[&str])?;
+                    }
+                    Ok(())
+                },
+            )
+        };
+        if let Err(e) = start() {
+            errors.push(format!("start {name}: {e:#}"));
         }
+    }
+    if !errors.is_empty() {
+        bail!(errors.join("\n"));
     }
     Ok(())
 }
@@ -453,12 +665,29 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
     // The panels first, while the service they listen to still runs.
     close_panels(&m);
-    stop_and_wait(&m, AGENT_SERVICE);
-    stop_and_wait(&m, NET_SERVICE);
-    std::fs::create_dir_all(&dir)?;
+    let _ = stop_and_wait(&m, AGENT_SERVICE);
+    let _ = stop_and_wait(&m, NET_SERVICE);
+    if dir.symlink_metadata().is_ok() && check_program_acl(&dir, true).is_err() {
+        move_untrusted(&dir)?;
+    }
+    fresh_dir(&dir, PROGRAM_SDDL)?;
     if src != exe {
         release(&[exe.clone()], keep);
-        std::fs::copy(&src, &exe).context("copy program")?;
+        crate::config::write_private(&exe, &std::fs::read(&src)?).context("copy program")?;
+        protect(&exe, PROGRAM_FILE_SDDL)?;
+    }
+    let server = dir.join(crate::local_server::SERVER_EXE);
+    if !SERVER.is_empty() {
+        crate::config::write_private(&server, SERVER).context("write the bundled local server")?;
+        protect(&server, PROGRAM_FILE_SDDL)?;
+        check_server_program(&server)?;
+    } else if let Err(e) = std::fs::remove_file(&server) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e).context("remove the previous local server program");
+        }
+    }
+    if server.is_file() {
+        install_local_firewall(&server)?;
     }
 
     let data = crate::service::machine_dir();
@@ -504,11 +733,8 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
     fresh_dir(&service_dir, &service_sddl()?)?;
     // Signing in is the panel's (`sign_in`): installing only installs. An update keeps the
     // service's own data, which only administrators and the service can change.
-    let path = data.join("host.json");
-    if let Some(lang) = lang.filter(|l| crate::i18n::Lang::parse(l).is_some() && path.exists()) {
-        let mut cfg: crate::config::Config = serde_json::from_slice(&std::fs::read(&path)?)?;
-        cfg.lang = Some(lang);
-        crate::config::write_private(&path, &serde_json::to_vec_pretty(&cfg)?)?;
+    if let Some(lang) = lang.filter(|l| crate::i18n::Lang::parse(l).is_some() && crate::config::Config::load_from(&data).is_ok()) {
+        crate::config::Config::update_in(&data, |cfg| cfg.lang = Some(lang))?;
     }
     // Settings left in the user's profile would be confusing: the service no longer reads them.
     set_run(Some(&format!("\"{}\" --at-login", exe.display())))?;
@@ -525,12 +751,27 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
 /// own folder (`from`): it is settled in the service's folder, which the service is waiting on
 /// (`Config::settle_in`: the computer signed out there comes back, or a new one starts clean).
 /// Administrator.
-pub fn sign_in(from: &std::path::Path) -> Result<()> {
+pub fn sign_in(from: &Path) -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
     let new = crate::config::Config::load_from(from).context("read the sign-in")?;
+    new.connection().context("verify the sign-in's server root")?;
     crate::config::Config::settle_in(&crate::service::machine_dir(), new).map(drop)
+}
+
+/// The consent prompt authorizes exactly the local server root shown by this panel.
+pub fn authorize_local_root(pin: &str) -> Result<()> {
+    anyhow::ensure!(is_elevated(), t("err.need_admin"));
+    let dir = crate::service::machine_dir();
+    anyhow::ensure!(crate::settings::local_forces_settings(&dir), t("local.failed"));
+    let pem = std::fs::read_to_string(crate::local_server::own_root_path(&dir))?;
+    let der = deskway_server_connection::root_der(&pem)?;
+    anyhow::ensure!(wire::crypto::hex(&wire::crypto::sha256(&der)) == pin, "the local root has changed");
+    let trust = dir.join(TRUST_DIR);
+    fresh_dir(&trust, &service_sddl()?)?;
+    check_trust_dir(&trust)?;
+    crate::config::write_private(&trust.join(crate::platform::HUB_ROOT), &der)
 }
 
 /// Signs the installed service out: the services start again, waiting for a sign-in. The
@@ -540,12 +781,98 @@ pub fn sign_out() -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
-    crate::config::use_dir(crate::service::machine_dir());
+    let dir = crate::service::machine_dir();
+    crate::config::use_dir(dir.clone());
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    stop_and_wait(&m, AGENT_SERVICE);
-    stop_and_wait(&m, NET_SERVICE);
+    let cleanup = stop_services(&m)
+        .and_then(|()| disable_local(&dir))
+        .and_then(|()| remove_root_and_sign_out(&dir));
+    restart_after_cleanup(&m, cleanup)
+}
+
+pub fn start_local(switch: bool, owner: String) -> Result<()> {
+    use crate::{config::Config, local_server::{is_own, Preferences}};
+
+    anyhow::ensure!(is_elevated(), t("err.need_admin"));
+    let dir = crate::service::machine_dir();
+    crate::config::use_dir(dir.clone());
+    check_server_program(&program_dir().join(crate::local_server::SERVER_EXE))?;
+    let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let cleanup = (|| {
+        stop_services(&m)?;
+        let mut setting = Config::local_service(&dir)?.unwrap_or_default();
+        if setting.enabled {
+            return Ok(());
+        }
+        let previous = Preferences::read(&dir, autostart().context("read automatic startup")?)?;
+        if Config::load_from(&dir).is_ok_and(|cfg| !is_own(&dir, &cfg.server)) {
+            anyhow::ensure!(switch, t("local.leave_first"));
+            remove_root_and_sign_out(&dir)?;
+        }
+        setting.enable_for_panel(&dir, previous, owner)?;
+        set_autostart(true)
+    })();
+    restart_after_cleanup(&m, cleanup)
+}
+
+pub fn stop_local_and_delete() -> Result<()> {
+    if !is_elevated() {
+        bail!(t("err.need_admin"));
+    }
+    let dir = crate::service::machine_dir();
+    crate::config::use_dir(dir.clone());
+    use crate::local_server::{delete_stopped_data, localized};
+    let m = localized(ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).map_err(Into::into), "local.delete_stop_failed")?;
+    let cleanup = localized(stop_services(&m), "local.delete_stop_failed").and_then(|()| {
+        delete_stopped_data(&dir, |own| {
+            let clear = if own {
+                crate::platform::remove_installed_server_root(&dir).and(remove_sign_in_roots(&dir))
+            } else {
+                Ok(())
+            };
+            clear.and(disable_local(&dir))
+        })
+    });
+    cleanup.and(localized(run_services(&m), "local.delete_restart_failed"))
+}
+
+fn disable_local(dir: &Path) -> Result<()> {
+    if let Some(mut setting) = crate::config::Config::local_service(dir)?.filter(|s| s.enabled || s.previous.is_some()) {
+        setting.disable(dir, set_autostart)?;
+    }
+    Ok(())
+}
+
+fn remove_sign_in_roots(dir: &Path) -> Result<()> {
+    let root = crate::config::remove_sign_in_root(dir);
+    root.and(match std::fs::remove_file(dir.join(TRUST_DIR).join(crate::platform::HUB_ROOT)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("revoke the hub's browser trust"),
+    })
+}
+
+fn stop_and_remove_root(m: &ServiceManager, dir: &Path) -> Result<()> {
+    stop_services(m)?;
+    crate::platform::remove_installed_server_root(dir)
+}
+
+fn stop_services(m: &ServiceManager) -> Result<()> {
+    stop_and_wait(m, AGENT_SERVICE)?;
+    stop_and_wait(m, NET_SERVICE)
+}
+
+fn remove_root_and_sign_out(dir: &Path) -> Result<()> {
+    crate::platform::remove_installed_server_root(dir)?;
     crate::config::Config::sign_out()?;
-    run_services(&m)
+    remove_sign_in_roots(dir)
+}
+
+fn restart_after_cleanup(m: &ServiceManager, cleanup: Result<()>) -> Result<()> {
+    match (cleanup, run_services(m)) {
+        (Err(cleanup), Err(restart)) => Err(cleanup.context(format!("restart the services: {restart:#}"))),
+        (cleanup, restart) => cleanup.and(restart),
+    }
 }
 
 /// Removes the program folder. Whatever else still uses it is closed first; what cannot go
@@ -561,15 +888,20 @@ fn remove_program(keep: Option<u32>) {
 }
 
 /// `keep` is the uninstaller window that asked: it stays open to say it is done.
-pub fn uninstall(purge: bool, keep: Option<u32>) -> Result<()> {
+pub fn uninstall(purge: bool, purge_local: bool, keep: Option<u32>) -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    remove_local_firewall(&program_dir().join(crate::local_server::SERVER_EXE))?;
     // The panels first, while the service they listen to still runs.
     close_panels(&m);
+    let data = crate::service::machine_dir();
+    if let Err(e) = stop_and_remove_root(&m, &data).and_then(|()| disable_local(&data)) {
+        return restart_after_cleanup(&m, Err(e));
+    }
+    let hub = crate::local_server::data_dir(&data);
     for name in [AGENT_SERVICE, NET_SERVICE] {
-        stop_and_wait(&m, name);
         if let Ok(s) = m.open_service(name, ServiceAccess::DELETE) {
             s.delete()?;
         }
@@ -580,10 +912,35 @@ pub fn uninstall(purge: bool, keep: Option<u32>) -> Result<()> {
     }
     let _ = std::fs::remove_file(start_menu_link());
     remove_program(keep);
-    let data = crate::service::machine_dir();
     let _ = std::fs::remove_dir_all(data.join("service"));
-    if purge {
-        std::fs::remove_dir_all(&data).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })?;
+    if purge_local {
+        if crate::config::Config::load_from(&data).is_ok_and(|cfg| crate::local_server::is_own(&data, &cfg.server)) {
+            crate::config::Config::forget_in(&data)?;
+        }
+        crate::local_server::remove_data(&data)?;
     }
+    if purge {
+        if !purge_local && hub.exists() {
+            crate::config::Config::forget_in(&data)?;
+            for entry in std::fs::read_dir(&data)? {
+                let entry = entry?;
+                if entry.path() == hub || entry.file_name() == "host.json" {
+                    continue;
+                }
+                if entry.file_type()?.is_dir() {
+                    remove_data_dir(&entry.path())?;
+                } else {
+                    std::fs::remove_file(entry.path())?;
+                }
+            }
+        } else {
+            remove_data_dir(&data)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_data_dir(path: &Path) -> Result<()> {
+    std::fs::remove_dir_all(path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })?;
     Ok(())
 }

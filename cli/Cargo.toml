@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 deskway-wire = { path = "../crates/wire" }
 deskway-peer = { path = "../crates/peer" }
+deskway-server-connection = { path = "../crates/server" }
 str0m = { workspace = true }
 anyhow = "1"
 base64 = "0.22"
@@ -22,7 +23,10 @@ serde_json = "1"
 tiny_http = { version = "0.12", default-features = false }
 tungstenite = { version = "0.27", features = ["native-tls"] }
 ureq = { version = "2", default-features = false, features = ["native-tls", "json"] }
-native-tls = "0.2"
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

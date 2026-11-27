@@ -13,7 +13,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use windows::core::{HSTRING, PWSTR};
@@ -35,6 +35,7 @@ pub mod net;
 pub mod watch;
 pub mod worker;
 
+use crate::kept::Kept;
 use net::{AGENT_SERVICE, NET_SERVICE};
 
 /// The machine-wide folder of the installed services. Taken from the system, never from
@@ -86,12 +87,10 @@ fn net_main(_args: Vec<OsString>) {
     log_to(&crate::service::machine_dir().join("net.log"));
     // Stopped is reported before the process ends: a process that just ends is a crash to the
     // service manager, which its recovery actions answer with a restart.
-    let (tx, rx) = channel::<()>();
-    let done = tx.clone();
-    let handler = move |c| match c {
+    let (done, rx) = channel::<()>();
+    let handler = |c| match c {
         ServiceControl::Stop | ServiceControl::Shutdown => {
             net::stop();
-            let _ = tx.send(());
             ServiceControlHandlerResult::NoError
         }
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -112,8 +111,6 @@ fn net_main(_args: Vec<OsString>) {
         let _ = done.send(());
     });
     let _ = rx.recv();
-    // Lets the host tell the viewer before the process ends.
-    std::thread::sleep(Duration::from_millis(300));
     let _ = h.set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty()));
 }
 
@@ -184,77 +181,22 @@ fn supervise(dir: &Path, rx: &std::sync::mpsc::Receiver<bool>) -> Result<()> {
     }
 }
 
-/// One process kept running in the console session: started again when it exits or the
-/// console moves to another session, waiting longer after each failed start.
-struct Kept {
-    what: &'static str,
-    child: Option<(Child, u32)>,
-    backoff: Duration,
-    next_try: Instant,
-    /// The last failure, said once rather than at every try (nobody signed in, for the worker).
-    failed: Option<String>,
-}
-
-impl Kept {
-    fn new(what: &'static str) -> Kept {
-        Kept { what, child: None, backoff: Duration::from_secs(1), next_try: Instant::now(), failed: None }
-    }
-
-    fn keep(&mut self, session: u32, launch: impl FnOnce() -> Result<Child>) {
-        if let Some((child, s)) = &self.child {
-            if *s == session && child.running() {
-                return;
-            }
-            if child.running() {
-                eprintln!("console moved to session {session}; restarting the {}", self.what);
-            } else {
-                eprintln!("{} exited", self.what);
-            }
-            child.kill();
-            self.child = None;
-        }
-        if Instant::now() < self.next_try {
-            return;
-        }
-        match launch() {
-            Ok(child) => {
-                eprintln!("{} started in session {session}", self.what);
-                self.child = Some((child, session));
-                self.backoff = Duration::from_secs(1);
-                self.failed = None;
-            }
-            Err(e) => {
-                let e = format!("{e:#}");
-                if self.failed.as_ref() != Some(&e) {
-                    eprintln!("cannot start the {} in session {session}: {e}", self.what);
-                }
-                self.failed = Some(e);
-                self.next_try = Instant::now() + self.backoff;
-                self.backoff = (self.backoff * 2).min(Duration::from_secs(60));
-            }
-        }
-    }
-
-    /// No longer wanted: ended, and started at once when it is wanted again.
-    fn stop(&mut self) {
-        if let Some((child, _)) = self.child.take() {
-            eprintln!("{} stopped", self.what);
-            child.kill();
-        }
-        (self.failed, self.backoff, self.next_try) = (None, Duration::from_secs(1), Instant::now());
-    }
-}
-
 struct Child(HANDLE);
 
 impl Child {
-    fn running(&self) -> bool {
-        unsafe { WaitForSingleObject(self.0, 0) == WAIT_TIMEOUT }
-    }
     fn kill(&self) {
         unsafe {
             let _ = TerminateProcess(self.0, 0);
         }
+    }
+}
+
+impl crate::kept::Child for Child {
+    fn running(&mut self) -> bool {
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_TIMEOUT }
+    }
+    fn stop(&mut self) {
+        self.kill();
     }
 }
 
@@ -273,12 +215,28 @@ struct KillJob(HANDLE);
 impl KillJob {
     fn new() -> Result<KillJob> {
         unsafe {
-            let h = CreateJobObjectW(None, None)?;
+            let job = KillJob(CreateJobObjectW(None, None)?);
             let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-            SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as _, size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32)?;
-            Ok(KillJob(h))
+            SetInformationJobObject(job.0, JobObjectExtendedLimitInformation, &info as *const _ as _, size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32)?;
+            Ok(job)
         }
+    }
+
+    /// Put the service in the job before it creates children, so they join at creation.
+    /// Windows closes this non-inheritable handle when the service process exits.
+    fn keep_service_children() -> Result<()> {
+        let job = Self::new()?;
+        unsafe { AssignProcessToJobObject(job.0, GetCurrentProcess()) }
+            .context("assign DeskwayNet to its child process job")?;
+        std::mem::forget(job);
+        Ok(())
+    }
+}
+
+impl Drop for KillJob {
+    fn drop(&mut self) {
+        unsafe { let _ = CloseHandle(self.0); }
     }
 }
 

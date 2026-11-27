@@ -165,6 +165,8 @@ pub struct Trust {
 
 /// The parts of the server URL a passkey is bound to.
 pub fn origin_of(server: &str) -> Result<(String, String)> {
+    let address = deskway_server_connection::Address::parse(server)?;
+    let server = address.base();
     let (scheme, rest) = server.split_once("://").context("server URL needs a scheme")?;
     let authority = rest.split('/').next().unwrap_or_default().to_ascii_lowercase();
     ensure!(!authority.is_empty() && !authority.contains('@'), "bad server URL");

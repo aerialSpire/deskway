@@ -317,6 +317,7 @@
   "qr.failed": "新增失敗，請重試。",
   "scanOpen.title": "掃描開啟",
   "scanOpen.lead": "掃描 QR 碼即可開啟目前網址。",
+  "scanOpen.localLead": "掃描 QR 碼，依頁面提示安裝一次憑證後即可開啟。",
   "pw.title": "變更密碼",
   "pw.intro": "電腦不受影響，它們用自己的憑證連線到伺服器。",
   "pw.current": "目前密碼",

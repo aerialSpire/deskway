@@ -60,6 +60,14 @@ if [ "$package_arch" = universal ]; then
 else
     install -m 755 "$arm64_release/deskway-host" "$executable"
 fi
+for arch in arm64 amd64; do
+    (cd "$root" && CGO_ENABLED=0 GOOS=darwin GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+        -o "$staging/deskway-server-$arch" ./cmd/deskway-server)
+done
+server="$bundle/Contents/MacOS/deskway-server"
+lipo -create "$staging/deskway-server-arm64" "$staging/deskway-server-amd64" -output "$server"
+lipo "$server" -verify_arch arm64 x86_64
+codesign --force --sign - --timestamp=none "$server"
 "$arm64_release/examples/mac-icon" "$iconset"
 iconutil -c icns "$iconset" -o "$bundle/Contents/Resources/Deskway.icns"
 # The host product name and permission prompts in the Mac's language.
@@ -119,6 +127,7 @@ stop_app "$legacy"
 if cmp -s "$bundle/Contents/Info.plist" "$app/Contents/Info.plist" &&
     diff -r "$bundle/Contents/Resources" "$app/Contents/Resources" >/dev/null 2>&1 &&
     cmp -s "$bundle/Contents/MacOS/deskway-host" "$app/Contents/MacOS/deskway-host" &&
+    cmp -s "$server" "$app/Contents/MacOS/deskway-server" &&
     codesign --verify --strict "$app" 2>/dev/null; then
     :
 else

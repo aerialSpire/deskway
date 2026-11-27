@@ -9,6 +9,7 @@ mod auth;
 #[cfg(desktop_host)]
 mod clipboard;
 mod config;
+mod discovery;
 mod display;
 mod i18n;
 #[cfg(desktop_host)]
@@ -25,6 +26,10 @@ mod product;
 mod service;
 mod session;
 mod settings;
+#[cfg(desktop_host)]
+mod kept;
+#[cfg(desktop_host)]
+mod local_server;
 mod signal;
 mod tools;
 #[cfg(desktop_host)]
@@ -39,7 +44,7 @@ mod workspace;
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{BufRead, IsTerminal, Write};
-use std::sync::Arc;
+use deskway_server_connection::Address;
 
 use i18n::{t, tf};
 #[cfg(windows)]
@@ -80,34 +85,57 @@ pub fn shown_name(name: &str) -> String {
     platform::computer_name().unwrap_or_else(|| t("device.this_computer"))
 }
 
-fn agent() -> Result<ureq::Agent> {
-    Ok(ureq::AgentBuilder::new().tls_connector(Arc::new(native_tls::TlsConnector::new()?)).build())
-}
-
 /// Signs this computer in. `name` is the one chosen, or "" for none: the server is told the name
 /// shown for it. `back` is the computer signed out here (`Config::kept`): when the same account
 /// signs in at the same server, the server answers with its id and no token, and `Config::settle`
 /// gives it back as it was. Otherwise the answer is a new computer, waiting for approval. Nothing
 /// is saved here: the caller settles it where the computer keeps its sign-in.
 pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: Option<&config::Kept>) -> Result<config::Config> {
-    let mut server = server.trim().trim_end_matches('/').to_string();
-    if !server.starts_with("http://") && !server.starts_with("https://") {
-        server = format!("https://{server}");
-    }
+    enroll(server, name, back, Enrollment::Password(user, password))
+}
+
+enum Enrollment<'a> {
+    Password(&'a str, &'a str),
+    #[cfg(desktop_host)]
+    Link(&'a str),
+}
+
+fn enroll(server: &str, name: &str, back: Option<&config::Kept>, credential: Enrollment<'_>) -> Result<config::Config> {
+    let address = Address::parse(server).map_err(server_error)?;
+    let server = address.saved();
+    let server_root = address.fetch_root().map_err(server_error)?;
+    let connection = address.connection(server_root.as_deref()).map_err(server_error)?;
     let back = back.filter(|k| k.server == server).map(|k| k.id.as_str());
-    let res = agent()?
-        .post(&format!("{server}/api/host/enroll"))
-        .send_json(serde_json::json!({ "user": user, "password": password, "name": shown_name(name), "os": std::env::consts::OS, "back": back, "shows_code": true }));
+    let (path, data, user) = match credential {
+        Enrollment::Password(user, password) => ("/api/host/enroll",
+            serde_json::json!({ "user": user, "password": password, "name": shown_name(name), "os": std::env::consts::OS, "back": back, "shows_code": true }), user),
+        #[cfg(desktop_host)]
+        Enrollment::Link(token) => ("/api/computers/enroll",
+            serde_json::json!({ "enroll_token": token, "name": shown_name(name), "os": std::env::consts::OS }), ""),
+    };
+    let res = connection.http(ureq::builder())?.post(&connection.url(path)).send_json(data);
     let body: serde_json::Value = match res {
         Ok(r) => r.into_json()?,
-        Err(ureq::Error::Status(401, _)) => bail!(t("err.wrong_password")),
+        Err(ureq::Error::Status(401, _)) if matches!(credential, Enrollment::Password(..)) => bail!(t("err.wrong_password")),
         // The account has as many computers as the server allows.
         Err(ureq::Error::Status(403, _)) => bail!(t("err.computer_limit")),
         Err(ureq::Error::Status(429, _)) => bail!(t("err.too_many")),
-        Err(e) => return Err(anyhow!(tf("err.cant_reach_server", &[("e", e.to_string())]))),
+        #[cfg(desktop_host)]
+        Err(ureq::Error::Status(code, response)) if matches!(credential, Enrollment::Link(_)) => {
+            use std::io::Read;
+            let mut detail = String::new();
+            if response.into_reader().take(512).read_to_string(&mut detail).is_ok()
+                && !detail.trim().is_empty()
+            {
+                bail!("{}", detail.trim());
+            }
+            return Err(server_error(code));
+        }
+        Err(e) => return Err(server_error(e)),
     };
     Ok(config::Config {
         server,
+        server_root,
         id: body["id"].as_str().with_context(|| t("err.bad_response"))?.into(),
         // Given back, the computer keeps the token it has.
         token: body["token"].as_str().unwrap_or_default().into(),
@@ -116,10 +144,14 @@ pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: O
         clip_share: false,
         lang: None,
         prevent_sleep: cfg!(target_os = "macos"),
-        account: Some(config::Account { user: user.trim().to_string(), display: String::new() }),
+        account: Some(config::Account { user: body["user"].as_str().unwrap_or(user.trim()).to_string(), display: String::new() }),
         #[cfg(target_os = "macos")]
         login_item_setup_pending: true,
     })
+}
+
+fn server_error(e: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!(tf("err.cant_reach_server", &[("e", format!("{e:#}"))]))
 }
 
 /// Withdraws a sign-in that was never put to use (the service's elevated step was declined):
@@ -127,8 +159,9 @@ pub fn enroll_with(server: &str, user: &str, password: &str, name: &str, back: O
 /// the computer from the account does.
 #[cfg(desktop_host)]
 pub fn withdraw(cfg: &config::Config) -> Result<()> {
-    agent()?
-        .post(&format!("{}/api/host/leave?id={}", cfg.server, cfg.id))
+    let server = cfg.connection()?;
+    server.http(ureq::builder())?
+        .post(&server.url(&format!("/api/host/leave?id={}", cfg.id)))
         .set("Authorization", &format!("Bearer {}", cfg.token))
         .call()?;
     Ok(())
@@ -228,17 +261,38 @@ fn main() -> Result<()> {
             write_result(&args, &r);
             r
         }
+        #[cfg(windows)]
+        Some("start-local") => {
+            let r = flag(&args, "--owner-sid").context(t("local.owner_failed"))
+                .and_then(|owner| install::start_local(args.iter().any(|a| a == "--switch"), owner));
+            write_result(&args, &r);
+            r
+        }
+        #[cfg(windows)]
+        Some("stop-local-and-delete") => {
+            let r = install::stop_local_and_delete();
+            write_result(&args, &r);
+            r
+        }
         // Settings → Apps runs this without elevation: show the uninstall window.
         #[cfg(windows)]
         Some("uninstall") if !install::is_elevated() && !args.iter().any(|a| a == "--quiet") => ui::setup::run(ui::setup::Mode::Uninstall),
         #[cfg(windows)]
         Some("uninstall") if args.iter().any(|a| a == "--result") => {
-            let r = install::uninstall(args.iter().any(|a| a == "--purge"), flag(&args, "--keep").and_then(|k| k.parse().ok()));
+            let r = install::uninstall(
+                args.iter().any(|a| a == "--purge"),
+                args.iter().any(|a| a == "--purge-local"),
+                flag(&args, "--keep").and_then(|k| k.parse().ok()),
+            );
             write_result(&args, &r);
             r
         }
         #[cfg(windows)]
-        Some("uninstall") => report(install::uninstall(args.iter().any(|a| a == "--purge"), None), &args, &t("cli.uninstalled")),
+        Some("uninstall") => report(install::uninstall(
+            args.iter().any(|a| a == "--purge"),
+            args.iter().any(|a| a == "--purge-local"),
+            flag(&args, "--keep").and_then(|pid| pid.parse().ok()),
+        ), &args, &t("cli.uninstalled")),
         // Opened by hand while automatic start is off: start it, and start it with Windows again.
         #[cfg(windows)]
         Some("start") => {
@@ -261,6 +315,11 @@ fn main() -> Result<()> {
         #[cfg(windows)]
         Some("net") => service::run_net_service(),
         #[cfg(windows)]
+        Some("authorize-local-root") => {
+            let pin = args.get(1).context("missing local root fingerprint")?;
+            install::authorize_local_root(pin)
+        }
+        #[cfg(windows)]
         Some("agent") => service::agent::run(args.iter().any(|a| a == "--dev")),
         // Started by the `Deskway` service as the person signed in, with its key on stdin.
         #[cfg(windows)]
@@ -280,18 +339,19 @@ fn main() -> Result<()> {
             platform::ui::border_capture_test()
         }
         #[cfg(desktop_host)]
-        None | Some("--at-login") => {
+        None | Some("--at-login" | "--dev") => {
             let at_login = args.iter().any(|a| a == "--at-login");
+            let dev = cfg!(windows) && args.iter().any(|a| a == "--dev");
             // Automatic start turned off: nothing at all runs at sign-in.
             #[cfg(windows)]
             if at_login && (!net::installed() || install::autostart() == Some(false)) {
                 return Ok(());
             }
             platform::platform_init();
-            if !platform::first_instance() {
+            if !dev && !platform::first_instance() {
                 return Ok(());
             }
-            ui::run(at_login)
+            ui::run(at_login, dev)
         }
         #[cfg(target_os = "linux")]
         None => platform::run(),

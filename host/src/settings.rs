@@ -43,6 +43,16 @@ pub enum PanelRequest {
     RemoveDevices(Option<Vec<String>>),
     /// Stop AI control here, until a browser of the account allows it again.
     StopAi,
+    #[cfg(desktop_host)]
+    Local(crate::local_server::Request),
+    #[cfg(windows)]
+    SyncLocalRoot,
+    #[cfg(windows)]
+    LocalAccess,
+    #[cfg(windows)]
+    LocalOwner,
+    #[cfg(windows)]
+    DevLeave,
 }
 
 /// The settings as last applied. Only what differs from them is applied, once.
@@ -91,13 +101,23 @@ impl Settings {
                 let Some(lang) = i18n::Lang::parse(&code) else { return Ok(()) };
                 return self.change(|c| c.lang = Some(lang.code().to_string()));
             }
-            PanelRequest::AutoStart(on) => Control::SetAutoStart(on),
+            PanelRequest::AutoStart(on) => {
+                #[cfg(desktop_host)]
+                if !on && local_forces_settings(&self.dir) {
+                    return Ok(());
+                }
+                Control::SetAutoStart(on)
+            }
             PanelRequest::Disconnect => Control::Disconnect,
             PanelRequest::StartPairing => Control::StartPairing,
             PanelRequest::StopPairing => Control::StopPairing,
             PanelRequest::AnswerAsk(session, allow) => Control::AnswerAsk(session, allow),
             PanelRequest::RemoveDevices(ids) => Control::RemoveDevices(ids),
             PanelRequest::StopAi => Control::StopAi,
+            #[cfg(desktop_host)]
+            PanelRequest::Local(_) => unreachable!("local service requests belong to the local service"),
+            #[cfg(windows)]
+            PanelRequest::SyncLocalRoot | PanelRequest::LocalAccess | PanelRequest::LocalOwner | PanelRequest::DevLeave => unreachable!("this request belongs to the service"),
         };
         let _ = self.control.send(control);
         Ok(())
@@ -119,9 +139,14 @@ impl Settings {
     }
 
     /// The config file changed (the installer's language).
-    #[cfg(any(windows, test))]
+    #[cfg(any(target_os = "macos", test))]
     pub fn reload(&self) -> Result<()> {
-        self.apply(Applied::of(&self.load()?))
+        self.apply_saved(&self.load()?)
+    }
+
+    #[cfg(any(desktop_host, test))]
+    pub(crate) fn apply_saved(&self, config: &Config) -> Result<()> {
+        self.apply(Applied::of(config))
     }
 
     fn change(&self, f: impl FnOnce(&mut Config)) -> Result<()> {
@@ -155,6 +180,11 @@ impl Settings {
         let _ = self.control.send(Control::Report);
         awake
     }
+}
+
+#[cfg(desktop_host)]
+pub fn local_forces_settings(dir: &std::path::Path) -> bool {
+    Config::local_service(dir).is_ok_and(|local| local.is_some_and(|local| local.enabled))
 }
 
 fn keep_awake(on: bool) -> Result<()> {
@@ -199,6 +229,21 @@ mod tests {
         // Requests that are no setting go to the host as they are.
         s.handle(PanelRequest::AnswerAsk("s1".into(), true)).unwrap();
         assert_eq!(rx.try_recv().unwrap(), Control::AnswerAsk("s1".into(), true));
+    }
+
+    #[cfg(desktop_host)]
+    #[test]
+    fn local_service_locks_startup_and_sleep_prevention_until_stopped() {
+        let (settings, _, rx, dir) = settings("local");
+        for enabled in [true, false] {
+            let local = crate::local_server::Setting { https: Some(18599), guide: Some(18598), enabled, ..Default::default() };
+            Config::set_local_service(&dir, &local).unwrap();
+            settings.handle(PanelRequest::AutoStart(false)).unwrap();
+            settings.handle(PanelRequest::PreventSleep(false)).unwrap();
+            assert_eq!(Config::local_service(&dir).unwrap(), Some(local));
+            assert_eq!(Config::load_from(&dir).unwrap().prevent_sleep, enabled);
+            assert_eq!(rx.try_iter().any(|request| request == Control::SetAutoStart(false)), !enabled);
+        }
     }
 
     #[test]

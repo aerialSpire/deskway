@@ -2,7 +2,7 @@
 // test browser at its window size (380 × 700) and in a short window: every state in each
 // language, its layout, and what it sends to the host. Only the panel page is captured.
 import { readFileSync, readdirSync } from 'node:fs';
-import { sleep, lit, LANGS, HOST_TEXTS } from './harness.mjs';
+import { sleep, lit, LANGS, HOST_TEXTS, words } from './harness.mjs';
 
 const root = new URL('../../', import.meta.url);
 const read = (p) => readFileSync(new URL(p, root), 'utf8');
@@ -55,11 +55,190 @@ export const area = {
       };
       const t = HOST_TEXTS[lang];
 
+      const local = (phase, extra = {}, result) => ({
+        state: { phase, enabled: phase !== 'off', available: true, own: true, has_data: true, ...extra },
+        result,
+      });
+      const hubPanel = (phase, extra = {}, result) => render(base({ local: local(phase, extra, result) }));
+      const localText = (key, params) => words(`local.${key}`, params, { lang, texts: HOST_TEXTS });
+      const localLine = (key, params) => p.eval(`$('local-line').textContent === ${lit(localText(key, params))}`);
+      const localShot = async (name) => {
+        await layout(name);
+        await p.shot(`panel-${lang}-local-${name}`, 380, 700);
+      };
+      await hubPanel('off', { available: false });
+      h.check(`panel ${lang}: a build without the server shows the disabled switch and reason`,
+        await p.eval(`$('local-switch').disabled && $('local-setting-note').textContent === ${lit(localText('unavailable'))}`));
+      await localShot('unavailable');
+      await render(base({ enrolled: false, local: local('off', { own: false, has_data: false }) }));
+      await p.eval(`$('local-signed-out').click()`);
+      h.check(`panel ${lang}: signed-out start asks to confirm`, await p.eval(`$('local-title').textContent === ${lit(localText('start_title'))}`));
+      await localShot('first-start');
+      await p.eval(`$('local-cancel').click()`);
+      await render(base({ enrolled: false, local: local('setup', { own: false }) }));
+      h.check(`panel ${lang}: unfinished setup has its own action`, await localLine('setup') &&
+        await p.eval(`$('local-open').textContent === ${lit(localText('complete_setup'))}`));
+      await localShot('setup');
+      await clearSent();
+      await p.eval(`$('local-open').click()`);
+      h.check(`panel ${lang}: Complete setup asks the Host to open the link`, (await sent()).at(-1)?.action === 'setup');
+      const setupError = 'This account has reached its computer limit';
+      await render(base({ enrolled: false, local: local('setup', {
+        own: false, admin_ready: true, setup_error: setupError,
+      }) }));
+      h.check(`panel ${lang}: failed enrollment shows the server error and View`,
+        await localLine('setup_error', { reason: setupError }) &&
+        await p.eval(`$('local-open').textContent === ${lit(localText('view'))}`));
+      await clearSent();
+      await p.eval(`$('local-open').click()`);
+      h.check(`panel ${lang}: View after enrollment failure asks for an admin sign-in link`,
+        (await sent()).at(-1)?.action === 'open');
+      for (const phase of ['setup', 'running']) {
+        await render(base({ local: { ...local(phase), link_allowed: false } }));
+        await clearSent();
+        await p.eval(`$('local-open').click()`);
+        h.check(`panel ${lang}: ${phase} blocks the admin link for an unauthorized user`,
+          (await sent()).length === 0 && await p.eval(`$('local-open').disabled &&
+            !$('local-link-note').hidden && $('local-link-note').textContent === ${lit(localText('link_restricted'))}`));
+      }
+      await hubPanel('running');
+      h.check(`panel ${lang}: running locks both settings and hides sign-out`, await localLine('running') &&
+        await p.eval(`['autostart', 'prevent-sleep'].every(id => $(id).disabled && $(id).getAttribute('aria-checked') === 'true') && $('leave').hidden`));
+      await localShot('running');
+      await p.eval(`$('local-open').click(); $('local-stop').click()`);
+      h.check(`panel ${lang}: View opens an admin link and the stop dialog requests live counts`,
+        (await sent()).slice(-2).map((m) => m.action).join(',') === 'open,usage');
+      const usageCopy = {
+        en: ['2 computers and 1 browser are using it. They will go offline.', '2 computers are using it and will go offline.',
+          '1 browser is using it and will go offline.', 'No other computers or browsers are using it right now.'],
+        'zh-Hans': ['有 2 台电脑和 1 个浏览器正在用它，停止后都会离线。', '有 2 台电脑正在用它，停止后会离线。',
+          '有 1 个浏览器正在用它，停止后会离线。', '现在没有其他电脑或浏览器在用它。'],
+        'zh-Hant': ['有 2 台電腦和 1 個瀏覽器正在用它，停止後都會離線。', '有 2 台電腦正在用它，停止後會離線。',
+          '有 1 個瀏覽器正在用它，停止後會離線。', '現在沒有其他電腦或瀏覽器在用它。'],
+      }[lang];
+      for (const [i, [computers, browsers]] of [[2, 1], [2, 0], [0, 1], [0, 0]].entries()) {
+        await hubPanel('running', {}, { id: 100 + i, action: 'usage', computers, browsers });
+        h.check(`panel ${lang}: stop confirmation with ${computers} computers and ${browsers} browsers`,
+          await p.eval(`$('local-body').textContent === ${lit(usageCopy[i])}`));
+      }
+      await hubPanel('running', {}, { id: 1, action: 'usage', computers: 2, browsers: 1 });
+      h.check(`panel ${lang}: stop confirmation shows live counts and defaults to keeping data`, await p.eval(`
+        $('local-body').textContent === ${lit(usageCopy[0])} &&
+        $('local-note').textContent === ${lit(localText('stop_note'))} &&
+        !$('local-stop-delete').checked &&
+        $('local-stop-delete').closest('label').textContent.trim() === ${lit(localText('stop_delete'))} &&
+        $('local-stop-delete-note').textContent === ${lit(localText('stop_delete_note'))} &&
+        $('local-confirm').textContent.trim() === ${lit(localText('stop_title_button'))}`));
+      await localShot('stop');
+      await p.eval(`$('local-confirm').click()`);
+      h.check(`panel ${lang}: an unchecked stop sends stop only and starts without a spinner`,
+        (await sent()).at(-1)?.action === 'stop' && await p.eval(`$('local-confirm').firstElementChild.hidden`));
+      await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: stop spinner`);
+      h.check(`panel ${lang}: the stop spinner disables the dialog controls`, await p.eval(`
+        ['local-confirm', 'local-cancel', 'local-stop-delete'].every(id => $(id).disabled)`));
+      await localShot('stopping');
+      await hubPanel('off', {}, { id: 2, action: 'stop' });
+      h.check(`panel ${lang}: stopped stays signed in and unlocks preferences`, await p.eval(`
+        $('local-overlay').hidden && $('local-status').hidden &&
+        !$('autostart').disabled && !$('prevent-sleep').disabled && $('status').textContent === ${lit(localText('stopped'))}`));
+      await localShot('stopped');
+      await hubPanel('running');
+      await p.eval(`$('local-switch').click(); $('local-stop-delete').click(); $('local-cancel').click(); $('local-switch').click()`);
+      h.check(`panel ${lang}: turning the switch off opens the same stop dialog and resets the checkbox`,
+        (await sent()).at(-1)?.action === 'usage' && await p.eval(`
+        $('local-title').textContent === ${lit(localText('stop_title'))} && !$('local-stop-delete').checked`));
+      await hubPanel('running', {}, { id: 3, action: 'usage', computers: 3, browsers: 2 });
+      await p.eval(`$('local-stop-delete').click()`);
+      h.check(`panel ${lang}: checking deletion changes the primary action`, await p.eval(`
+        $('local-note').hidden && $('local-confirm').textContent.trim() === ${lit(localText('stop_delete_button'))}`));
+      await localShot('stop-and-delete');
+      await p.eval(`$('local-confirm').click()`);
+      h.check(`panel ${lang}: the checked confirmation sends stop and delete once and disables the controls`,
+        (await sent()).filter(m => m.action === 'stop_and_delete').length === 1 && await p.eval(`
+        $('local-confirm').firstElementChild.hidden &&
+        ['local-confirm', 'local-cancel', 'local-stop-delete'].every(id => $(id).disabled)`));
+      await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: stop and delete spinner`);
+      await localShot('stopping-and-deleting');
+      await hubPanel('off', {}, { id: 4, action: 'stop_and_delete', error: t['err.not_done'] });
+      h.check(`panel ${lang}: a deletion failure keeps the checked stop dialog open for retry`, await p.eval(`
+        !$('local-overlay').hidden && $('local-stop-delete').checked && !$('local-stop-delete').disabled &&
+        !$('local-confirm').disabled && $('local-dialog-error').textContent === ${lit(t['err.not_done'])}`));
+      await p.eval(`$('local-confirm').click()`);
+      await render(base({ enrolled: false, local: local('off', { own: false, has_data: false }, { id: 5, action: 'stop_and_delete' }) }));
+      h.check(`panel ${lang}: after deletion the Host shows sign-in and first setup`, await p.eval(`
+        $('local-overlay').hidden && !$('login').hidden && !$('local-alternative').hidden`));
+      await localShot('deleted');
+      await hubPanel('off');
+      await p.eval(`$('local-switch').click(); $('local-confirm').click()`);
+      await hubPanel('starting', { enabled: false });
+      await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: start spinner`);
+      h.check(`panel ${lang}: starting shows its row and the dialog spinner`, await localLine('starting'));
+      await localShot('starting');
+      await hubPanel('failed', { port: 443 }, { id: 6, action: 'start' });
+      h.check(`panel ${lang}: an occupied port closes the dialog and offers Retry`, await localLine('port_taken', { port: 443 }) &&
+        await p.eval(`$('local-overlay').hidden && $('local-status').classList.contains('bad')`));
+      await localShot('port-error');
+      await hubPanel('failed');
+      h.check(`panel ${lang}: repeated exits have their own error`, await localLine('exited'));
+      await localShot('exits');
+      await p.eval(`$('local-open').click()`);
+      h.check(`panel ${lang}: Retry goes to the Host`, (await sent()).at(-1)?.action === 'retry');
+      await render(base({ local: local('off', { own: false, has_data: false }), server: 'desk.example.net' }));
+      await p.eval(`$('local-switch').click()`);
+      h.check(`panel ${lang}: switch confirmation names the server that will be left`, await p.eval(`
+        $('local-title').textContent === ${lit(localText('switch_title'))} && $('local-body').textContent.includes('desk.example.net')`));
+      await localShot('switch');
+      await p.eval(`$('local-cancel').click()`);
+      await clearSent();
+
       // Signed out: the title, the language at the top right, no bottom bar.
       await render({ enrolled: false });
       h.check(`panel ${lang}: signed out: the title is the sign-in's, the language sits at the top right`, await p.eval(`document.querySelector('#title').textContent === ${JSON.stringify(t['login.title'])} && document.querySelector('#foot').hidden && (() => { const r = document.querySelector('#lang').getBoundingClientRect(); return r.left > innerWidth / 2 && r.top < 60; })()`));
+      const search = () => p.eval('window.searchLocalServers(true)');
+      const hub = (i) => ({ name: `Studio ${i}`, address: `https://studio-${i}.local:18599#ca=${String(i).repeat(64)}` });
+      const found = (...servers) => p.eval(`window.showLocalServers(${lit(servers)})`);
+      const box = '$(\'found-box\')';
+      const geometry = () => p.eval(`[${box}.getBoundingClientRect().height, $('server').getBoundingClientRect().top]`);
+      const selected = () => p.eval(`$('found-servers').querySelector('[aria-pressed=true]')?.dataset.address ?? null`);
+      const server = () => p.eval(`$('server').value`);
+      await search();
+      const fixedRow = await geometry();
+      h.check(`panel ${lang}: discovery shows the title and spinner while searching`, await p.eval(`
+        $('found-title').textContent === ${lit(t['login.found_title'])} &&
+        !$('found-searching').hidden && !!$('found-searching').querySelector('.spinner') &&
+        $('found-searching').textContent.trim() === ${lit(t['login.found_searching'])}`));
+      await p.until(`!$('found-none').hidden`, `${lang}: discovery search times out`);
+      h.check(`panel ${lang}: discovery shows the empty message at the same height`, await p.eval(`
+        $('found-none').querySelector('[role=status]').textContent === ${lit(t['login.found_none'])}`) &&
+        JSON.stringify(await geometry()) === JSON.stringify(fixedRow));
       await layout('signed out');
       await p.shot(`panel-${lang}-login`, 380, 700);
+      await clearSent();
+      await p.eval(`$('find-again').click()`);
+      h.check(`panel ${lang}: search again requests a fresh browse`, JSON.stringify(await sent()) === JSON.stringify([{ cmd: 'find-local-servers' }]));
+      await search();
+      await found(hub(1));
+      await p.until(`!$('found-servers').hidden`, `${lang}: one discovery result`);
+      h.check(`panel ${lang}: a single result fills the pinned address at the same height`, await selected() === hub(1).address &&
+        await server() === hub(1).address && JSON.stringify(await geometry()) === JSON.stringify(fixedRow) &&
+        await p.eval(`$('found-servers').querySelector('.dn').textContent === ${lit(hub(1).name + hub(1).address.split('#')[0])}`));
+      await found(hub(1), hub(2), hub(3));
+      h.check(`panel ${lang}: several results scroll at 2.5 rows without automatic selection`, await selected() === null &&
+        await server() === '' && await p.eval(`(() => {
+          const box = ${box};
+          const row = $('found-servers').firstElementChild;
+          return $('found-servers').children.length === 3 && box.scrollHeight > box.clientHeight &&
+            box.clientHeight === 2.5 * row.getBoundingClientRect().height;
+        })()`));
+      await layout('several local services');
+      await p.eval(`$('found-servers').children[1].click()`);
+      await found(hub(1), hub(2), hub(3));
+      h.check(`panel ${lang}: picking a server fills its full address and keeps the selection across updates`,
+        await selected() === hub(2).address && await server() === hub(2).address);
+      await p.eval(`$('server').value = 'https://manual.example'; $('server').dispatchEvent(new Event('input'))`);
+      await found(hub(1));
+      h.check(`panel ${lang}: typing clears selection and discovery preserves the typed address`,
+        await selected() === null && await server() === 'https://manual.example');
       // The language is the client's menu, not a native list: each in its own name, the current checked.
       const other = LANGS.find((l) => l !== lang);
       await clearSent();
@@ -148,10 +327,23 @@ export const area = {
 
       // A recreated page can be handed a pairing window that the host has already opened.
       await clearSent();
-      await render(base({ pair_qr: QR }));
+      await p.send('Page.reload');
+      await p.until(`window.__sent?.some(m => m.cmd === 'ready')`, `${lang}: recreated panel ready`);
+      await render(base({ pair_qr: QR, local: local('running') }));
       h.check(`panel ${lang}: existing pairing shows its QR code without requesting a new one`, await p.eval(`!document.querySelector('#add-overlay').hidden && !!document.querySelector('#qr-img svg')`) && !(await sent()).some(m => m.cmd === 'pair'));
+      h.check(`panel ${lang}: a recreated panel shows current local service state`, await localLine('running'));
       await p.eval(`document.querySelector('#add-close').click()`);
       h.check(`panel ${lang}: closing the QR dialog hides it while the host processes the request`, await p.eval(`document.querySelector('#add-overlay').hidden`) && (await sent()).some(m => m.cmd === 'pair-stop'));
+
+      await hubPanel('running');
+      await p.eval(`$('local-stop').click()`);
+      await render(base({ pair_qr: QR, local: local('running') }));
+      h.check(`panel ${lang}: an incoming pairing QR leaves the local-service dialog visible`,
+        await p.eval(`!$('local-overlay').hidden && $('add-overlay').hidden`));
+      await p.eval(`$('local-cancel').click()`);
+      h.check(`panel ${lang}: closing the local-service dialog reveals the active QR`,
+        await p.eval(`$('local-overlay').hidden && !$('add-overlay').hidden`));
+      await p.eval(`$('add-close').click()`);
 
       // Adding: the QR code in a dialog, closed by the device appearing, which is then named.
       await clearSent();

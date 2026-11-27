@@ -76,22 +76,51 @@ browser that uses it and signs it in. Its registered key joins the device log un
 already trusts devices requires its own approval or a signed endorsement from a trusted device
 before accepting that key.
 
+The server operator can also issue an admin enrollment token for a computer. It expires
+after ten minutes, approves that computer atomically with enrollment, and leaves the
+admin's password and browser keys alone.
+
 ### Local server certificates
 
 A local-mode server creates a ten-year P-256 root CA with path length 1. During creation it
 uses the root key to sign one P-256 intermediate CA and then discards it. The root key stays
 in memory during creation. The intermediate has path length 0 and a single extended key
-usage, `serverAuth`. Its critical X.509 name constraints permit the `local` and `localhost`
-DNS subtrees, IPv4 private, loopback and link-local ranges, and IPv6 loopback, unique-local
-and link-local ranges. Verifiers that skip constraints on trust anchors still encounter
-them on the intermediate.
+usage, `serverAuth`. Its critical X.509 name constraints permit the hub's exact
+`<name>.local` name and `localhost`. The hub keeps advertising and issuing for the
+normalized name stored in the intermediate when the CA was created. The remaining scope is
+private addresses, including IPv4 private, loopback and link-local ranges and IPv6 loopback,
+unique-local and link-local ranges. Verifiers that skip constraints on trust anchors still
+encounter them on the intermediate.
 
 The server keeps the two certificates and the intermediate key in `local-ca/` beside its
 state file. The key has mode `0600` on Unix, and the server refuses to load a key with group
 or other access. On Windows the key file has a protected DACL granting access to the server
 account, SYSTEM and Administrators. The intermediate signs the TLS leaves. The server sends
-the leaf and intermediate. Browsers trust the installed root certificate through the device's
-certificate settings. Hosts and the `deskway` CLI use platform TLS certificate verification.
+the leaf and intermediate.
+
+The Host and `deskway` CLI take the root's SHA-256 fingerprint from the `#ca=<64 hex digits>`
+part of the address. They fetch `/local/ca.crt` over HTTPS without certificate verification
+or credentials, compare the SHA-256 of the returned DER with the pin and save a matching
+root as PEM. For that address, HTTP and signaling use native TLS verification of the
+server name and chain with the saved root as the sole trust anchor. Public addresses use system
+roots. The six-digit approval still authenticates the device joining the account.
+A new device still needs approval on the real hub even if an impersonating hub captures the
+account password.
+
+A Host joining another hub uses the saved root only for its own connections, whether the
+person selected a discovered hub or entered the address. Browsers on that computer use
+the hub's HTTP certificate guide just like other devices on the network.
+
+The Host can add browser trust for the hub it runs itself, using the CA in its local
+service data. On Windows the panel asks for administrator consent when it first opens
+its hub's setup or account link. The elevated program reads the local CA, verifies its
+fingerprint against the panel's request, and saves the authorized DER in the protected
+`server-trust/` directory. The SYSTEM agent uses that copy for `LocalMachine\Root`.
+DeskwayNet holds the local service's state and CA under the machine-wide Deskway data
+directory, accessible to SYSTEM, Administrators and DeskwayNet. On macOS the app and
+bundled server run as the signed-in user. The app reads its local CA from the user's
+private data directory and asks for SSL trust in the login keychain. Signing out removes
+a root the Host added for its own hub. Windows uninstall also removes it.
 
 Before installing, compare the fingerprint in the HTTP guide with the startup log on the hub
 computer itself. Verify that the downloaded root certificate also has that fingerprint. On
@@ -176,7 +205,7 @@ alone. Anything running as that user, and root, can use it (R2).
 
 A computer that has never trusted any device accepts the account's device list as the server
 sends it, once, and writes an `adopted` marker. The computer has just been signed in, at the
-computer itself, with the account password, so this is a trust-on-first-use moment, like SSH
+computer itself, with the account password or its hub's one-time enrollment link. This is a trust-on-first-use moment, like SSH
 seeing a host key for the first time. After that, only signed changes count. **Remove all** at
 the computer does not cause the list to be adopted again.
 
@@ -612,7 +641,7 @@ The service mode consists of three processes, all from one binary:
 | Process | Account | Does | Does not |
 |---|---|---|---|
 | `Deskway` service (`service`) | LocalSystem, session 0 | Starts the agent in the console session and restarts it when the session changes; writes the pipe key | Network, parsing, reading user files |
-| Agent (`agent`) | SYSTEM token, console session; privileges stripped except SeChangeNotify and SeImpersonate | Capture, encode, input, file transfers (as the signed-in user); follows the input desktop (Default, Winlogon, UAC) | Network |
+| Agent (`agent`) | SYSTEM token, console session; privileges stripped except SeChangeNotify and SeImpersonate | Capture, encode, input, file transfers (as the signed-in user), input desktop tracking (Default, Winlogon, UAC), and applying administrator-authorized browser trust for a local server | Network |
 | `DeskwayNet` service (`net`) | `NT SERVICE\DeskwayNet` (a virtual account): SeChangeNotify, SeCreateGlobal and SeImpersonate only | Signaling, WebRTC, TURN, device key checks, pairing | Run as SYSTEM, touch the screen |
 
 The user worker serves browser Terminal and Files through its authenticated pipe. The admin
@@ -647,8 +676,14 @@ prompt, and they change files that only administrators can write:
 - `install` and `uninstall` (through the installer window);
 - `unpair` and **Remove all**.
 
-Enrolling this computer and signing out remain on the per-user panel, before the service is
-installed or after it has been removed.
+The per-user panel handles signing in and out. DeskwayNet enrolls its own Host when its
+local service has an admin. The panel uses one-time admin links to open that local service
+in a browser. Authorizing the hub's root for Windows browsers requires administrator consent.
+Stopping with **Also delete the local service data** also requires administrator consent.
+The elevated command saves the off switch and clears the hub's active enrollment in
+`host.json` before moving the data folder aside. It restores the previous configuration if
+the move fails. After the move it removes the hub's browser trust and erases the renamed
+folder. The next service start retries the deletion of any leftover renamed folders.
 
 DeskwayNet is not restricted further for this reason: Windows' TLS and DTLS implementation
 (SChannel) fails with "no credentials available" when the service runs with a write-restricted
@@ -660,7 +695,7 @@ drop the privilege.
 
 ### Files
 
-- `C:\Program Files\Deskway\deskway-host.exe` can be written only by administrators.
+- Only administrators can write the Host and its bundled server in `C:\Program Files\Deskway\`.
 - Both folders are located through the system's known-folder paths, never through environment
   variables. The installer creates the data folders with their final permissions. If either
   folder already exists and is owned by anyone other than SYSTEM or Administrators (for example,

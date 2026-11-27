@@ -33,7 +33,7 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 .sub { margin-top: var(--s1); color: var(--quiet); font-size: var(--fs-small); }
 /* The sign-in's fields start below its line, as the web's do below its title. */
 #login .fields { margin-top: var(--s5); }
-.problem { margin-top: var(--s2); color: var(--danger); font-size: var(--fs-caption); line-height: var(--lh-body); overflow-wrap: anywhere; user-select: text; }
+.problem { margin-top: var(--s2); color: var(--danger); font-size: var(--fs-caption); line-height: var(--lh-body); overflow-wrap: anywhere; white-space: pre-line; user-select: text; }
 #running > .btn { margin-top: var(--s3); }
 .ai-row { margin-top: var(--s3); padding: var(--s2) var(--s3); display: flex; align-items: center; gap: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); line-height: var(--lh-tight); }
 .ai-row[hidden] { display: none; }
@@ -41,6 +41,17 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 .ai-row > .btn { flex: none; }
 .ai-row > .dot { background: var(--warn); }
 .ai-row > .dot.off { display: none; }
+.hub-row { margin-top: var(--s3); padding: var(--s2) var(--s2) var(--s2) var(--s3); display: flex; align-items: center; gap: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); line-height: var(--lh-tight); }
+.hub-row > .text { flex: 1; min-width: 0; font-size: var(--fs-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hub-row > .btn { flex: none; }
+.hub-row.bad { border-color: var(--danger-line); background: var(--danger-soft); }
+.hub-row.bad > .text { color: var(--danger); white-space: normal; }
+.local-alternative { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.local-alternative .note { margin-top: var(--s2); line-height: var(--lh-body); }
+#local-confirm .spinner { width: 12px; height: 12px; border-color: color-mix(in srgb, var(--on-accent) 35%, transparent); border-top-color: var(--on-accent); }
+#local-stop-options { margin-top: var(--s4); }
+#local-stop-options .note { margin-left: var(--s6); margin-top: var(--s1); }
+#local-dialog-error { margin-top: var(--s3); }
 
 /* Settings */
 .sec { margin-top: var(--s4); color: var(--quiet); font-size: var(--fs-caption); font-weight: 400; }
@@ -61,6 +72,20 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 .dn .dname > .tag { flex: none; }
 .dn span { font-size: var(--fs-caption); color: var(--quiet); }
 .dn span.live { color: var(--ok); }
+.found { margin-top: var(--s4); }
+.found h2 { color: var(--quiet); font-size: var(--fs-caption); font-weight: 400; }
+.found-box { --found-row: 52px; margin-top: var(--s2); height: calc(var(--found-row) + 2px); overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-box); }
+.found-box.many { height: auto; max-height: calc(2.5 * var(--found-row) + 2px); overflow-y: auto; }
+.found-state { height: 100%; display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s2) 0 var(--s3); color: var(--quiet); font-size: var(--fs-caption); }
+.found-state span:last-of-type { flex: 1; }
+.found-state[hidden] { display: none; }
+.found-box .dev { width: 100%; height: var(--found-row); min-height: 0; padding: 0 var(--s3); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; color: var(--ink); text-align: start; }
+.found-box .dev:focus-visible { outline-offset: -2px; }
+.found-box .dev:last-child { border-bottom: 0; }
+.found-box .dev[aria-pressed="true"] { background: var(--accent-soft); }
+.found-box .dn > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.found-box .pick { flex: none; color: var(--quiet); font-size: var(--fs-caption); }
+.found-box .dev[aria-pressed="true"] .pick { color: var(--accent); }
 .all { margin-top: var(--s1); display: flex; justify-content: flex-end; }
 .empty { margin-top: var(--s3); padding: var(--s4); border: 1px dashed var(--line-strong); border-radius: var(--r-box); text-align: center; }
 .empty p { color: var(--quiet); font-size: var(--fs-small); }
@@ -106,8 +131,29 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
     </div>
   </header>
   <div class="main">
+    <div class="hub-row" id="local-status" role="status" hidden>
+      <span class="dot ok" id="local-dot" aria-hidden="true"></span><span class="spinner" id="local-spinner" aria-hidden="true"></span>
+      <span class="text" id="local-line"></span>
+      <button class="btn compact" type="button" id="local-open" aria-describedby="local-link-note"></button>
+      <button class="btn compact" type="button" id="local-stop" data-i18n="local.stop"></button>
+    </div>
+    <p class="note" id="local-link-note" data-i18n="local.link_restricted" hidden></p>
+    <div class="problem" id="local-error" role="alert" hidden></div>
     <form id="login" hidden>
       <p class="sub" id="login-help" data-i18n="login.help"></p>
+      <section class="found" aria-labelledby="found-title">
+        <h2 id="found-title" data-i18n="login.found_title"></h2>
+        <div class="found-box" id="found-box">
+          <div class="found-state" id="found-searching" role="status" hidden>
+            <span class="spinner" aria-hidden="true"></span><span data-i18n="login.found_searching"></span>
+          </div>
+          <div class="found-state" id="found-none">
+            <span class="dot" aria-hidden="true"></span><span role="status" data-i18n="login.found_none"></span>
+            <button class="btn text compact" id="find-again" type="button" data-i18n="login.found_retry"></button>
+          </div>
+          <div id="found-servers" hidden></div>
+        </div>
+      </section>
       <div class="fields">
         <label><span data-i18n="login.server"></span><input class="input" id="server" required></label>
         <label><span data-i18n="login.user"></span><input class="input" id="user" autocomplete="username" required></label>
@@ -115,14 +161,22 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
       </div>
       <div class="error" id="error" role="alert"></div>
       <button class="btn primary block" id="submit" type="submit" data-i18n="login.submit"></button>
+      <div class="local-alternative" id="local-alternative" hidden>
+        <button class="btn block" id="local-signed-out" type="button" data-i18n="local.run_here"></button>
+        <span class="note" id="local-alternative-note"></span>
+      </div>
     </form>
 
+    <div class="problem" id="problem" role="status" hidden></div>
     <div id="running" hidden>
-      <div class="problem" id="problem" role="status" hidden></div>
       <button class="btn primary block" id="end" type="button" hidden></button>
       <div class="ai-row" id="ai-row" hidden><span class="dot" id="ai-dot" aria-hidden="true"></span><span id="ai-line"></span><button class="btn compact" id="stop-ai" type="button"></button></div>
       <button class="btn primary block" id="start-service" type="button" hidden data-i18n="panel.start_service"></button>
       <h2 class="sec" data-i18n="panel.settings"></h2>
+      <div class="row" id="local-setting" hidden>
+        <span><span data-i18n="local.run"></span><span class="note" id="local-setting-note"></span></span>
+        <button class="switch" id="local-switch" type="button" role="switch" data-i18n-attr="aria-label=local.run" aria-describedby="local-setting-note"><span></span></button>
+      </div>
       <!-- Windows: the services' start type. macOS: the login item. -->
       <div id="autostart-row" class="row" hidden>
         <span><span id="autostart-label" data-i18n="panel.autostart"></span><span class="note" id="autostart-note" role="status"></span>
@@ -138,6 +192,7 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
       <div id="prevent-sleep-row" class="row" hidden><span><span data-i18n="panel.prevent_sleep"></span><span class="note" id="prevent-sleep-note"></span></span><button class="switch" id="prevent-sleep" type="button" role="switch" data-i18n-attr="aria-label=panel.prevent_sleep" aria-describedby="prevent-sleep-note"><span></span></button></div>
       <div id="lock-row" class="row"><span data-i18n="panel.lock"></span><button class="switch" id="lock" type="button" role="switch" data-i18n-attr="aria-label=panel.lock"><span></span></button></div>
 
+      <div id="device-settings">
       <div class="dh"><h2><span data-i18n="panel.devices_title"></span> <span class="n" id="count"></span></h2><button class="btn compact" id="add" type="button" data-i18n="panel.add"></button></div>
       <div id="overview"></div>
       <div class="all"><button class="btn text compact" id="see-all" type="button" hidden></button></div>
@@ -145,6 +200,7 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
         <p class="title" data-i18n="panel.no_devices_title"></p>
         <p data-i18n="panel.no_devices_text"></p>
         <button class="btn primary block" id="add-first" type="button" data-i18n="panel.pair"></button>
+      </div>
       </div>
     </div>
 
@@ -185,6 +241,26 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
     </section>
   </div>
   <footer class="foot" id="foot" hidden><span class="account" id="account"></span><span class="error" id="leave-error" role="alert"></span><button class="btn text compact" id="leave" type="button" data-i18n="panel.sign_out"></button><div class="leave-confirm" id="leave-confirm" hidden></div></footer>
+</div>
+
+<div class="overlay" id="local-overlay" hidden>
+  <section class="dialog" id="local-dialog" role="alertdialog" aria-modal="true" aria-labelledby="local-title" aria-describedby="local-body">
+    <h2 id="local-title"></h2>
+    <p id="local-body"></p>
+    <p id="local-note"></p>
+    <div id="local-stop-options" hidden>
+      <label class="check">
+        <input type="checkbox" id="local-stop-delete" aria-describedby="local-stop-delete-note">
+        <span data-i18n="local.stop_delete"></span>
+      </label>
+      <p class="note" id="local-stop-delete-note" data-i18n="local.stop_delete_note"></p>
+    </div>
+    <div class="error" id="local-dialog-error" role="alert" hidden></div>
+    <div class="dialog-actions">
+      <button class="btn" id="local-cancel" type="button" data-i18n="common.cancel"></button>
+      <button class="btn primary" id="local-confirm" type="button"><span class="spinner" aria-hidden="true" hidden></span><span></span></button>
+    </div>
+  </section>
 </div>
 
 <!-- Every device, in the same window: only the list scrolls. -->
@@ -246,9 +322,68 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 <div class="notice dark toast" id="toast" role="status" hidden></div>
 
 <script>
-followLanguage(() => { if (window.last) window.render(window.last); }, $('lang'));
+followLanguage(() => {
+  if (window.last) window.render(window.last);
+  renderLocalServers();
+}, $('lang'));
 
 const button = (label, cls, f) => { const b = h('button', { class: cls, type: 'button' }, label); b.onclick = f; return b; };
+
+let localServers = [];
+let searchTimer;
+// The server field holds the address. This tracks how it was filled.
+let serverChoice = 'untouched';
+
+function renderLocalServers() {
+  const field = $('server');
+  const searching = searchTimer !== undefined;
+  const servers = searching ? [] : localServers;
+  if (serverChoice === 'untouched' || serverChoice === 'auto') {
+    if (servers.length === 1) {
+      field.value = servers[0].address;
+      serverChoice = 'auto';
+    } else if (serverChoice === 'auto') {
+      field.value = '';
+      serverChoice = 'untouched';
+    }
+  }
+  $('found-searching').hidden = !searching;
+  $('found-none').hidden = searching || servers.length > 0;
+  $('found-servers').hidden = servers.length === 0;
+  $('found-box').classList.toggle('many', servers.length > 1);
+  const rows = $('found-servers');
+  const focused = document.activeElement.dataset.address;
+  const buttons = servers.map(({ name, address }) => {
+    const chosen = serverChoice !== 'typed' && field.value === address;
+    const origin = address.split('#', 1)[0];
+    const row = h('button', { type: 'button', class: 'btn text dev', 'aria-pressed': String(chosen), 'data-address': address },
+      h('span', { class: 'dn' }, h('b', { title: name }, name), h('span', { title: origin }, origin)),
+      h('span', { class: 'pick' }, t(chosen ? 'login.found_chosen' : 'login.found_choose')));
+    row.onclick = () => {
+      field.value = address;
+      serverChoice = 'manual';
+      renderLocalServers();
+    };
+    return row;
+  });
+  rows.replaceChildren(...buttons);
+  buttons.find((row) => row.dataset.address === focused)?.focus({ preventScroll: true });
+}
+
+window.showLocalServers = (servers) => {
+  localServers = servers;
+  renderLocalServers();
+};
+
+window.searchLocalServers = (on) => {
+  clearTimeout(searchTimer);
+  // Collect the initial results together so a list of several never fills the field.
+  searchTimer = on ? setTimeout(() => {
+    searchTimer = undefined;
+    renderLocalServers();
+  }, 2000) : undefined;
+  window.showLocalServers([]);
+};
 
 // "2 hours ago", in the panel's language.
 function ago(secs) {
@@ -265,7 +400,7 @@ function ago(secs) {
 // administrator confirms it too (the service holds the sign-in); why it did not happen shows here.
 function renderLeave(s) {
   $('foot').hidden = false;
-  $('leave').hidden = ui.leaving;
+  $('leave').hidden = ui.leaving || !!s.local?.state?.enabled;
   $('leave').disabled = !!s.busy;
   $('leave-error').hidden = ui.leaving || !s.error;
   $('leave-error').textContent = s.error || '';
@@ -273,6 +408,7 @@ function renderLeave(s) {
   $('account').hidden = ui.leaving || !!s.error || !a;
   if (a) {
     $('account').textContent = a.display && a.display !== a.user ? t('panel.account', { display: a.display, user: a.user }) : a.user;
+    if (s.local?.state?.own) $('account').textContent += ` · ${t('local.service')}`;
     $('account').title = s.server || '';
   }
   $('leave-confirm').hidden = !ui.leaving;
@@ -289,6 +425,112 @@ const ordered = (list) => [...list].sort((a, b) => (b.controlling - a.controllin
 
 // What this panel is showing: the device page, a device being confirmed, the add dialog.
 const ui = { page: 'home', confirm: '', adding: false, known: null, lastQr: null, fresh: '', leaving: false };
+
+const localCommand = (action) => send({ cmd: 'local-service', action });
+const localUi = { dialog: null, seen: 0, error: '' };
+
+function localDialog(action) {
+  localUi.error = '';
+  const s = window.last;
+  const switching = action === 'start' && s.enrolled && !s.local?.state?.own;
+  const server = s.server?.split('#')[0].replace(/^https?:\/\//, '');
+  localUi.dialog = { action, switching, hadData: s.local?.state?.has_data, server, usage: null };
+  $('local-stop-delete').checked = false;
+  if (action === 'stop') localCommand('usage');
+  renderLocal(s);
+  $('local-cancel').focus();
+}
+
+function finishLocalDialog() {
+  clearTimeout(localUi.dialog?.timer);
+  localUi.dialog = null;
+  $('local-overlay').hidden = true;
+}
+
+function renderLocal(s) {
+  const { state, result, link_allowed } = s.local || {};
+  if (result?.id && result.id !== localUi.seen) {
+    localUi.seen = result.id;
+    const dialog = localUi.dialog;
+    if (result.action === 'usage' && dialog?.action === 'stop') {
+      dialog.usage = result;
+    } else if (result.action === 'stop_and_delete' && result.action === dialog?.request && result.error) {
+      clearTimeout(dialog.timer);
+      dialog.request = null;
+      dialog.spinning = false;
+      dialog.error = result.error;
+    } else {
+      if (result.action === dialog?.request) finishLocalDialog();
+      if (result.error) localUi.error = result.error;
+    }
+  }
+  const visible = !!state && state.phase !== 'off';
+  const failed = state?.phase === 'failed';
+  const starting = state?.phase === 'starting';
+  const setup = state?.phase === 'setup';
+  const restricted = visible && !starting && !failed && link_allowed === false;
+  $('local-status').hidden = !visible;
+  $('local-status').classList.toggle('bad', failed);
+  $('local-dot').hidden = failed || starting || !visible;
+  $('local-spinner').hidden = !starting;
+  $('local-line').textContent = visible ? (failed && state.port ? t('local.port_taken', { port: state.port })
+    : failed && state.error ? t('local.failure_reason', { reason: state.error })
+    : state.setup_error ? t('local.setup_error', { reason: state.setup_error })
+    : t(failed ? 'local.exited' : starting ? 'local.starting' : setup ? 'local.setup' : 'local.running')) : '';
+  $('local-open').hidden = !visible || starting;
+  $('local-open').disabled = restricted;
+  $('local-link-note').hidden = !restricted;
+  $('local-open').textContent = t(failed ? 'local.retry' : (setup && !state.admin_ready) ? 'local.complete_setup' : 'local.view');
+  $('local-stop').hidden = !visible || starting || failed;
+  $('local-setting').hidden = !state;
+  $('local-switch').disabled = !state?.available || !!localUi.dialog?.request || !!s.busy;
+  $('local-switch').setAttribute('aria-checked', !!state?.enabled);
+  $('local-setting-note').textContent = t(state?.available ? 'local.note' : 'local.unavailable');
+  $('local-alternative').hidden = !state || !!state.enabled;
+  $('local-signed-out').disabled = !state?.available || !!s.busy;
+  $('local-alternative-note').textContent = t(state?.available ? 'local.note' : 'local.unavailable');
+  $('local-error').hidden = !localUi.error;
+  $('local-error').textContent = localUi.error;
+
+  const dialog = localUi.dialog;
+  $('local-overlay').hidden = !dialog;
+  if (!dialog) return;
+  const { action, switching, server, hadData, usage, request, spinning } = dialog;
+  const start = action === 'start';
+  const deleting = !start && $('local-stop-delete').checked;
+  const bodyKey = start ? (switching ? 'local.switch_body' : hadData ? 'local.resume_body' : 'local.start_body')
+    : 'local.stop_body';
+  const noteKey = start ? (switching ? 'local.switch_note' : 'local.start_note') : deleting ? '' : 'local.stop_note';
+  const count = (key, n) => t(`local.${key}.${n === 1 ? 'one' : 'other'}`, { n });
+  $('local-title').textContent = t(switching ? 'local.switch_title' : `local.${action}_title`);
+  let body = t(bodyKey, { server });
+  if (!start && typeof usage?.computers === 'number') {
+    const { computers, browsers } = usage;
+    if (computers && browsers) {
+      body = t('local.stop_usage', { computers: count('computers', computers), browsers: count('browsers', browsers) });
+    } else if (computers || browsers) {
+      const n = computers || browsers;
+      body = t(`local.stop_usage_single.${n === 1 ? 'one' : 'other'}`, { count: count(computers ? 'computers' : 'browsers', n) });
+    } else {
+      body = t('local.stop_usage_none');
+    }
+  }
+  $('local-body').textContent = body;
+  $('local-note').hidden = !noteKey;
+  $('local-note').textContent = noteKey ? t(noteKey, { server }) : '';
+  $('local-stop-options').hidden = start;
+  $('local-stop-delete').disabled = !!request;
+  $('local-dialog-error').hidden = !dialog.error;
+  $('local-dialog-error').textContent = dialog.error || '';
+  $('local-dialog').setAttribute('aria-busy', !!spinning);
+  $('local-confirm').classList.toggle('danger', !start);
+  $('local-confirm').disabled = !!request || (!start && !usage);
+  $('local-cancel').disabled = !!request;
+  $('local-confirm').firstElementChild.hidden = !spinning;
+  $('local-confirm').lastElementChild.textContent = t(spinning
+    ? (start ? 'local.starting_button' : 'local.stopping_button')
+    : (start ? 'local.run' : deleting ? 'local.stop_delete_button' : 'local.stop_title_button'));
+}
 
 function deviceRow(d) {
   if (ui.confirm === d.id) {
@@ -353,7 +595,7 @@ function renderAdding(s) {
   if (ui.adding && s.pair_qr) ui.sawQr = true;
   if (ui.adding && ui.sawQr && !s.pair_qr) ui.adding = false;
   if (!ui.adding) { ui.known = ids; ui.sawQr = false; }
-  $('add-overlay').hidden = !ui.adding;
+  $('add-overlay').hidden = !ui.adding || !!localUi.dialog;
   // The QR code is made by this program from its own pairing link, never from outside input.
   if ($('qr-img').dataset.svg !== (s.pair_qr || '')) { $('qr-img').innerHTML = s.pair_qr || ''; $('qr-img').dataset.svg = s.pair_qr || ''; }
 }
@@ -401,6 +643,8 @@ window.render = (s) => {
   $('loading').hidden = true;
   $('mac').hidden = !s.mac;
   $('minimize').hidden = !s.mac;
+  const localOn = !!s.local?.state?.enabled;
+  const ownLocal = !!s.local?.state?.own;
   const permissions = $('mac-permissions');
   permissions.hidden = !s.mac;
   if (s.mac) {
@@ -428,47 +672,53 @@ window.render = (s) => {
     const registered = s.mac.login === 'enabled' || s.mac.login === 'approval';
     const cleanup = $('login-cleanup');
     if (cleanup.previousElementSibling !== $('login')) $('login').after(cleanup);
-    cleanup.hidden = !!s.enrolled || !registered;
+    cleanup.hidden = !!s.enrolled || !registered || localOn;
     $('login-cleanup-status').textContent = t('mac.cleanup');
     $('mac-error').hidden = !s.mac.error;
     $('mac-error').textContent = s.mac.error;
   } else {
     $('login-cleanup').hidden = true;
   }
-  $('lock-row').hidden = !!s.mac;
+  $('lock-row').hidden = !!s.mac || !s.enrolled;
   if (!s.enrolled || !s.devices?.length) {
     ui.page = 'home';
     $('unpair-overlay').hidden = true;
   }
   $('home').hidden = ui.page !== 'home';
   $('devices-view').hidden = ui.page !== 'devices';
-  $('login').hidden = !!s.enrolled;
-  $('running').hidden = !s.enrolled;
+  $('login').hidden = !!s.enrolled || localOn;
+  $('running').hidden = !s.enrolled && !localOn;
+  $('device-settings').hidden = !s.enrolled;
   $('status-line').hidden = !s.enrolled;
+  $('problem').textContent = [s.problem, s.root_problem].filter(Boolean).join('\n');
+  $('problem').hidden = !$('problem').textContent;
   if (!s.enrolled) {
     ui.adding = false;
     ui.sawQr = false;
     ui.confirm = '';
     ui.fresh = '';
     for (const overlay of document.querySelectorAll('.overlay')) overlay.hidden = true;
-    $('title').textContent = t('login.title');
-    $('foot').hidden = true;
-    ui.leaving = false;
+    $('title').textContent = localOn ? s.name : t('login.title');
+    if (s.retry_sign_out) renderLeave(s);
+    else {
+      $('foot').hidden = true;
+      ui.leaving = false;
+    }
     $('error').textContent = s.error || '';
     $('submit').disabled = !!s.busy;
-    return;
   }
-  $('title').textContent = s.name;
+  if (s.enrolled) $('title').textContent = s.name;
   if (!s.mac) $('lock').setAttribute('aria-checked', s.auto_lock);
   let text = t('status.online'), dot = 'ok';
   if (s.mac && (!s.mac.screen || !s.mac.accessibility)) { text = t('status.mac_permissions'); dot = 'warn'; }
   else if (s.controller) { text = t('status.controlled', { name: s.controller }); dot = 'warn'; }
   else if (s.waiting) { text = t('status.waiting', { code: s.approval_code || '' }); dot = 'warn'; }
   else if (!s.online) { text = t('status.connecting'); dot = ''; }
-  renderDevices(s);
-  renderAdding(s);
-  renderAsk(s);
-  renderLeave(s);
+  if (s.enrolled) {
+    renderDevices(s);
+    renderAsk(s);
+    renderLeave(s);
+  }
   // Until the first answer from the service, say so instead of claiming it is down.
   if (s.service && !s.service_checked) { text = t('status.service_connecting'); dot = ''; }
   else if (s.service && !s.service_running) { text = s.starting ? t('status.service_starting') : t('status.service_down'); dot = 'warn'; }
@@ -476,25 +726,25 @@ window.render = (s) => {
   // Starting with the computer: the Windows services' start type, or the Mac's login item.
   const mac = s.mac;
   const startKey = mac ? 'mac.autostart' : 'panel.autostart';
-  $('autostart-row').hidden = s.autostart == null;
+  $('autostart-row').hidden = !localOn && s.autostart == null;
   $('autostart-label').textContent = t(startKey);
   $('autostart').setAttribute('aria-label', t(startKey));
-  $('autostart').setAttribute('aria-checked', !!s.autostart);
-  $('autostart').disabled = !!mac && mac.login === 'unavailable' && !s.autostart;
-  $('autostart-note').textContent = mac
+  $('autostart').setAttribute('aria-checked', localOn || !!s.autostart);
+  $('autostart').disabled = localOn || (!!mac && mac.login === 'unavailable' && !s.autostart);
+  $('autostart-note').textContent = localOn ? t('local.autostart_note') : mac
     ? (mac.login === 'approval' ? t('mac.login_approval') : mac.login === 'unavailable' ? t('mac.login_unavailable') : '')
     : (s.autostart ? '' : t('panel.autostart_off_note'));
   $('autostart-note').hidden = !$('autostart-note').textContent;
   $('login-settings').hidden = !(mac && mac.login === 'approval');
-  if (s.autostart === false) $('autostart-confirm').hidden = true;
+  if (localOn || s.autostart === false) $('autostart-confirm').hidden = true;
   // Keep-awake, directly under it, wherever the host runs.
-  $('prevent-sleep-row').hidden = s.prevent_sleep == null;
-  $('prevent-sleep').setAttribute('aria-checked', !!s.prevent_sleep);
-  $('prevent-sleep-note').textContent = t('panel.prevent_sleep_note', { percent: s.keep_awake_min_battery });
+  $('prevent-sleep-row').hidden = !localOn && s.prevent_sleep == null;
+  $('prevent-sleep').setAttribute('aria-checked', localOn || !!s.prevent_sleep);
+  $('prevent-sleep').disabled = localOn;
+  $('prevent-sleep-note').textContent = localOn ? t('local.sleep_note') : t('panel.prevent_sleep_note', { percent: s.keep_awake_min_battery });
   // A failure has a reason; "connecting" forever without one helps nobody.
   if (!s.online && s.problem) { text = t('status.no_server'); dot = 'warn'; }
-  $('problem').hidden = !(!s.online && s.problem);
-  $('problem').textContent = s.problem || '';
+  if (ownLocal && !localOn) { text = t('local.stopped'); dot = ''; }
   $('status').textContent = text;
   $('dot').className = `dot ${dot}`;
   $('end').hidden = !s.controller;
@@ -507,6 +757,8 @@ window.render = (s) => {
   $('ai-dot').className = s.ai_client ? 'dot' : 'dot off';
   $('stop-ai').hidden = s.ai_state !== 'on';
   $('stop-ai').textContent = s.ai_client ? t('overlay.disconnect') : t('panel.stop_ai');
+  renderLocal(s);
+  if (s.enrolled) renderAdding(s);
 };
 
 const showPage = (page) => { ui.page = page; ui.confirm = ''; if (window.last) window.render(window.last); };
@@ -541,10 +793,38 @@ document.addEventListener('keydown', (e) => {
   else if (!$('add-overlay').hidden) $('add-close').click();
   else if (!$('full-overlay').hidden) $('full-close').click();
   else if (!$('unpair-overlay').hidden) $('unpair-cancel').click();
+  else if (!$('local-overlay').hidden) $('local-cancel').click();
   else if (ui.page === 'devices') showPage('home');
 });
 for (const id of ['close', 'close2']) $(id).addEventListener('click', () => send({ cmd: 'close' }));
 $('minimize').addEventListener('click', () => send({ cmd: 'minimize' }));
+$('find-again').addEventListener('click', () => send({ cmd: 'find-local-servers' }));
+$('local-signed-out').onclick = () => localDialog('start');
+$('local-switch').onclick = () => localDialog(window.last.local.state.enabled ? 'stop' : 'start');
+$('local-stop').onclick = () => localDialog('stop');
+$('local-stop-delete').onchange = () => renderLocal(window.last);
+$('local-open').onclick = () => {
+  const { phase, admin_ready } = window.last.local.state;
+  localUi.error = '';
+  localCommand(phase === 'failed' ? 'retry' : (phase === 'setup' && !admin_ready) ? 'setup' : 'open');
+};
+$('local-cancel').onclick = () => { finishLocalDialog(); window.render(window.last); };
+$('local-confirm').onclick = () => {
+  const dialog = localUi.dialog;
+  if (!dialog || dialog.request) return;
+  dialog.request = dialog.action === 'stop' && $('local-stop-delete').checked ? 'stop_and_delete' : dialog.action;
+  dialog.error = '';
+  dialog.timer = setTimeout(() => {
+    dialog.spinning = true;
+    renderLocal(window.last);
+  }, 300);
+  renderLocal(window.last);
+  localCommand(dialog.request);
+};
+$('server').addEventListener('input', () => {
+  serverChoice = 'typed';
+  renderLocalServers();
+});
 $('login').addEventListener('submit', (e) => {
   e.preventDefault();
   send({ cmd: 'login', server: $('server').value.trim(), user: $('user').value.trim(), password: $('password').value });

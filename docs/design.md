@@ -32,6 +32,11 @@ by the document's `lang` attribute, and `--font-mono` for codes.
 standard manifest icons and README use the three-colour mark on a transparent background.
 The Windows app and tray icons and the macOS app icon use the white mark on a rounded blue
 gradient tile. The macOS menu bar uses a monochrome template with one opacity per region.
+The tray and menu bar show the local service at the bottom right. A transparent cut-out
+separates the badge from the mark. Windows uses the notification area's small icon size
+at its DPI, with green for running and amber for failure. The macOS template uses a solid
+dot for running and a ring for failure, with the state named in the menu and tooltip.
+Stopped service uses the plain icon.
 The maskable and Apple touch icons use the gradient to the edges for system cropping.
 
 ## Components (`design.css`)
@@ -68,8 +73,9 @@ top on the page ground. Content is not wrapped in a card; a card is used only fo
 list, such as a computer.
 
 The browser's top bar (`.topbar`) shows `Deskway` on the left. On the right, **Scan to open**
-comes first, followed by the language and account menus where shown. The button opens a dialog
-with the site's root address as a QR code and as copyable text. The title (`.heading h1`,
+comes first, followed by the language and account menus where shown. The dialog shows a QR code
+and copyable address for the site's root. When the local hub provides a guide address, the
+dialog uses it and mentions the one-time certificate install. The title (`.heading h1`,
 `--fs-display`) is in the same place on every page. Forms are at most 360 wide and pages at most 1280.
 
 On the browser's sub-pages (a computer, **My devices**), the title begins with a back control: a
