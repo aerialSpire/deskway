@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use deskway_server_connection::Address;
 use polling::{Event, Events, Poller};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +24,7 @@ use tungstenite::{Message as WsMessage, WebSocket};
 use crate::audit::Audit;
 use crate::auth::{AiState, Trust};
 use crate::config::Config;
+use crate::discovery::{Browse, Change};
 use crate::display::DisplayInfo;
 use crate::mcp::{Facts, SharedFacts};
 use crate::platform::{BrowserSession, Desk, DeskParams, DesktopFeatures, Features, Platform, PlatformEvent, Replies, WorkspaceState};
@@ -34,7 +36,7 @@ use crate::session::{self, SessionEvent, SessionUpdate};
 use crate::session::terminal::registry::Registry as Terminals;
 use crate::settings::{PanelRequest, Settings};
 use crate::vitals::{self, Sample};
-use crate::wake::{Wake, Waker};
+use crate::wake::{Wake, Waker, WeakWake};
 
 mod alive;
 mod registry;
@@ -152,6 +154,8 @@ pub enum Control {
     SetAutoStart(bool),
     /// A setting changed: the panel shows it.
     Report,
+    /// The pinned local server announced itself while signaling was offline.
+    ServerAnnounced,
     Quit,
 }
 
@@ -942,6 +946,7 @@ impl Host {
                 self.report();
             }
             Control::Report => self.report(),
+            Control::ServerAnnounced => {}
             Control::Quit => {
                 self.quit = true;
                 if let Some(terminal) = &mut self.terminal {
@@ -1028,12 +1033,14 @@ impl Drop for Connection<'_> {
 pub struct Controls {
     rx: Receiver<Control>,
     wake: Waker,
+    sender: WeakWake<Control>,
 }
 
 pub fn control_channel() -> (Wake<Control>, Controls) {
     let wake = Waker::default();
     let (tx, rx) = wake.channel();
-    (tx, Controls { rx, wake })
+    let sender = tx.downgrade();
+    (tx, Controls { rx, wake, sender })
 }
 
 struct Queues {
@@ -1046,26 +1053,52 @@ struct Queues {
 }
 
 impl Queues {
-    fn drain_control(&self, host: &mut Host) {
-        while let Ok(c) = self.control.try_recv() {
+    fn drain_control(&self, host: &mut Host, first: Option<Control>) -> bool {
+        let mut announced = false;
+        for c in first.into_iter().chain(self.control.try_iter()) {
+            announced |= c == Control::ServerAnnounced;
             host.on_control(c);
         }
+        announced
     }
 
     fn on_message(&self, host: &mut Host, text: &str) -> bool {
-        self.drain_control(host);
+        self.drain_control(host, None);
         !host.quit && host.on_message(text)
     }
 
     /// What can be handled without the server.
-    fn drain_local(&self, host: &mut Host) {
+    fn drain_local(&self, host: &mut Host, first: Option<Control>) -> bool {
         host.transfers.expire(Instant::now());
-        self.drain_control(host);
+        let announced = self.drain_control(host, first);
         while let Ok(u) = self.updates.try_recv() {
             host.on_update(u);
         }
         while let Ok(on) = self.share.try_recv() {
             host.browser_set_clip_share(on);
+        }
+        announced
+    }
+
+    fn wait_for_retry(&self, host: &mut Host, deadline: Instant) {
+        while !host.quit {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let first = match self.control.recv_timeout(left.min(Duration::from_millis(200))) {
+                Ok(c) => Some(c),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => Some(Control::Quit),
+            };
+            let announced = self.drain_local(host, first);
+            // Displays and notes still count offline; thumbnails have nowhere to go.
+            for e in self.platform.iter().flat_map(Receiver::try_iter) {
+                let _ = host.on_platform(e, None);
+            }
+            if announced {
+                break;
+            }
         }
     }
 }
@@ -1107,7 +1140,7 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
             alive::Due::Ping => ws.send(WsMessage::Ping(alive.ping_payload(now).to_vec().into()))?,
             alive::Due::Gone => anyhow::bail!("the server said nothing for {}s", alive::SILENT.as_secs()),
         }
-        q.drain_local(host);
+        q.drain_local(host, None);
         if let Some(samples) = &host.sampling {
             let result = samples.try_recv();
             if !matches!(result, Err(TryRecvError::Empty)) {
@@ -1163,7 +1196,7 @@ impl Host {
     /// folder (None refuses every offer).
     fn new(p: Params, trust: Option<Trust>, controls: Controls) -> (Host, Queues) {
         let Params { cfg, view_only, desktop, browser, notify, settings, workspace, admin } = p;
-        let Controls { rx: control, wake } = controls;
+        let Controls { rx: control, wake, .. } = controls;
         let (out_tx, out) = wake.channel();
         let (updates_tx, updates) = wake.channel();
         let (share_tx, share) = wake.channel();
@@ -1216,17 +1249,31 @@ impl Host {
     }
 }
 
+fn wake_on_announcement(pin: String, sender: WeakWake<Control>) -> impl FnMut(Change) {
+    move |change| {
+        if change.server.is_some_and(|server| server.address.fingerprint() == Some(&pin)) {
+            if let Some(tx) = sender.upgrade() {
+                let _ = tx.send(Control::ServerAnnounced);
+            }
+        }
+    }
+}
+
 /// Runs the host until it is told to quit or `control` closes.
 pub fn run(p: Params, control: Controls) {
     let trust = crate::config::dir().and_then(|d| Trust::open(d, &p.cfg.id, &p.cfg.server)).map_err(|e| eprintln!("trust store unavailable, refusing all sessions: {e:#}")).ok();
+    let address = Address::parse(&p.cfg.server).ok();
+    let sender = control.sender.clone();
     let (mut host, q) = Host::new(p, trust, control);
     let cfg = host.cfg.clone();
     let view_only = host.view_only;
     let mut delay = Duration::from_secs(1);
+    let mut browse = None;
     eprintln!("Deskway host: {} -> {}{}", cfg.name, cfg.server, if view_only { " (view only)" } else { "" });
     while !host.quit {
         match connect(&cfg) {
             Ok(mut ws) => {
+                browse = None;
                 eprintln!("connected");
                 host.problem = None;
                 host.online = true;
@@ -1254,28 +1301,20 @@ pub fn run(p: Params, control: Controls) {
                 host.report();
             }
         }
-        // Sleeps on the control queue so the local panel stays responsive while offline.
-        let wake = Instant::now() + delay;
-        while !host.quit {
-            let left = wake.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                break;
-            }
-            match q.control.recv_timeout(left.min(Duration::from_millis(200))) {
-                Ok(c) => host.on_control(c),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => host.on_control(Control::Quit),
-            }
-            q.drain_local(&mut host);
-            // Displays and notes still count offline; thumbnails have nowhere to go.
-            for e in q.platform.iter().flat_map(Receiver::try_iter) {
-                let _ = host.on_platform(e, None);
+        // Keep the same browse across retries so each resolution wakes us once, even if
+        // the service advertises before it can accept a connection.
+        if !host.quit && browse.is_none() {
+            if let Some(pin) = address.as_ref().and_then(Address::fingerprint) {
+                browse = Some(Browse::start(wake_on_announcement(pin.into(), sender.clone()))
+                    .map_err(|e| eprintln!("cannot browse for the local server: {e:#}")).ok());
             }
         }
+        q.wait_for_retry(&mut host, Instant::now() + delay);
         if !host.waiting {
             delay = (delay * 2).min(Duration::from_secs(30));
         }
     }
+    drop(browse);
     // Without signaling, still wait for session-owned resources to be released before exit.
     while host.has_sessions() {
         let Ok(update) = q.updates.recv() else { break };
@@ -1458,6 +1497,31 @@ mod tests {
             self.host.sessions.of_mut(seat).established(id);
             rx
         }
+    }
+
+    #[test]
+    fn matching_local_announcement_interrupts_retry_wait() {
+        let mut t = Test::new("local-retry", false, false);
+        let pin = "ab".repeat(32);
+        let announce = |fingerprint: &str| Change {
+            instance: "hub._deskway._tcp.local.".into(),
+            server: Some(crate::discovery::Server {
+                name: "Hub".into(),
+                address: Address::parse(&format!("https://hub.local:18499#ca={fingerprint}")).unwrap(),
+            }),
+        };
+        let mut receive = wake_on_announcement(pin.clone(), t.control.downgrade());
+        receive(Change { instance: announce(&pin).instance, server: None });
+        receive(announce(&"cd".repeat(32)));
+        assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
+
+        // A notification already queued behind other work must still end the wait.
+        t.control.send(Control::Report).unwrap();
+        receive(announce(&pin));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        t.q.wait_for_retry(&mut t.host, deadline);
+        assert!(Instant::now() < deadline);
+        assert!(matches!(t.q.control.try_recv(), Err(TryRecvError::Empty)));
     }
 
     #[test]

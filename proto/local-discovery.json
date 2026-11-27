@@ -1,0 +1,16 @@
+{
+  "service": "_deskway._tcp.local.",
+  "records": {
+    "srv": {
+      "host": "sean-asus.local.",
+      "port": 18499
+    },
+    "txt": {
+      "v": "1",
+      "fp": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "name": "客廳",
+      "guide": "18498"
+    }
+  },
+  "address": "https://sean-asus.local:18499#ca=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

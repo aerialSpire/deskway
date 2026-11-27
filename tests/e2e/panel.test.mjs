@@ -58,8 +58,51 @@ export const area = {
       // Signed out: the title, the language at the top right, no bottom bar.
       await render({ enrolled: false });
       h.check(`panel ${lang}: signed out: the title is the sign-in's, the language sits at the top right`, await p.eval(`document.querySelector('#title').textContent === ${JSON.stringify(t['login.title'])} && document.querySelector('#foot').hidden && (() => { const r = document.querySelector('#lang').getBoundingClientRect(); return r.left > innerWidth / 2 && r.top < 60; })()`));
+      const search = () => p.eval('window.searchLocalServers(true)');
+      const hub = (i) => ({ name: `Studio ${i}`, address: `https://studio-${i}.local:18599#ca=${String(i).repeat(64)}` });
+      const found = (...servers) => p.eval(`window.showLocalServers(${lit(servers)})`);
+      const box = '$(\'found-box\')';
+      const geometry = () => p.eval(`[${box}.getBoundingClientRect().height, $('server').getBoundingClientRect().top]`);
+      const selected = () => p.eval(`$('found-servers').querySelector('[aria-pressed=true]')?.dataset.address ?? null`);
+      const server = () => p.eval(`$('server').value`);
+      await search();
+      const fixedRow = await geometry();
+      h.check(`panel ${lang}: discovery shows the title and spinner while searching`, await p.eval(`
+        $('found-title').textContent === ${lit(t['login.found_title'])} &&
+        !$('found-searching').hidden && !!$('found-searching').querySelector('.spinner') &&
+        $('found-searching').textContent.trim() === ${lit(t['login.found_searching'])}`));
+      await p.until(`!$('found-none').hidden`, `${lang}: discovery search times out`);
+      h.check(`panel ${lang}: discovery shows the empty message at the same height`, await p.eval(`
+        $('found-none').querySelector('[role=status]').textContent === ${lit(t['login.found_none'])}`) &&
+        JSON.stringify(await geometry()) === JSON.stringify(fixedRow));
       await layout('signed out');
       await p.shot(`panel-${lang}-login`, 380, 700);
+      await clearSent();
+      await p.eval(`$('find-again').click()`);
+      h.check(`panel ${lang}: search again requests a fresh browse`, JSON.stringify(await sent()) === JSON.stringify([{ cmd: 'find-local-servers' }]));
+      await search();
+      await found(hub(1));
+      await p.until(`!$('found-servers').hidden`, `${lang}: one discovery result`);
+      h.check(`panel ${lang}: a single result fills the pinned address at the same height`, await selected() === hub(1).address &&
+        await server() === hub(1).address && JSON.stringify(await geometry()) === JSON.stringify(fixedRow) &&
+        await p.eval(`$('found-servers').querySelector('.dn').textContent === ${lit(hub(1).name + hub(1).address.split('#')[0])}`));
+      await found(hub(1), hub(2), hub(3));
+      h.check(`panel ${lang}: several results scroll at 2.5 rows without automatic selection`, await selected() === null &&
+        await server() === '' && await p.eval(`(() => {
+          const box = ${box};
+          const row = $('found-servers').firstElementChild;
+          return $('found-servers').children.length === 3 && box.scrollHeight > box.clientHeight &&
+            box.clientHeight === 2.5 * row.getBoundingClientRect().height;
+        })()`));
+      await layout('several local services');
+      await p.eval(`$('found-servers').children[1].click()`);
+      await found(hub(1), hub(2), hub(3));
+      h.check(`panel ${lang}: picking a server fills its full address and keeps the selection across updates`,
+        await selected() === hub(2).address && await server() === hub(2).address);
+      await p.eval(`$('server').value = 'https://manual.example'; $('server').dispatchEvent(new Event('input'))`);
+      await found(hub(1));
+      h.check(`panel ${lang}: typing clears selection and discovery preserves the typed address`,
+        await selected() === null && await server() === 'https://manual.example');
       // The language is the client's menu, not a native list: each in its own name, the current checked.
       const other = LANGS.find((l) => l !== lang);
       await clearSent();

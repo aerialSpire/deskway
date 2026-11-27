@@ -27,6 +27,7 @@ sha2 = "0.10"
 rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
 getrandom = "0.2"
 sysinfo = { version = "0.40.4", default-features = false, features = ["disk", "system"] }
+mdns-sd = { version = "0.22.0", default-features = false }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 jpeg-encoder = "0.6"

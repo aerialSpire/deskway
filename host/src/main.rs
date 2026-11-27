@@ -9,6 +9,7 @@ mod auth;
 #[cfg(desktop_host)]
 mod clipboard;
 mod config;
+mod discovery;
 mod display;
 mod i18n;
 #[cfg(desktop_host)]

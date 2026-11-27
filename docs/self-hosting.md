@@ -33,11 +33,12 @@ Run `deskway-server admin-link -data FILE -url https://sean-asus.local:18499` wi
 normalized hostname to set up the admin. Once an admin exists, add `-login` to issue a one-time
 link that signs in the browser without changing the password. Open it within two minutes.
 
-To join from Deskway Host or the `deskway` CLI, use one server address in the form
-`https://sean-asus.local:18499#ca=<64 hex digits>`. Use the fingerprint from the hub's
-startup log. Paste the whole address into **Server address**, pass it to
-`deskway-host enroll --server`, or run `deskway login '<address>' --user me`. Confirm the
-usual six-digit approval in a signed-in browser.
+To join from the Deskway Host panel, choose the local server under **Found on this network**.
+The panel fills **Server address** with the full address and selects a single result automatically.
+To enter the address yourself, use `https://sean-asus.local:18499#ca=<64 hex digits>` with the
+fingerprint from the hub's startup log. Paste it into **Server address**, pass it to
+`deskway-host enroll --server`, or run `deskway login '<address>' --user me`. Confirm the usual
+six-digit approval in a signed-in browser.
 
 Host and CLI verify and keep the pinned root automatically. Host also adds the root for
 browsers on Windows and macOS. On macOS, approve the system prompt to enable browser

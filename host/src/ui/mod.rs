@@ -7,17 +7,21 @@
 //! make the page's state; the page's messages are [`PageMessage`]s, and the requests among them
 //! that the host carries out are [`PanelRequest`]s.
 
+use std::collections::BTreeMap;
+use std::sync::mpsc::{self, Receiver};
+
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tao::window::WindowBuilder;
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, MouseButton, TrayIconBuilder, TrayIconEvent};
 use wry::{WebContext, WebView, WebViewBuilder};
 
+use crate::discovery::Browse;
 use crate::i18n::{self, t};
 use crate::platform::ui as native;
 use crate::settings::PanelRequest;
@@ -82,6 +86,7 @@ pub enum UiEvent {
     Refresh,
     /// The backend's own events.
     Backend(BackendEvent),
+    LocalServersChanged,
 }
 
 /// What a page sends (`cmd`).
@@ -111,6 +116,7 @@ pub enum PageMessage {
     Unpair,
     RemoveDevice { id: String },
     StartService,
+    FindLocalServers,
     Login { server: String, user: String, password: String },
     Leave,
     ScreenRequest,
@@ -209,11 +215,39 @@ fn root_problem(error: Option<&str>) -> Option<String> {
     error.map(|e| crate::i18n::tf("err.root_trust", &[("e", e.to_string())]))
 }
 
+struct LocalDiscovery {
+    _browse: Option<Browse>,
+    results: Receiver<Vec<Value>>,
+}
+
+impl LocalDiscovery {
+    fn start(proxy: EventLoopProxy<UiEvent>) -> Self {
+        let (tx, results) = mpsc::channel();
+        let mut found = BTreeMap::new();
+        let browse = Browse::start(move |change| {
+            if let Some(server) = change.server {
+                let result = json!({ "name": server.name, "address": server.address.saved() });
+                if found.get(&change.instance) == Some(&result) {
+                    return;
+                }
+                found.insert(change.instance, result);
+            } else if found.remove(&change.instance).is_none() {
+                return;
+            }
+            if tx.send(found.values().cloned().collect()).is_ok() {
+                let _ = proxy.send_event(UiEvent::LocalServersChanged);
+            }
+        }).map_err(|e| eprintln!("cannot browse for local servers: {e:#}")).ok();
+        Self { _browse: browse, results }
+    }
+}
+
 struct App {
     backend: HostBackend,
     /// The host's last status; None before the first, or while it cannot be reached.
     status: Option<Status>,
     panel_ready: bool,
+    discovery: Option<LocalDiscovery>,
     /// The language the windows show now.
     shown: i18n::Lang,
 }
@@ -221,6 +255,14 @@ struct App {
 impl App {
     fn state(&self) -> Value {
         panel_state(self.status.as_ref(), self.backend.extras())
+    }
+
+    fn discover(&mut self, on: bool, panel: &WebView, proxy: &EventLoopProxy<UiEvent>) {
+        if on == self.discovery.is_some() {
+            return;
+        }
+        self.discovery = on.then(|| LocalDiscovery::start(proxy.clone()));
+        let _ = panel.evaluate_script(&format!("searchLocalServers({on})"));
     }
 }
 
@@ -290,7 +332,7 @@ pub fn run(at_login: bool) -> Result<()> {
         let _ = p.send_event(UiEvent::Menu(e.id));
     }));
 
-    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login), status: None, panel_ready: false, shown: i18n::current() };
+    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login), status: None, panel_ready: false, discovery: None, shown: i18n::current() };
     if app.backend.start() {
         let _ = proxy.send_event(UiEvent::TrayOpen);
     }
@@ -300,9 +342,15 @@ pub fn run(at_login: bool) -> Result<()> {
 
     event_loop.run(move |event, target, flow| {
         *flow = ControlFlow::Wait;
-        let render = |app: &App, panel: &WebView| {
+        let sync_discovery = |app: &mut App, state: &Value| {
+            let on = state["enrolled"] == false && window.is_visible() && !window.is_minimized();
+            app.discover(on, &panel, &proxy);
+        };
+        let render = |app: &mut App| {
             if app.panel_ready {
-                let _ = panel.evaluate_script(&format!("render({})", app.state()));
+                let state = app.state();
+                let _ = panel.evaluate_script(&format!("render({state})"));
+                sync_discovery(app, &state);
             }
         };
         // The indicator follows who controls this computer: a person, an AI client, or both.
@@ -333,21 +381,29 @@ pub fn run(at_login: bool) -> Result<()> {
             Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } if window_id == window.id() => {
                 // Closing the panel never stops the host: it keeps running in the tray.
                 native::hide_panel(&window);
+                app.discover(false, &panel, &proxy);
             }
             // Permissions may have changed in System Settings meanwhile.
-            Event::WindowEvent { event: WindowEvent::Focused(true), window_id, .. } if window_id == window.id() => render(&app, &panel),
+            Event::WindowEvent { event: WindowEvent::Focused(true), window_id, .. } if window_id == window.id() => render(&mut app),
+            Event::WindowEvent { event: WindowEvent::Resized(_) | WindowEvent::Focused(false), window_id, .. }
+                if window_id == window.id() && app.panel_ready =>
+            {
+                let state = app.state();
+                sync_discovery(&mut app, &state);
+            }
             Event::UserEvent(UiEvent::ScreenChanged) if window.is_visible() => native::fit_panel(&window),
             #[cfg(windows)]
-            Event::UserEvent(UiEvent::Refresh) => render(&app, &panel),
+            Event::UserEvent(UiEvent::Refresh) => render(&mut app),
             Event::Reopen { .. } | Event::UserEvent(UiEvent::TrayOpen) => {
                 native::show_panel(&window);
-                render(&app, &panel);
+                render(&mut app);
             }
             Event::UserEvent(UiEvent::Menu(id)) => {
                 if id == open_id {
                     native::show_panel(&window);
-                    render(&app, &panel);
+                    render(&mut app);
                 } else if id == quit_id {
+                    app.discover(false, &panel, &proxy);
                     app.backend.quit();
                     // Lets the signaling thread tell the viewer, so it does not keep reconnecting.
                     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -369,13 +425,19 @@ pub fn run(at_login: bool) -> Result<()> {
                 app.status = st;
                 follow_language(&mut app, &panel, &mut indicator, &open_item, &quit_item);
                 show_controller(&app, &mut indicator, target);
-                render(&app, &panel);
+                render(&mut app);
             }
             Event::UserEvent(UiEvent::Backend(e)) => {
                 if app.backend.event(e) {
-                    render(&app, &panel);
+                    render(&mut app);
                 } else {
+                    app.discover(false, &panel, &proxy);
                     *flow = ControlFlow::Exit;
+                }
+            }
+            Event::UserEvent(UiEvent::LocalServersChanged) => {
+                if let Some(results) = app.discovery.as_ref().and_then(|d| d.results.try_iter().last()) {
+                    let _ = panel.evaluate_script(&format!("showLocalServers({})", json!(results)));
                 }
             }
             Event::UserEvent(UiEvent::Ipc(text)) => {
@@ -383,9 +445,10 @@ pub fn run(at_login: bool) -> Result<()> {
                 match m {
                     PageMessage::Ready => {
                         app.panel_ready = true;
+                        app.discovery = None;
                         // A reloaded page may carry the language it was first built with.
                         let _ = panel.evaluate_script(&format!("setLang({})", i18n::page_data()));
-                        render(&app, &panel);
+                        render(&mut app);
                     }
                     PageMessage::OverlayReady => {
                         if let Some(i) = &mut indicator {
@@ -413,8 +476,19 @@ pub fn run(at_login: bool) -> Result<()> {
                         let _ = window.drag_window();
                     }
                     PageMessage::DragRegion { rect } => panel_window.set_region(rect),
-                    PageMessage::Close => native::hide_panel(&window),
-                    PageMessage::Minimize => native::minimize_panel(&window),
+                    PageMessage::Close | PageMessage::Minimize => {
+                        if m == PageMessage::Close {
+                            native::hide_panel(&window);
+                        } else {
+                            native::minimize_panel(&window);
+                        }
+                        app.discover(false, &panel, &proxy);
+                    }
+                    PageMessage::FindLocalServers => {
+                        if app.discovery.take().is_some() {
+                            app.discover(true, &panel, &proxy);
+                        }
+                    }
                     // Only the folder the host named; the page cannot choose another.
                     PageMessage::OpenFolder => {
                         if let Some((_, Some(folder))) = indicator.as_ref().and_then(|i| i.note.clone()) {
@@ -434,7 +508,7 @@ pub fn run(at_login: bool) -> Result<()> {
                             None => app.backend.page(m),
                         };
                         if redraw {
-                            render(&app, &panel);
+                            render(&mut app);
                         }
                     }
                 }

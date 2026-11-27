@@ -61,6 +61,20 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 .dn .dname > .tag { flex: none; }
 .dn span { font-size: var(--fs-caption); color: var(--quiet); }
 .dn span.live { color: var(--ok); }
+.found { margin-top: var(--s4); }
+.found h2 { color: var(--quiet); font-size: var(--fs-caption); font-weight: 400; }
+.found-box { --found-row: 52px; margin-top: var(--s2); height: calc(var(--found-row) + 2px); overflow: hidden; border: 1px solid var(--line); border-radius: var(--r-box); }
+.found-box.many { height: auto; max-height: calc(2.5 * var(--found-row) + 2px); overflow-y: auto; }
+.found-state { height: 100%; display: flex; align-items: center; gap: var(--s2); padding: 0 var(--s2) 0 var(--s3); color: var(--quiet); font-size: var(--fs-caption); }
+.found-state span:last-of-type { flex: 1; }
+.found-state[hidden] { display: none; }
+.found-box .dev { width: 100%; height: var(--found-row); min-height: 0; padding: 0 var(--s3); border: 0; border-bottom: 1px solid var(--line); border-radius: 0; color: var(--ink); text-align: start; }
+.found-box .dev:focus-visible { outline-offset: -2px; }
+.found-box .dev:last-child { border-bottom: 0; }
+.found-box .dev[aria-pressed="true"] { background: var(--accent-soft); }
+.found-box .dn > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.found-box .pick { flex: none; color: var(--quiet); font-size: var(--fs-caption); }
+.found-box .dev[aria-pressed="true"] .pick { color: var(--accent); }
 .all { margin-top: var(--s1); display: flex; justify-content: flex-end; }
 .empty { margin-top: var(--s3); padding: var(--s4); border: 1px dashed var(--line-strong); border-radius: var(--r-box); text-align: center; }
 .empty p { color: var(--quiet); font-size: var(--fs-small); }
@@ -108,6 +122,19 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
   <div class="main">
     <form id="login" hidden>
       <p class="sub" id="login-help" data-i18n="login.help"></p>
+      <section class="found" aria-labelledby="found-title">
+        <h2 id="found-title" data-i18n="login.found_title"></h2>
+        <div class="found-box" id="found-box">
+          <div class="found-state" id="found-searching" role="status" hidden>
+            <span class="spinner" aria-hidden="true"></span><span data-i18n="login.found_searching"></span>
+          </div>
+          <div class="found-state" id="found-none">
+            <span class="dot" aria-hidden="true"></span><span role="status" data-i18n="login.found_none"></span>
+            <button class="btn text compact" id="find-again" type="button" data-i18n="login.found_retry"></button>
+          </div>
+          <div id="found-servers" hidden></div>
+        </div>
+      </section>
       <div class="fields">
         <label><span data-i18n="login.server"></span><input class="input" id="server" required></label>
         <label><span data-i18n="login.user"></span><input class="input" id="user" autocomplete="username" required></label>
@@ -246,9 +273,68 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 <div class="notice dark toast" id="toast" role="status" hidden></div>
 
 <script>
-followLanguage(() => { if (window.last) window.render(window.last); }, $('lang'));
+followLanguage(() => {
+  if (window.last) window.render(window.last);
+  renderLocalServers();
+}, $('lang'));
 
 const button = (label, cls, f) => { const b = h('button', { class: cls, type: 'button' }, label); b.onclick = f; return b; };
+
+let localServers = [];
+let searchTimer;
+// The server field holds the address. This tracks how it was filled.
+let serverChoice = 'untouched';
+
+function renderLocalServers() {
+  const field = $('server');
+  const searching = searchTimer !== undefined;
+  const servers = searching ? [] : localServers;
+  if (serverChoice === 'untouched' || serverChoice === 'auto') {
+    if (servers.length === 1) {
+      field.value = servers[0].address;
+      serverChoice = 'auto';
+    } else if (serverChoice === 'auto') {
+      field.value = '';
+      serverChoice = 'untouched';
+    }
+  }
+  $('found-searching').hidden = !searching;
+  $('found-none').hidden = searching || servers.length > 0;
+  $('found-servers').hidden = servers.length === 0;
+  $('found-box').classList.toggle('many', servers.length > 1);
+  const rows = $('found-servers');
+  const focused = document.activeElement.dataset.address;
+  const buttons = servers.map(({ name, address }) => {
+    const chosen = serverChoice !== 'typed' && field.value === address;
+    const origin = address.split('#', 1)[0];
+    const row = h('button', { type: 'button', class: 'btn text dev', 'aria-pressed': String(chosen), 'data-address': address },
+      h('span', { class: 'dn' }, h('b', { title: name }, name), h('span', { title: origin }, origin)),
+      h('span', { class: 'pick' }, t(chosen ? 'login.found_chosen' : 'login.found_choose')));
+    row.onclick = () => {
+      field.value = address;
+      serverChoice = 'manual';
+      renderLocalServers();
+    };
+    return row;
+  });
+  rows.replaceChildren(...buttons);
+  buttons.find((row) => row.dataset.address === focused)?.focus({ preventScroll: true });
+}
+
+window.showLocalServers = (servers) => {
+  localServers = servers;
+  renderLocalServers();
+};
+
+window.searchLocalServers = (on) => {
+  clearTimeout(searchTimer);
+  // Collect the initial results together so a list of several never fills the field.
+  searchTimer = on ? setTimeout(() => {
+    searchTimer = undefined;
+    renderLocalServers();
+  }, 2000) : undefined;
+  window.showLocalServers([]);
+};
 
 // "2 hours ago", in the panel's language.
 function ago(secs) {
@@ -542,6 +628,11 @@ document.addEventListener('keydown', (e) => {
 });
 for (const id of ['close', 'close2']) $(id).addEventListener('click', () => send({ cmd: 'close' }));
 $('minimize').addEventListener('click', () => send({ cmd: 'minimize' }));
+$('find-again').addEventListener('click', () => send({ cmd: 'find-local-servers' }));
+$('server').addEventListener('input', () => {
+  serverChoice = 'typed';
+  renderLocalServers();
+});
 $('login').addEventListener('submit', (e) => {
   e.preventDefault();
   send({ cmd: 'login', server: $('server').value.trim(), user: $('user').value.trim(), password: $('password').value });

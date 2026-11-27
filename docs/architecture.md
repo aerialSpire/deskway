@@ -64,6 +64,8 @@ icon.rs            the shared Deskway D mark for the host, browser client and RE
                    the icon test writes and checks the browser and README PNGs
 config.rs          the host's config (host.json) and its local server root (host-ca.pem);
                    private writes
+discovery.rs       on-demand mDNS browsing with mdns-sd and mapping advertisements to pinned
+                   server addresses. The Host panel and signaling own their browse lifetimes.
 settings.rs        what the panel asks (PanelRequest) and the settings the host carries out:
                    saved first, then applied (keep-awake, language, the signaling host)
 i18n.rs            the texts of host/i18n (en, zh-Hans, zh-Hant) and the language in use
@@ -726,7 +728,9 @@ The source of truth is the viewer's constraints.
   mDNS announces `_deskway._tcp.local` with the normalized hostname, HTTPS port, CA fingerprint,
   display name, guide port and private interface addresses. It answers on-link queries with the
   current interface addresses and withdraws its records on orderly shutdown. It joins interfaces
-  at startup.
+  at startup. The server and Host check their records against `proto/local-discovery.json`.
+  The desktop panel browses while its sign-in form is visible. It collects the first results for
+  two seconds, then updates the list as announcements arrive or expire.
 - The Host and CLI keep the full sign-in address including `#ca=`. `crates/server` verifies
   the bootstrap certificate against the pin and builds same-server HTTP and signaling
   connections using system roots and that PEM. The CLI keeps the PEM in `account.json`.
@@ -744,6 +748,8 @@ The source of truth is the viewer's constraints.
   queues, or the next ping, silence or browser-transfer deadline. It drains buffered WebSocket
   and TLS data before waiting. It sends a ping every 15 seconds and reconnects after 45 seconds
   without a server frame. The matching pong measures host-to-server latency on that socket.
+  While offline between retries, a Host signed into a pinned address browses for the saved
+  fingerprint. A matching announcement wakes the control queue for an immediate retry.
 - The signaling process reads the machine's hardware once at startup. It measures load on a
   short-lived worker when the server's preview request includes vitals. The worker takes two
   CPU samples about 250 ms apart and wakes the requesting connection with the result. The

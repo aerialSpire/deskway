@@ -44,9 +44,10 @@ The Deskway Host panel opens when installation finishes. To open it later, choos
    address and code. Approve it there, or on the **My devices** page, only if the codes match.
 3. The panel shows **Online**. The computer now appears in the browser's list of computers.
 
-For a [local server](self-hosting.md#local-mode), paste the whole
-`https://name.local:port#ca=<64 hex digits>` address into **Server address**. Use the
-fingerprint from the hub's startup log. The agent adds the verified root to Windows'
+For a [local server](self-hosting.md#local-mode), choose it under **Found on this network**
+to fill **Server address**. A single result is selected automatically. You can also paste the
+whole `https://name.local:port#ca=<64 hex digits>` address using the fingerprint from the
+hub's startup log. The agent adds the verified root to Windows'
 machine-wide trusted roots for browsers if it is absent. Signing out or uninstalling
 removes a root the Host added.
 
