@@ -23,7 +23,9 @@ Administrator rights are a separate setting, **Allow administrator rights**. On 
 requires the signed-in user to be an administrator. On a Mac, each use has to be confirmed at the
 Mac. Linux hosts run commands and file operations as the host user and refuse elevation.
 On Linux, `run` and `proc_start` with a command use `$SHELL -lc`. An interactive `proc_start`
-uses `$SHELL -l`. The default shell is `/bin/sh` when `SHELL` is unset.
+uses `$SHELL -l`. The default shell is `/bin/sh` when `SHELL` is unset. For commands, Deskway
+appends the directories the host user's interactive shell adds to PATH. A login profile that
+resets PATH, as Debian's does, drops them.
 
 ## Requirements
 

@@ -309,7 +309,7 @@
       "batch": 1,
       "screen": "none",
       "needs_user": true,
-      "description": "Runs a command as the workspace user (the host user on Linux) and waits up to wait_ms. Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. Ordinary commands on macOS and Linux use $SHELL -lc, defaulting to /bin/zsh and /bin/sh respectively. Use proc_read with id and next to read on. Waiting in proc_read with wait_ms keeps the seat. After 10 minutes without a tool call, tool reply or tunnel traffic, the unused seat is given up and programs keep running. Each program keeps its last 1 MiB of output. Past 64 records per table, the oldest ended programs drop off. Restarting Deskway on the computer clears all records and output.",
+      "description": "Runs a command as the workspace user (the host user on Linux) and waits up to wait_ms. Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. Ordinary commands on macOS and Linux use $SHELL -lc, defaulting to /bin/zsh and /bin/sh respectively. Directories the person's interactive shell adds to PATH are appended (a login profile that resets PATH, as Debian's does, drops them). Use proc_read with id and next to read on. Waiting in proc_read with wait_ms keeps the seat. After 10 minutes without a tool call, tool reply or tunnel traffic, the unused seat is given up and programs keep running. Each program keeps its last 1 MiB of output. Past 64 records per table, the oldest ended programs drop off. Restarting Deskway on the computer clears all records and output.",
       "input": {
         "type": "object",
         "properties": {
@@ -342,7 +342,7 @@
       "batch": 2,
       "screen": "none",
       "needs_user": true,
-      "description": "Starts a terminal as the workspace user (the host user on Linux). Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. macOS and Linux use $SHELL -lc for a command or $SHELL -l for an interactive shell, defaulting to /bin/zsh and /bin/sh respectively. Use proc_write for input and proc_read for plain output. The program outlives the AI session.",
+      "description": "Starts a terminal as the workspace user (the host user on Linux). Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. macOS and Linux use $SHELL -lc for a command or $SHELL -l for an interactive shell, defaulting to /bin/zsh and /bin/sh respectively. For commands, directories the person's interactive shell adds to PATH are appended (a login profile that resets PATH, as Debian's does, drops them). Use proc_write for input and proc_read for plain output. The program outlives the AI session.",
       "input": {
         "type": "object",
         "properties": {

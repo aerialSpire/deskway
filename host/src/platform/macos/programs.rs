@@ -11,7 +11,7 @@ pub use programs::kill_tree;
 /// For an elevated command, the person at the Mac answers the system's prompt each time.
 pub fn start_program(command: &str, cwd: Option<&str>, elevated: bool) -> io::Result<Child> {
     if !elevated {
-        return programs::pipe(programs::shell("/bin/zsh", Some(command), cwd));
+        return programs::pipe(shell(Some(command), cwd));
     }
     let line = match cwd {
         Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
@@ -41,7 +41,11 @@ pub fn start_terminal(command: Option<&str>, cwd: Option<&str>, cols: u16, rows:
     if elevated {
         return Err(io::Error::new(io::ErrorKind::Unsupported, "a terminal cannot be started as an administrator on a Mac; use run with elevated"));
     }
-    programs::terminal(programs::shell("/bin/zsh", command, cwd), cols, rows)
+    programs::terminal(shell(command, cwd), cols, rows)
+}
+
+pub(super) fn shell(command: Option<&str>, cwd: Option<&str>) -> Command {
+    programs::shell("/bin/zsh", command, cwd, std::convert::identity)
 }
 
 pub fn session_members(id: libc::pid_t) -> io::Result<Vec<libc::pid_t>> {

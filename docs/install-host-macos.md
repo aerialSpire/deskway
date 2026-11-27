@@ -123,6 +123,10 @@ cannot change this macOS behavior.
 
 Settings and the sign-in token are stored in `~/Library/Application Support/Deskway/host.json`.
 
+Ordinary AI commands use `$SHELL -lc` or `/bin/zsh -lc` if `SHELL` is unset. Deskway appends
+the directories your interactive shell adds to PATH. A login profile that resets PATH drops
+them.
+
 ## Terminal and Files in the browser
 
 **Terminal** opens the login shell in your home folder. It uses `$SHELL -l` or `/bin/zsh -l`
