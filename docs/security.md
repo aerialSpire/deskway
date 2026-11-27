@@ -76,6 +76,10 @@ browser that uses it and signs it in. Its registered key joins the device log un
 already trusts devices requires its own approval or a signed endorsement from a trusted device
 before accepting that key.
 
+The server operator can also issue an admin enrollment token for a computer. It expires
+after ten minutes, approves that computer atomically with enrollment, and leaves the
+admin's password and browser keys alone.
+
 ### Local server certificates
 
 A local-mode server creates a ten-year P-256 root CA with path length 1. During creation it
@@ -111,6 +115,14 @@ the Host asks the system to trust the root for SSL in the login keychain. The pa
 refused store update, and the Host can still sign in using its copy of the root. Signing out
 removes a root the Host added. Windows uninstall also removes it. The headless Linux Host and
 the CLI use their saved root without updating OS trust.
+
+The Windows hub requests administrator consent when it first opens its setup or account
+link. The elevated program verifies the hub root against the fingerprint passed by the
+panel and saves the DER in the protected enrollment folder. The SYSTEM agent only uses
+that authorized copy for browser trust. DeskwayNet creates and holds the local service's
+state and CA under the machine-wide Deskway data directory. SYSTEM, Administrators and the
+DeskwayNet account can access that directory. On macOS, the app keeps the server's data
+under its private per-user data directory and asks for trust in the login keychain.
 
 Before installing, compare the fingerprint in the HTTP guide with the startup log on the hub
 computer itself. Verify that the downloaded root certificate also has that fingerprint. On
@@ -195,7 +207,7 @@ alone. Anything running as that user, and root, can use it (R2).
 
 A computer that has never trusted any device accepts the account's device list as the server
 sends it, once, and writes an `adopted` marker. The computer has just been signed in, at the
-computer itself, with the account password, so this is a trust-on-first-use moment, like SSH
+computer itself, with the account password or its hub's one-time enrollment link. This is a trust-on-first-use moment, like SSH
 seeing a host key for the first time. After that, only signed changes count. **Remove all** at
 the computer does not cause the list to be adopted again.
 
@@ -665,8 +677,9 @@ prompt, and they change files that only administrators can write:
 - `install` and `uninstall` (through the installer window);
 - `unpair` and **Remove all**.
 
-Enrolling this computer and signing out remain on the per-user panel, before the service is
-installed or after it has been removed.
+The per-user panel handles signing in and out. DeskwayNet enrolls its own Host when its
+local service has an admin. The panel uses one-time admin links to open that local service
+in a browser. Authorizing the hub's root for Windows browsers requires administrator consent.
 
 DeskwayNet is not restricted further for this reason: Windows' TLS and DTLS implementation
 (SChannel) fails with "no credentials available" when the service runs with a write-restricted
@@ -678,7 +691,7 @@ drop the privilege.
 
 ### Files
 
-- `C:\Program Files\Deskway\deskway-host.exe` can be written only by administrators.
+- Only administrators can write the Host and its bundled server in `C:\Program Files\Deskway\`.
 - Both folders are located through the system's known-folder paths, never through environment
   variables. The installer creates the data folders with their final permissions. If either
   folder already exists and is owned by anyone other than SYSTEM or Administrators (for example,

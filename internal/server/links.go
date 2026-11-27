@@ -20,10 +20,13 @@ const (
 	linkSetup     = "setup"
 	linkReset     = "reset"
 	linkLogin     = "login"
+	linkEnroll    = "enroll"
 	memberLinkTTL = 7 * 24 * time.Hour
 	adminLinkTTL  = time.Hour
 	loginLinkTTL  = 2 * time.Minute
+	enrollLinkTTL = 10 * time.Minute
 	adminLinkID   = "admin"
+	enrollLinkID  = "admin-enroll"
 	localIssuer   = "admin-link"
 )
 
@@ -131,7 +134,11 @@ func (f *linksFile) issue(id, kind, issuer string, ttl time.Duration) (string, e
 	}
 	code := base64.RawURLEncoding.EncodeToString(codeBytes[:])
 	f.records[id] = accountLink{Hash: hashToken(code), Kind: kind, Issuer: issuer, Expires: time.Now().Add(ttl).Unix()}
-	return "/setup#c=" + code, f.save()
+	path := "/setup#c=" + code
+	if kind == linkEnroll {
+		path = "/api/computers/enroll#c=" + code
+	}
+	return path, f.save()
 }
 
 func adminID(users map[string]*User) string {
@@ -158,6 +165,17 @@ func IssueAdminLoginLink(path string) (string, error) {
 	return issueAdminLink(path, false, linkLogin)
 }
 
+// IssueAdminEnrollLink creates a one-time credential for an approved computer.
+func IssueAdminEnrollLink(path string) (string, error) {
+	return issueAdminLink(path, false, linkEnroll)
+}
+
+// AdminNeedsSetup checks the password without replacing a link open in a browser.
+func AdminNeedsSetup(path string) (bool, error) {
+	admin, err := stateAdmin(path)
+	return err == nil && (admin == nil || admin.Hash == ""), err
+}
+
 func issueAdminLink(path string, ifNeeded bool, kind string) (string, error) {
 	f, err := lockLinks(path)
 	if err != nil {
@@ -165,7 +183,8 @@ func issueAdminLink(path string, ifNeeded bool, kind string) (string, error) {
 	}
 	defer f.Close()
 	ttl := adminLinkTTL
-	if ifNeeded || kind == linkLogin {
+	record := adminLinkID
+	if ifNeeded || kind == linkLogin || kind == linkEnroll {
 		// Redeeming the initial link also holds this lock through the state save.
 		admin, err := stateAdmin(path)
 		if kind == linkLogin {
@@ -174,6 +193,12 @@ func issueAdminLink(path string, ifNeeded bool, kind string) (string, error) {
 			}
 			ttl = loginLinkTTL
 		}
+		if kind == linkEnroll {
+			if err == nil && (admin == nil || admin.Hash == "") {
+				return "", errors.New("set up the admin before enrolling a computer")
+			}
+			record, ttl = enrollLinkID, enrollLinkTTL
+		}
 		if err != nil || ifNeeded && admin != nil && admin.Hash != "" {
 			return "", err
 		}
@@ -181,7 +206,37 @@ func issueAdminLink(path string, ifNeeded bool, kind string) (string, error) {
 	if err := f.load(); err != nil {
 		return "", err
 	}
-	return f.issue(adminLinkID, kind, localIssuer, ttl)
+	return f.issue(record, kind, localIssuer, ttl)
+}
+
+// enrollAdmin consumes the credential before saving. If saving fails, the old
+// link is restored. A crash between the writes leaves the token spent.
+func (s *Store) enrollAdmin(code, id string, rec *DeviceRecord, most int) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	user := adminID(s.Users)
+	if user == "" || s.Users[user].Hash == "" {
+		return "", errAccountLink
+	}
+	f, err := openLinks(s.path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	record, link, ok := f.find(hashToken(code))
+	if !ok || record != enrollLinkID || link.Kind != linkEnroll || link.Issuer != localIssuer {
+		return "", errAccountLink
+	}
+	rec.Owner = user
+	delete(f.records, record)
+	if err := f.save(); err != nil {
+		return "", err
+	}
+	if err := s.enrollLocked(id, rec, 0, most); err != nil {
+		f.records[record] = link
+		return "", errors.Join(err, f.save())
+	}
+	return s.Users[user].Name, nil
 }
 
 type adminLinkAccount struct {

@@ -383,6 +383,10 @@ func (s *Store) DevicesFor(user string) []proto.Device {
 func (s *Store) Enroll(id string, rec *DeviceRecord, waiting, most int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.enrollLocked(id, rec, waiting, most)
+}
+
+func (s *Store) enrollLocked(id string, rec *DeviceRecord, waiting, most int) error {
 	all, pending := 0, 0
 	for _, d := range s.Devices {
 		if d.Owner == rec.Owner {
@@ -395,11 +399,15 @@ func (s *Store) Enroll(id string, rec *DeviceRecord, waiting, most int) error {
 	if all >= most {
 		return errComputers
 	}
-	if pending >= waiting {
+	if rec.Pending && pending >= waiting {
 		return errTooMany
 	}
 	s.Devices[id] = rec
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		delete(s.Devices, id)
+		return err
+	}
+	return nil
 }
 
 // Touch records that the computer was seen now.

@@ -2,7 +2,7 @@
 // test browser at its window size (380 × 700) and in a short window: every state in each
 // language, its layout, and what it sends to the host. Only the panel page is captured.
 import { readFileSync, readdirSync } from 'node:fs';
-import { sleep, lit, LANGS, HOST_TEXTS } from './harness.mjs';
+import { sleep, lit, LANGS, HOST_TEXTS, words } from './harness.mjs';
 
 const root = new URL('../../', import.meta.url);
 const read = (p) => readFileSync(new URL(p, root), 'utf8');
@@ -54,6 +54,80 @@ export const area = {
         h.check(`panel ${lang}: ${where}: inside the window, bars in place, nothing cut off, only the content scrolls`, l.ok, JSON.stringify(l));
       };
       const t = HOST_TEXTS[lang];
+
+      const local = (phase, extra = {}, result) => ({
+        state: { phase, enabled: phase !== 'off', available: true, own: true, has_data: true, ...extra },
+        result,
+      });
+      const hubPanel = (phase, extra = {}, result) => render(base({ local: local(phase, extra, result) }));
+      const localText = (key, params) => words(`local.${key}`, params, { lang, texts: HOST_TEXTS });
+      const localLine = (key, params) => p.eval(`$('local-line').textContent === ${lit(localText(key, params))}`);
+      const localShot = async (name) => {
+        await layout(name);
+        await p.shot(`panel-${lang}-local-${name}`, 380, 700);
+      };
+      await hubPanel('off', { available: false });
+      h.check(`panel ${lang}: a build without the server shows the disabled switch and reason`,
+        await p.eval(`$('local-switch').disabled && $('local-setting-note').textContent === ${lit(localText('unavailable'))}`));
+      await localShot('unavailable');
+      await render(base({ enrolled: false, local: local('off', { own: false, has_data: false }) }));
+      await p.eval(`$('local-signed-out').click()`);
+      h.check(`panel ${lang}: signed-out start asks to confirm`, await p.eval(`$('local-title').textContent === ${lit(localText('start_title'))}`));
+      await localShot('first-start');
+      await p.eval(`$('local-cancel').click()`);
+      await render(base({ enrolled: false, local: local('setup', { own: false }) }));
+      h.check(`panel ${lang}: unfinished setup has its own action`, await localLine('setup') &&
+        await p.eval(`$('local-open').textContent === ${lit(localText('complete_setup'))}`));
+      await localShot('setup');
+      await clearSent();
+      await p.eval(`$('local-open').click()`);
+      h.check(`panel ${lang}: Complete setup asks the Host to open the link`, (await sent()).at(-1)?.action === 'setup');
+      await hubPanel('running');
+      h.check(`panel ${lang}: running locks both settings and hides sign-out`, await localLine('running') &&
+        await p.eval(`['autostart', 'prevent-sleep'].every(id => $(id).disabled && $(id).getAttribute('aria-checked') === 'true') && $('leave').hidden`));
+      await localShot('running');
+      await p.eval(`$('local-open').click(); $('local-stop').click()`);
+      h.check(`panel ${lang}: View opens an admin link and the stop dialog requests live counts`,
+        (await sent()).slice(-2).map((m) => m.action).join(',') === 'open,usage');
+      await hubPanel('running', {}, { id: 1, action: 'usage', computers: 3, browsers: 2 });
+      h.check(`panel ${lang}: stop confirmation shows live counts and retained data`, await p.eval(`
+        $('local-body').textContent === ${lit(localText('stop_usage', { computers: localText('computers', { n: 3 }), browsers: localText('browsers', { n: 2 }) }))} &&
+        $('local-note').textContent === ${lit(localText('stop_note'))}`));
+      await localShot('stop');
+      await p.eval(`$('local-confirm').click()`);
+      h.check(`panel ${lang}: a fast stop shows no spinner`, await p.eval(`$('local-confirm').firstElementChild.hidden`));
+      await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: stop spinner`);
+      h.check(`panel ${lang}: the stop spinner disables both buttons`, await p.eval(`$('local-confirm').disabled && $('local-cancel').disabled`));
+      await localShot('stopping');
+      await hubPanel('off', {}, { id: 2, action: 'stop' });
+      h.check(`panel ${lang}: stopped stays signed in, unlocks preferences, and offers deletion`, await p.eval(`
+        $('local-overlay').hidden && $('local-status').hidden && !$('local-delete').hidden &&
+        !$('autostart').disabled && !$('prevent-sleep').disabled && $('status').textContent === ${lit(localText('stopped'))}`));
+      await localShot('stopped');
+      await p.eval(`$('local-delete').click()`);
+      h.check(`panel ${lang}: deleting kept data asks first`, await p.eval(`$('local-title').textContent === ${lit(localText('delete_title'))}`));
+      await localShot('delete');
+      await p.eval(`$('local-cancel').click(); $('local-switch').click(); $('local-confirm').click()`);
+      await hubPanel('starting', { enabled: false });
+      await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: start spinner`);
+      h.check(`panel ${lang}: starting shows its row and the dialog spinner`, await localLine('starting'));
+      await localShot('starting');
+      await hubPanel('failed', { port: 443 }, { id: 3, action: 'start' });
+      h.check(`panel ${lang}: an occupied port closes the dialog and offers Retry`, await localLine('port_taken', { port: 443 }) &&
+        await p.eval(`$('local-overlay').hidden && $('local-status').classList.contains('bad')`));
+      await localShot('port-error');
+      await hubPanel('failed');
+      h.check(`panel ${lang}: repeated exits have their own error`, await localLine('exited'));
+      await localShot('exits');
+      await p.eval(`$('local-open').click()`);
+      h.check(`panel ${lang}: Retry goes to the Host`, (await sent()).at(-1)?.action === 'retry');
+      await render(base({ local: local('off', { own: false, has_data: false }), server: 'desk.example.net' }));
+      await p.eval(`$('local-switch').click()`);
+      h.check(`panel ${lang}: switch confirmation names the server that will be left`, await p.eval(`
+        $('local-title').textContent === ${lit(localText('switch_title'))} && $('local-body').textContent.includes('desk.example.net')`));
+      await localShot('switch');
+      await p.eval(`$('local-cancel').click()`);
+      await clearSent();
 
       // Signed out: the title, the language at the top right, no bottom bar.
       await render({ enrolled: false });

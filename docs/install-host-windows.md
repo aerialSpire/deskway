@@ -51,6 +51,11 @@ hub's startup log. The agent adds the verified root to Windows'
 machine-wide trusted roots for browsers if it is absent. Signing out or uninstalling
 removes a root the Host added.
 
+To serve your own network, choose **Run local service** and then **Complete setup**.
+Windows asks for permission to trust this hub's certificate. The Host joins automatically
+after you set the admin password in your browser. The installer allows inbound connections
+to the bundled server on Private networks.
+
 ## 4. Allow the devices you control from
 
 A computer accepts control only from devices that were added to it at the computer itself. The
@@ -82,6 +87,7 @@ the same browser page after unlocking. A computer set to view only offers deskto
 | Setting | What it does |
 |---|---|
 | **Start with Windows** | On by default. When off, the host doesn't run after a restart and shows as offline |
+| **Run local service** | Serves this network. While it runs, automatic startup and sleep prevention stay on |
 | **Keep this computer awake** | Requests that Windows prevent idle sleep while Deskway Host runs. The display may still turn off |
 | **Lock when disconnected** | Locks Windows when a remote desktop session ends |
 | **Sign out** | Stops this computer using the account. The account keeps it: signing in again with the same account brings it back as it was. Removing it on **My devices** takes it off the account |
@@ -110,6 +116,7 @@ offers **Update**. Sign-in details and allowed devices are kept.
 Run `DeskwayHost-Setup-windows-x64.exe` again, or use **Settings → Apps → Deskway Host → Uninstall**, then choose
 **Uninstall**. The installer keeps this computer's sign-in details and allowed devices for a later
 reinstall unless you check the option to delete them.
+It keeps `%ProgramData%\Deskway\local-server\` unless you check **Delete local service data**.
 
 ## Building from source
 
@@ -122,6 +129,8 @@ cargo build --locked --release -p deskway-host
 
 The result is `target\release\deskway-host.exe`. Copy or rename it to `DeskwayHost-Setup-windows-x64.exe` and run
 it. When the program's file name contains "setup", it opens the installer.
+To include the local server, build `./cmd/deskway-server` with Go and set `DESKWAY_SERVER_EXE`
+to the absolute path of the resulting `deskway-server.exe` before building the Host.
 
 To try Deskway without installing the service, run `scripts\try-local.ps1`. It builds and starts
 a server and the host on one Windows computer. On the first run, open the link it prints and

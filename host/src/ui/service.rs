@@ -16,6 +16,7 @@ use tao::event_loop::EventLoopProxy;
 use super::{Backend, PageMessage, UiEvent};
 use crate::config::Config;
 use crate::i18n::t;
+use crate::local_server::{Reply, Request, State};
 use crate::service::install;
 use crate::service::net::{ToPanel, UiClient};
 use crate::settings::PanelRequest;
@@ -31,6 +32,10 @@ pub enum BackendEvent {
     /// Signing in finished: why not, if it did not.
     SignedIn(Result<(), String>),
     RootProblem(Option<String>),
+    Local(State),
+    LocalReply(Request, Result<Reply, String>),
+    DevLeft(Result<(), String>),
+    Disconnected,
 }
 
 pub struct Service {
@@ -52,17 +57,89 @@ pub struct Service {
     busy: bool,
     error: String,
     root_problem: Option<String>,
+    dev: bool,
+    local: super::local::Panel,
+    after_leave: Option<Request>,
+    leaving: bool,
 }
 
 impl Service {
-    pub fn new(proxy: EventLoopProxy<UiEvent>, at_login: bool) -> Service {
-        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new(), root_problem: None }
+    pub fn new(proxy: EventLoopProxy<UiEvent>, at_login: bool, dev: bool) -> Service {
+        Service { proxy, client: Arc::new(Mutex::new(None)), running: false, checked: false, starting: false, at_login, signed_out: false, kept: None, busy: false, error: String::new(), root_problem: None, dev, local: super::local::Panel::default(), after_leave: None, leaving: false }
     }
 
-    fn send(&self, r: PanelRequest) {
-        if let Some(c) = self.client.lock().unwrap().as_ref() {
-            let _ = c.send(r);
+    fn send(&self, r: PanelRequest) -> bool {
+        self.client.lock().unwrap().as_ref().is_some_and(|c| c.send(r).is_ok())
+    }
+
+    fn local_request(&mut self, action: Request) {
+        let own = self.local.state.as_ref().is_some_and(|s| s.own);
+        let leave = (action == Request::Start && !self.signed_out && !own)
+            || (action == Request::Delete && (own || self.signed_out));
+        if leave {
+            self.after_leave = Some(action);
+            self.leaving = true;
+            if self.dev {
+                if !self.send(PanelRequest::DevLeave) {
+                    self.finish_leave(Err(t("status.service_down")));
+                }
+            } else {
+                self.admin("local-leave", "sign-out");
+            }
+        } else if !self.send(PanelRequest::Local(action)) {
+            self.local.replied(action, Err(t("status.service_down")));
         }
+    }
+
+    fn finish_leave(&mut self, result: Result<(), String>) {
+        self.leaving = false;
+        if let Err(error) = result {
+            if let Some(action) = self.after_leave.take() {
+                self.local.replied(action, Err(error));
+            } else {
+                self.busy = false;
+                self.error = error;
+            }
+        }
+        self.continue_local();
+    }
+
+    fn continue_local(&mut self) {
+        if !self.leaving && self.signed_out {
+            if let Some(action) = self.after_leave {
+                if self.send(PanelRequest::Local(action)) {
+                    self.after_leave = None;
+                }
+            }
+        }
+    }
+
+    fn open_local(&self, action: Request, url: String, address: String) {
+        let (proxy, client, dev) = (self.proxy.clone(), self.client.clone(), self.dev);
+        std::thread::spawn(move || {
+            let result = (|| -> anyhow::Result<Reply> {
+                let address = deskway_server_connection::Address::parse(&address)?;
+                let pem = address.fetch_root()?.ok_or_else(|| anyhow::anyhow!(t("local.failed")))?;
+                let der = address.verified_root(&pem)?;
+                if dev {
+                    crate::platform::sync_dev_browser_root(&crate::config::dir()?, Some(&der))?;
+                } else if !crate::platform::browser_trusts(&der)? {
+                    let pin = address.fingerprint().unwrap();
+                    anyhow::ensure!(install::elevate(&format!("authorize-local-root {pin}"))? == 0, t("err.not_done"));
+                    if let Some(c) = client.lock().unwrap().as_ref() {
+                        c.send(PanelRequest::SyncLocalRoot)?;
+                    }
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while !crate::platform::browser_trusts(&der)? {
+                        anyhow::ensure!(std::time::Instant::now() < until, t("local.trust_failed"));
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+                crate::platform::ui::open_browser(&url)?;
+                Ok(Reply::Done)
+            })().map_err(|e| format!("{e:#}"));
+            let _ = proxy.send_event(UiEvent::Backend(BackendEvent::LocalReply(action, result)));
+        });
     }
 
     /// Runs this program elevated in the background; the UAC prompt appears over the panel.
@@ -82,11 +159,14 @@ impl Service {
     fn sign_in(&mut self, server: String, user: String, password: String) {
         self.busy = true;
         self.error.clear();
-        let (proxy, kept) = (self.proxy.clone(), self.kept.clone());
+        let (proxy, kept, dev) = (self.proxy.clone(), self.kept.clone(), self.dev);
         std::thread::spawn(move || {
             let done = (|| -> Result<(), String> {
                 let cfg = crate::enroll_with(&server, &user, &password, "", kept.as_ref()).map_err(|e| e.to_string())?;
                 let mine = crate::config::dir().map_err(|e| e.to_string())?;
+                if dev {
+                    return Config::settle(cfg).map(drop).map_err(|e| format!("{e:#}"));
+                }
                 cfg.save().map_err(|e| e.to_string())?;
                 let address = deskway_server_connection::Address::parse(&cfg.server).map_err(|e| e.to_string())?;
                 let pin = address.fingerprint().map(|pin| format!(" --ca-pin {pin}")).unwrap_or_default();
@@ -107,9 +187,9 @@ impl Service {
 impl Backend for Service {
     /// Keeps a connection to the network service and reports its status.
     fn start(&mut self) -> bool {
-        let (proxy, client) = (self.proxy.clone(), self.client.clone());
+        let (proxy, client, dev) = (self.proxy.clone(), self.client.clone(), self.dev);
         std::thread::spawn(move || loop {
-            match UiClient::connect() {
+            match UiClient::connect(dev) {
                 Ok((c, rx)) => {
                     *client.lock().unwrap() = Some(c);
                     for m in rx {
@@ -118,12 +198,18 @@ impl Backend for Service {
                             ToPanel::SignedOut(kept) => (UiEvent::Backend(BackendEvent::SignedOut(kept)), false),
                             ToPanel::Exit => (UiEvent::Backend(BackendEvent::Exit), true),
                             ToPanel::RootProblem(error) => (UiEvent::Backend(BackendEvent::RootProblem(error)), false),
+                            ToPanel::Local(state) => (UiEvent::Backend(BackendEvent::Local(state)), false),
+                            ToPanel::LocalReply(action, result) => (UiEvent::Backend(BackendEvent::LocalReply(action, result)), false),
+                            ToPanel::DevLeft(result) => (UiEvent::Backend(BackendEvent::DevLeft(result)), false),
                         };
                         if proxy.send_event(event).is_err() || exit {
                             return;
                         }
                     }
                     *client.lock().unwrap() = None;
+                    if proxy.send_event(UiEvent::Backend(BackendEvent::Disconnected)).is_err() {
+                        return;
+                    }
                 }
                 Err(e) => eprintln!("service: {e:#}"),
             }
@@ -141,7 +227,12 @@ impl Backend for Service {
             "root_problem": super::root_problem(self.root_problem.as_deref()),
             "service": true, "service_running": self.running, "service_checked": self.checked,
             "starting": self.starting, "autostart": install::autostart(),
+            "local": self.local.view(),
         })
+    }
+
+    fn local(&self) -> &super::local::Panel {
+        &self.local
     }
 
     fn request(&mut self, r: PanelRequest) -> bool {
@@ -157,7 +248,7 @@ impl Backend for Service {
                     }
                 });
             }
-            r => self.send(r),
+            r => { self.send(r); }
         }
         false
     }
@@ -165,12 +256,19 @@ impl Backend for Service {
     fn page(&mut self, m: PageMessage) -> bool {
         match m {
             PageMessage::StartService if !self.starting => self.start_service(),
-            PageMessage::Login { server, user, password } if !self.busy => self.sign_in(server, user, password),
-            PageMessage::Leave if !self.busy => {
+            PageMessage::Login { server, user, password } if !self.busy && !self.local.state.as_ref().is_some_and(|s| s.enabled) => self.sign_in(server, user, password),
+            PageMessage::Leave if !self.busy && !self.local.state.as_ref().is_some_and(|s| s.enabled) => {
                 self.busy = true;
                 self.error.clear();
-                self.admin("sign-out", "sign-out");
+                if self.dev {
+                    if !self.send(PanelRequest::DevLeave) {
+                        self.finish_leave(Err(t("status.service_down")));
+                    }
+                } else {
+                    self.admin("sign-out", "sign-out");
+                }
             }
+            PageMessage::LocalService { action } => self.local_request(action),
             _ => return false,
         }
         true
@@ -184,7 +282,7 @@ impl Backend for Service {
         }
         self.running = status.is_some();
         self.checked = true;
-        if first && status.is_none() && !self.at_login && !self.starting {
+        if first && status.is_none() && !self.at_login && !self.starting && !self.dev {
             self.start_service();
         }
         if status.is_some() {
@@ -207,6 +305,9 @@ impl Backend for Service {
                         self.error = t("err.not_done");
                     }
                 }
+                if what == "local-leave" {
+                    self.finish_leave(if ok { Ok(()) } else { Err(t("err.not_done")) });
+                }
                 true
             }
             BackendEvent::SignedOut(kept) => {
@@ -215,6 +316,7 @@ impl Backend for Service {
                 self.running = true;
                 self.checked = true;
                 self.starting = false;
+                self.continue_local();
                 true
             }
             BackendEvent::SignedIn(done) => {
@@ -224,6 +326,31 @@ impl Backend for Service {
             }
             BackendEvent::RootProblem(error) => {
                 self.root_problem = error;
+                true
+            }
+            BackendEvent::Local(state) => {
+                self.local.state = Some(state);
+                self.continue_local();
+                true
+            }
+            BackendEvent::LocalReply(action, Ok(Reply::Browser { url, address })) => {
+                self.open_local(action, url, address);
+                true
+            }
+            BackendEvent::LocalReply(action, result) => {
+                self.local.replied(action, result);
+                true
+            }
+            BackendEvent::DevLeft(result) => {
+                self.busy = false;
+                if result.is_ok() {
+                    self.signed_out = true;
+                }
+                self.finish_leave(result);
+                true
+            }
+            BackendEvent::Disconnected => {
+                self.local.state = None;
                 true
             }
         }

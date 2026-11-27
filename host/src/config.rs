@@ -132,7 +132,7 @@ impl Config {
     pub fn load_from(dir: &Path) -> Result<Config> {
         let mut config = Config::load_from_file(&dir.join(FILE))?;
         if Address::parse(&config.server)?.is_pinned() {
-            match std::fs::read_to_string(root_path(dir)) {
+            match std::fs::read_to_string(config.sign_in_root_path(dir)) {
                 Ok(root) => config.server_root = Some(root),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e).context("read the local server root"),
@@ -156,12 +156,49 @@ impl Config {
         let _write = CONFIG_WRITE.lock().unwrap();
         let mut config = Self::load_from(dir)?;
         change(&mut config);
+        #[cfg(desktop_host)]
+        if Self::local_service(dir)?.is_some_and(|local| local.enabled) {
+            config.prevent_sleep = true;
+        }
         config.write_to(dir)?;
         Ok(config)
     }
 
     fn write_to(&self, dir: &Path) -> Result<()> {
-        write_private(&dir.join(FILE), &serde_json::to_vec_pretty(self)?)
+        let value = serde_json::to_value(self)?;
+        #[cfg(desktop_host)]
+        let value = {
+            let mut value = value;
+            if let Some(local) = Self::local_service(dir)? {
+                value["local_service"] = serde_json::to_value(local)?;
+            }
+            value
+        };
+        write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn local_service(dir: &Path) -> Result<Option<crate::local_server::Setting>> {
+        Ok(serde_json::from_value(host_document(dir)?["local_service"].clone())?)
+    }
+
+    #[cfg(desktop_host)]
+    pub fn set_local_service(dir: &Path, local: crate::local_server::Setting) -> Result<()> {
+        let _write = CONFIG_WRITE.lock().unwrap();
+        let mut value = host_document(dir)?;
+        value["local_service"] = serde_json::to_value(local)?;
+        if local.enabled {
+            value["prevent_sleep"] = serde_json::Value::Bool(true);
+        }
+        write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)
+    }
+
+    fn sign_in_root_path(&self, dir: &Path) -> PathBuf {
+        #[cfg(windows)]
+        if dir == crate::service::machine_dir() && crate::local_server::is_own(dir, &self.server) {
+            return crate::local_server::data_dir(dir).join(ROOT_FILE);
+        }
+        root_path(dir)
     }
 
     fn write_sign_in(&self, dir: &Path) -> Result<()> {
@@ -169,9 +206,9 @@ impl Config {
         if address.is_pinned() {
             let root = self.server_root.as_deref().context("the pinned local server root is missing")?;
             address.connection(Some(root))?;
+            let path = self.sign_in_root_path(dir);
             #[cfg(windows)]
-            if dir == crate::service::machine_dir() {
-                let path = root_path(dir);
+            if dir == crate::service::machine_dir() && path == root_path(dir) {
                 let pending = path.with_extension("pending");
                 write_private(&pending, root.as_bytes())?;
                 self.write_to(dir)?;
@@ -181,7 +218,7 @@ impl Config {
                 }
                 return Ok(());
             }
-            write_private(&root_path(dir), root.as_bytes())?;
+            write_private(&path, root.as_bytes())?;
         }
         self.write_to(dir)
     }
@@ -201,6 +238,17 @@ impl Config {
     }
 
     fn keep_sign_in(dir: &Path) -> Result<()> {
+        #[cfg(desktop_host)]
+        if let Some(local) = Self::local_service(dir)? {
+            let config = match Self::load_from_file(&dir.join(FILE)) {
+                Ok(config) => config,
+                Err(e) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => return Ok(()),
+                Err(e) => return Err(e),
+            };
+            write_private(&dir.join(KEPT), &serde_json::to_vec_pretty(&config)?)?;
+            let value = serde_json::json!({ "local_service": local });
+            return write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?);
+        }
         match std::fs::rename(dir.join(FILE), dir.join(KEPT)) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).context("keep the sign-in"),
             _ => Ok(()),
@@ -241,6 +289,12 @@ impl Config {
             }
         };
         let _write = CONFIG_WRITE.lock().unwrap();
+        #[cfg(desktop_host)]
+        let cfg = if Self::local_service(dir)?.is_some_and(|local| local.enabled) {
+            Self { prevent_sleep: true, ..cfg }
+        } else {
+            cfg
+        };
         cfg.write_sign_in(dir)?;
         let _ = std::fs::remove_file(dir.join(KEPT));
         Ok(cfg)
@@ -255,7 +309,21 @@ impl Config {
     /// of the computer itself stay.
     pub fn forget_in(dir: &Path) -> Result<()> {
         let _write = CONFIG_WRITE.lock().unwrap();
+        #[cfg(desktop_host)]
+        let local = match Self::local_service(dir) {
+            Ok(local) => local,
+            Err(e) if e.downcast_ref::<serde_json::Error>().is_some() => None,
+            Err(e) => return Err(e),
+        };
         for f in ACCOUNT {
+            #[cfg(desktop_host)]
+            if *f == FILE {
+                if let Some(local) = local {
+                    let value = serde_json::json!({ "local_service": local });
+                    write_private(&dir.join(FILE), &serde_json::to_vec_pretty(&value)?)?;
+                    continue;
+                }
+            }
             match std::fs::remove_file(dir.join(f)) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).with_context(|| format!("remove {f}")),
                 _ => {}
@@ -277,7 +345,24 @@ impl Config {
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
         }
-        Ok(serde_json::from_reader(std::io::BufReader::new(file))?)
+        let value: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(file))?;
+        #[cfg(desktop_host)]
+        if value.get("local_service").is_some() && value.get("server").is_none() {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
+        }
+        Ok(serde_json::from_value(value)?)
+    }
+}
+
+#[cfg(desktop_host)]
+fn host_document(dir: &Path) -> Result<serde_json::Value> {
+    match std::fs::File::open(dir.join(FILE)) {
+        Ok(file) => {
+            let object: serde_json::Map<String, serde_json::Value> = serde_json::from_reader(file)?;
+            Ok(serde_json::Value::Object(object))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -361,6 +446,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root_path(&dir)).unwrap(), pem);
         assert!(!std::fs::read_to_string(dir.join(FILE)).unwrap().contains("CERTIFICATE"));
         stored.connection().unwrap();
+    }
+
+    #[cfg(desktop_host)]
+    #[test]
+    fn the_hubs_kept_address_uses_the_der_fingerprint_of_its_pem_file() {
+        use crate::local_server::{self, Setting};
+        use wire::crypto::{hex, sha256};
+
+        let dir = temp("hub-root");
+        let ca = local_server::data_dir(&dir).join("local-ca");
+        std::fs::create_dir_all(&ca).unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let root = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
+        let address = format!("https://localhost:18599#ca={}", hex(&sha256(root.der())));
+        let pem = Address::parse(&address).unwrap().pin_root(root.der()).unwrap();
+        std::fs::write(ca.join("ca.crt"), pem).unwrap();
+        for enabled in [true, false] {
+            Config::set_local_service(&dir, Setting { https: 18599, guide: 18598, enabled }).unwrap();
+            assert!(local_server::is_own(&dir, &address));
+            assert!(!local_server::is_own(&dir, &address.replace("18599", "18600")));
+        }
     }
 
     #[test]

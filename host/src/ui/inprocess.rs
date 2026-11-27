@@ -11,6 +11,7 @@ use tao::event_loop::EventLoopProxy;
 use super::{Backend, PageMessage, UiEvent};
 use crate::config::Config;
 use crate::i18n::t;
+use crate::local_server::{Handle, Reply, Request, State};
 use crate::platform;
 use crate::settings::{PanelRequest, Settings};
 use crate::signal::{self, Control, Status};
@@ -26,6 +27,8 @@ pub enum BackendEvent {
     Permission(bool),
     /// Quit gracefully once a launcher is waiting to reopen this bundle.
     Reopen,
+    Local(State),
+    LocalReply(Request, Result<Reply, String>),
 }
 
 pub struct InProcess {
@@ -43,11 +46,43 @@ pub struct InProcess {
     /// Why the last Mac setting could not be changed.
     settings_error: String,
     permission_request: Option<&'static str>,
+    local: super::local::Panel,
+    local_handle: Option<Handle>,
+    after_leave: Option<Request>,
+    signal_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl InProcess {
-    pub fn new(proxy: EventLoopProxy<UiEvent>, _at_login: bool) -> InProcess {
-        InProcess { proxy, cfg: Config::load().ok(), control: None, settings: None, busy: false, error: String::new(), root_problem: None, settings_error: String::new(), permission_request: None }
+    pub fn new(proxy: EventLoopProxy<UiEvent>, _at_login: bool, _dev: bool) -> InProcess {
+        InProcess { proxy, cfg: Config::load().ok(), control: None, settings: None, busy: false, error: String::new(), root_problem: None, settings_error: String::new(), permission_request: None, local: super::local::Panel::default(), local_handle: None, after_leave: None, signal_thread: None }
+    }
+
+    fn local_request(&mut self, action: Request) {
+        let own = self.local.state.as_ref().is_some_and(|s| s.own);
+        if (action == Request::Start && self.cfg.is_some() && !own)
+            || (action == Request::Delete && (own || (self.cfg.is_none() && self.root_cleanup_pending())))
+        {
+            self.after_leave = Some(action);
+            self.leave();
+        } else {
+            self.send_local(action);
+        }
+    }
+
+    fn send_local(&mut self, action: Request) {
+        if let Some(handle) = &self.local_handle {
+            let proxy = self.proxy.clone();
+            handle.request(action, move |result| {
+                let result = match result {
+                    Ok(Reply::Browser { url, address }) => open_local(&url, &address)
+                        .map(|()| Reply::Done).map_err(|e| format!("{e:#}")),
+                    result => result,
+                };
+                let _ = proxy.send_event(UiEvent::Backend(BackendEvent::LocalReply(action, result)));
+            });
+        } else {
+            self.local.replied(action, Err(t("local.unavailable")));
+        }
     }
 
     fn set_login_item(&mut self, on: bool) -> Result<()> {
@@ -119,10 +154,11 @@ impl InProcess {
             // A Mac's own workspace asks the person there for administrator rights.
             admin: None,
         };
-        std::thread::Builder::new().name("signal".into()).spawn(move || {
+        let thread = std::thread::Builder::new().name("signal".into()).spawn(move || {
             let _watch = watch;
             signal::run(params, requests);
         }).expect("spawn signal thread");
+        self.signal_thread = Some(thread);
         self.control = Some(control);
         self.settings = Some(settings);
     }
@@ -153,10 +189,14 @@ impl InProcess {
         self.error.clear();
         let proxy = self.proxy.clone();
         let control = self.control.clone();
+        let thread = self.signal_thread.take();
         std::thread::spawn(move || {
             let result = Config::sign_out().map(|()| {
                 if let Some(control) = control {
                     let _ = control.send(Control::Quit);
+                }
+                if let Some(thread) = thread {
+                    let _ = thread.join();
                 }
                 crate::config::dir().and_then(|dir| platform::remove_installed_server_root(&dir))
                     .err().map(|e| format!("{e:#}"))
@@ -173,6 +213,18 @@ impl InProcess {
 impl Backend for InProcess {
     fn start(&mut self) -> bool {
         self.start_host();
+        let (state, enrolled) = (self.proxy.clone(), self.proxy.clone());
+        self.local_handle = crate::config::dir().and_then(|dir| Handle::start(
+            dir,
+            move |s| { let _ = state.send_event(UiEvent::Backend(BackendEvent::Local(s))); },
+            || platform::ui::set_login(true),
+            move |cfg| {
+                let address = cfg.server.clone();
+                let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::Enrolled(Ok(cfg))));
+                let error = trust_hub(&address).err().map(|e| format!("{e:#}"));
+                let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::RootChanged(error)));
+            },
+        )).map_err(|e| eprintln!("{e:#}")).ok();
         self.cfg.is_none() || !platform::permissions().ready()
     }
 
@@ -184,6 +236,7 @@ impl Backend for InProcess {
             "root_problem": super::root_problem(self.root_problem.as_deref()),
             "retry_sign_out": self.cfg.is_none() && self.root_cleanup_pending(),
             "autostart": login.registered(),
+            "local": self.local.view(),
             "mac": {
                 "screen": permissions.screen,
                 "accessibility": permissions.accessibility,
@@ -195,8 +248,13 @@ impl Backend for InProcess {
         })
     }
 
+    fn local(&self) -> &super::local::Panel {
+        &self.local
+    }
+
     fn request(&mut self, r: PanelRequest) -> bool {
         let result = match r {
+            PanelRequest::AutoStart(false) if self.local.state.as_ref().is_some_and(|s| s.enabled) => Ok(()),
             PanelRequest::AutoStart(on) => self.set_login_item(on),
             r => match &self.settings {
                 Some(settings) => settings.handle(r),
@@ -211,12 +269,16 @@ impl Backend for InProcess {
 
     fn page(&mut self, m: PageMessage) -> bool {
         let result = match m {
-            PageMessage::Login { server, user, password } if !self.busy => {
+            PageMessage::Login { server, user, password } if !self.busy && !self.local.state.as_ref().is_some_and(|s| s.enabled) => {
                 self.enroll(server, user, password);
                 return true;
             }
-            PageMessage::Leave if !self.busy => {
+            PageMessage::Leave if !self.busy && !self.local.state.as_ref().is_some_and(|s| s.enabled) => {
                 self.leave();
+                return true;
+            }
+            PageMessage::LocalService { action } => {
+                self.local_request(action);
                 return true;
             }
             PageMessage::ScreenRequest | PageMessage::AccessibilityRequest => {
@@ -269,7 +331,11 @@ impl Backend for InProcess {
                 self.root_problem = match result {
                     Ok(error) => error,
                     Err(e) => {
-                        self.error = e;
+                        if let Some(action) = self.after_leave.take() {
+                            self.local.replied(action, Err(e));
+                        } else {
+                            self.error = e;
+                        }
                         return true;
                     }
                 };
@@ -281,6 +347,13 @@ impl Backend for InProcess {
                 self.settings_error = platform::ui::set_login(false).with_context(|| t("err.mac_login_off")).err().map(|e| format!("{e:#}")).unwrap_or_default();
                 // No host runs now: nothing is shown as controlled.
                 let _ = self.proxy.send_event(UiEvent::Status(None));
+                if let Some(action) = self.after_leave.take() {
+                    if let Some(error) = &self.root_problem {
+                        self.local.replied(action, Err(error.clone()));
+                    } else {
+                        self.send_local(action);
+                    }
+                }
                 true
             }
             BackendEvent::Permission(screen) => {
@@ -292,6 +365,21 @@ impl Backend for InProcess {
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 false
             }
+            BackendEvent::Local(state) => {
+                if self.local.state.as_ref().map(|s| s.enabled) != Some(state.enabled) {
+                    if let Some(settings) = &self.settings {
+                        if let Err(e) = settings.reload() {
+                            self.settings_error = format!("{e:#}");
+                        }
+                    }
+                }
+                self.local.state = Some(state);
+                true
+            }
+            BackendEvent::LocalReply(action, result) => {
+                self.local.replied(action, result);
+                true
+            }
         }
     }
 
@@ -299,5 +387,19 @@ impl Backend for InProcess {
         if let Some(c) = &self.control {
             let _ = c.send(Control::Quit);
         }
+        self.local_handle.take();
     }
+}
+
+fn open_local(url: &str, address: &str) -> Result<()> {
+    trust_hub(address)?;
+    platform::ui::open_browser(url)
+}
+
+fn trust_hub(address: &str) -> Result<()> {
+    let address = deskway_server_connection::Address::parse(address)?;
+    let dir = crate::config::dir()?;
+    let pem = address.fetch_root()?.context("the local root is missing")?;
+    crate::config::write_private(&crate::config::root_path(&dir), pem.as_bytes())?;
+    platform::install_hub_root(&dir, address.fingerprint().unwrap())
 }

@@ -75,12 +75,26 @@ pub fn install_server_root(dir: &Path, fingerprint: &str) -> Result<()> {
     } else if owned.as_deref() != Some(fingerprint) {
         return Ok(());
     }
-    security(
+    if let Err(error) = security(
         Command::new("/usr/bin/security")
             .args(["add-trusted-cert", "-r", "trustRoot", "-p", "ssl"])
             .arg(root),
-    )?;
+    ) {
+        remove_installed_server_root(dir)
+            .with_context(|| format!("remove the untrusted local root: {error:#}"))?;
+        return Err(error);
+    }
     Ok(())
+}
+
+/// Successful browser trust for the hub persists in the login keychain across app launches.
+pub fn install_hub_root(dir: &Path, fingerprint: &str) -> Result<()> {
+    if installed_root(dir)?.as_deref() == Some(fingerprint)
+        && contains_root(fingerprint, Some(&login_keychain()?))?
+    {
+        return Ok(());
+    }
+    install_server_root(dir, fingerprint)
 }
 
 fn delete_root(fingerprint: &str, keychain: &str) -> Result<()> {

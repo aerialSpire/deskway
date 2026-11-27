@@ -5,6 +5,15 @@
 Run the server on a computer on your home or office network. Local mode uses direct
 connections on that network, with no domain, public server, STUN or TURN.
 
+On Windows and macOS, open Deskway Host and choose **Run local service**. Select
+**Complete setup** and set the admin password in your browser. The Host joins its own
+server automatically, and **View** opens the account in your default browser. Accept the
+system's certificate prompt when asked. Starting also turns on automatic startup and
+sleep prevention. **Stop** keeps the account, computers and local address for the next
+start. **Delete local service data** is available after stopping.
+
+On a headless machine, run the server yourself:
+
 ```sh
 deskway-server -local -listen :18499 -guide-listen :18498 -local-name "Office computer"
 ```
@@ -32,6 +41,10 @@ to install the certificate, then choose **Continue** to open Deskway over HTTPS.
 Run `deskway-server admin-link -data FILE -url https://sean-asus.local:18499` with your hub's
 normalized hostname to set up the admin. Once an admin exists, add `-login` to issue a one-time
 link that signs in the browser without changing the password. Open it within two minutes.
+
+The Host uses `admin-link -enroll` to join the hub. This command issues a single-use
+computer enrollment token for the existing admin. The token is valid for ten minutes
+and approves the computer as part of enrollment. Keep admin links private.
 
 To join from the Deskway Host panel, choose the local server under **Found on this network**.
 The panel fills **Server address** with the full address and selects a single result automatically.

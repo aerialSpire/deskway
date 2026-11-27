@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -9,7 +10,7 @@ import (
 	"deskway/internal/proto"
 )
 
-// Computers: enrolling with the account password, leaving with their own token, and what their
+// Computers: enrolling with the account password or an admin link, leaving with their own token, and what their
 // owner changes from a browser. Every browser of an account sees the list of its computers
 // (deviceList), sent again on every change (broadcastDevices).
 
@@ -22,18 +23,20 @@ func (s *Server) deviceTokenOK(id string, r *http.Request) bool {
 	return s.store.DeviceTokenOK(id, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 }
 
-// handleEnroll signs a computer in with the account password. A new computer gets its id and
+// handleEnroll signs a computer in with the account password or a one-time admin token.
+// The token enrolls it already approved. With a password, a new computer gets its id and
 // token, and waits until an approved browser lets it in. One that signed out of this account
 // names itself (`back`, its id) and is taken back as it is: approved, with its AI switch and
 // the token it already holds. The answer then carries only the id, so the password and an id
 // give nothing a new computer would not; only removing a computer makes it new.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		User     string `json:"user"`
-		Password string `json:"password"`
-		Name     string `json:"name"`
-		OS       string `json:"os"`
-		Back     string `json:"back"`
+		User        string `json:"user"`
+		Password    string `json:"password"`
+		Name        string `json:"name"`
+		OS          string `json:"os"`
+		Back        string `json:"back"`
+		EnrollToken string `json:"enroll_token"`
 		// It shows its six digits while waiting, so its approval may ask to compare them.
 		ShowsCode bool `json:"shows_code"`
 	}
@@ -45,6 +48,30 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad device", http.StatusBadRequest)
 		return
 	}
+	id, token := randomHex(16), randomHex(32)
+	rec := &DeviceRecord{Name: body.Name, OS: body.OS, TokenHash: hashToken(token), LastSeen: time.Now().Unix(), EnrollIP: clientIP(r)}
+	if r.URL.Path == "/api/computers/enroll" || body.EnrollToken != "" {
+		if r.URL.Path != "/api/computers/enroll" || body.EnrollToken == "" || body.User != "" || body.Password != "" || body.Back != "" {
+			http.Error(w, "use one enrollment credential", http.StatusBadRequest)
+			return
+		}
+		var user string
+		var err error
+		if !s.attempt(w, r, http.StatusUnauthorized, errAccountLink.Error(), func() bool {
+			user, err = s.store.enrollAdmin(body.EnrollToken, id, rec, maxComputersPerUser)
+			return !errors.Is(err, errAccountLink)
+		}) {
+			return
+		}
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		log.Printf("server: %q enrolled by admin-link for %s", body.Name, user)
+		s.broadcastDevices()
+		writeJSON(w, map[string]string{"id": id, "token": token, "user": user})
+		return
+	}
 	user := s.checkCredentials(w, r, body.User, body.Password)
 	if user == "" {
 		return
@@ -54,10 +81,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"id": body.Back})
 		return
 	}
-	id, token := randomHex(16), randomHex(32)
 	// It stays invisible until an approved browser lets it in, so a stolen password
 	// cannot plant a fake computer in the list for the owner to type into.
-	err := s.store.Enroll(id, &DeviceRecord{Owner: user, Name: body.Name, OS: body.OS, TokenHash: hashToken(token), LastSeen: time.Now().Unix(), Pending: true, EnrollIP: clientIP(r), ShowsCode: body.ShowsCode}, maxPendingPerUser, maxComputersPerUser)
+	rec.Owner, rec.Pending, rec.ShowsCode = user, true, body.ShowsCode
+	err := s.store.Enroll(id, rec, maxPendingPerUser, maxComputersPerUser)
 	if err != nil {
 		storeError(w, err)
 		return

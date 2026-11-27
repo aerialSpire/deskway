@@ -13,6 +13,33 @@ use windows::Win32::Security::Cryptography::*;
 use crate::config;
 
 const INSTALLED_ROOT: &str = "installed-ca.der";
+pub const HUB_ROOT: &str = "hub-ca.der";
+const DEV_ROOT: &str = "dev-installed-ca.der";
+
+pub fn browser_trusts(der: &[u8]) -> Result<bool> {
+    Store::open(true, true)?.contains(der)
+}
+
+pub fn sync_dev_browser_root(dir: &Path, der: Option<&[u8]>) -> Result<()> {
+    let marker = dir.join(DEV_ROOT);
+    let store = Store::open(false, false)?;
+    if let Some(previous) = read_installed(&marker)? {
+        if Some(previous.as_slice()) == der {
+            return Ok(());
+        }
+        store.remove(&previous)?;
+        fs::remove_file(&marker)?;
+    }
+    if let Some(der) = der {
+        if !browser_trusts(der)? && store.add(der)? {
+            if let Err(e) = config::write_private(&marker, der) {
+                store.remove(der)?;
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
 
 fn read_installed(path: &Path) -> Result<Option<Vec<u8>>> {
     match fs::read(path) {
@@ -37,7 +64,7 @@ pub fn remove_installed_server_root(dir: &Path) -> Result<()> {
 }
 
 fn remove_owned(path: &Path, der: &[u8]) -> Result<()> {
-    Store::open(false)?
+    Store::open(false, true)?
         .remove(der)
         .context("remove the local server root from Windows")?;
     fs::remove_file(path)?;
@@ -53,7 +80,12 @@ pub fn sync_server_root(dir: PathBuf, dev: bool) -> Result<()> {
     if !dev {
         crate::service::install::check_trust_dir(trust)?;
     }
-    let Some(der) = signed_in_root(&dir)? else {
+    let root = if crate::settings::local_forces_settings(&dir) && !dev {
+        read_installed(&trust.join(HUB_ROOT))?
+    } else {
+        signed_in_root(&dir)?
+    };
+    let Some(der) = root else {
         return Ok(());
     };
     let installed = trust.join(INSTALLED_ROOT);
@@ -64,10 +96,10 @@ pub fn sync_server_root(dir: PathBuf, dev: bool) -> Result<()> {
         }
     }
     // Read the logical machine store, including policy roots. Write only to the registry store.
-    if Store::open(true)?.contains(&der)? {
+    if browser_trusts(&der)? {
         return Ok(());
     }
-    let store = Store::open(false)?;
+    let store = Store::open(false, true)?;
     if store
         .add(&der)
         .context("install the local server root in Windows")?
@@ -96,6 +128,12 @@ fn signed_in_root(dir: &Path) -> Result<Option<Vec<u8>>> {
     if cfg.id.is_empty() || cfg.token.is_empty() {
         return Ok(None);
     }
+    if crate::local_server::is_own(dir, &cfg.server) {
+        if dir == crate::service::machine_dir() {
+            return read_installed(&config::root_path(dir).with_file_name(HUB_ROOT));
+        }
+        return Ok(None);
+    }
     cfg.server_root
         .as_deref()
         .map(|pem| Address::parse(&cfg.server)?.verified_root(pem))
@@ -105,9 +143,9 @@ fn signed_in_root(dir: &Path) -> Result<Option<Vec<u8>>> {
 struct Store(HCERTSTORE);
 
 impl Store {
-    fn open(read_only: bool) -> Result<Self> {
-        let flags =
-            CERT_OPEN_STORE_FLAGS(CERT_SYSTEM_STORE_LOCAL_MACHINE) | CERT_STORE_OPEN_EXISTING_FLAG;
+    fn open(read_only: bool, machine: bool) -> Result<Self> {
+        let location = if machine { CERT_SYSTEM_STORE_LOCAL_MACHINE } else { CERT_SYSTEM_STORE_CURRENT_USER };
+        let flags = CERT_OPEN_STORE_FLAGS(location) | CERT_STORE_OPEN_EXISTING_FLAG;
         let (provider, flags) = if read_only {
             (CERT_STORE_PROV_SYSTEM_W, flags | CERT_STORE_READONLY_FLAG)
         } else {

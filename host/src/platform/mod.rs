@@ -224,7 +224,7 @@ platform! {
 
     // ---- system ----
     /// Start with the computer or not.
-    fn autostart(on: bool) => AutoStart;
+    fn autostart(on: bool) => AutoStart, keep autostart;
     /// The language of the notes shown at this computer: a catalog code, or None for the system's.
     fn language(code: Option<String>) => Language, keep language;
     /// Applies the enrollment's browser trust using the agent's protected certificate files.

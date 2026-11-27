@@ -65,6 +65,12 @@ hub's startup log. To let browsers trust the hub, approve the macOS
 prompt to trust the root for SSL in your login keychain. The Host connects using the
 verified root even if you decline. Signing out removes the root if Deskway Host added it.
 
+To serve your own network, choose **Run local service** and then **Complete setup**. Approve
+the system's certificate prompt and set the admin password in the browser. The Host joins
+automatically. Local service keeps **Open at login** and **Keep this computer awake** on.
+After stopping, choose **Delete local service data** to remove the server's files and sign out.
+The files are in `~/Library/Application Support/Deskway/local-server/`.
+
 ## 4. Allow the devices you control from
 
 A Mac accepts control only from devices that were added to it at the Mac itself.
@@ -88,7 +94,7 @@ Finishing setup turns on **Open at login** and **Keep this computer awake**.
   or higher. Active sessions keep their own requests. The display may still turn off between
   sessions. A desk session wakes the display.
 
-You can turn each setting on or off separately. Signing out in the panel also removes the login item and stops keeping
+You can turn each setting on or off separately when the local service is stopped. Signing out in the panel also removes the login item and stops keeping
 the Mac awake. If
 macOS refuses to remove the login item, use **Try again to stop opening at login**.
 
@@ -138,14 +144,18 @@ Quit Deskway Host (**Quit** in its menu bar menu), download the new release's DM
 
 ## Uninstalling
 
-For a local server, click **Sign out** in the Host panel first and approve any macOS prompt to
+If this Mac runs the local service, stop it first. Use **Delete local service data** if you
+want to remove the hub's data too. Otherwise, it stays in
+`~/Library/Application Support/Deskway/local-server/`.
+
+For a local server, click **Sign out** in the Host panel and approve any macOS prompt to
 remove the root certificate Deskway Host added. Then remove the Mac on **My devices** in the
 browser, quit Deskway Host, and move `Deskway.app` from Applications to the Trash. To remove its
 settings too, delete `~/Library/Application Support/Deskway`.
 
 ## Building from source
 
-On an Apple silicon Mac with macOS 15 or later, [Rust](https://rustup.rs/) and Apple's
+On an Apple silicon Mac with macOS 15 or later, [Rust](https://rustup.rs/), Go and Apple's
 command-line developer tools (`xcode-select --install`):
 
 ```sh

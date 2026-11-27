@@ -236,3 +236,12 @@ pub fn place_indicator(window: &Window, w: f64, h: f64, display: Option<&Display
 pub fn open_folder(path: &str) {
     let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
 }
+
+pub fn open_browser(url: &str) -> anyhow::Result<()> {
+    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let result = unsafe { ShellExecuteW(None, w!("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+    anyhow::ensure!(result.0 as isize > 32, "cannot open the system browser");
+    Ok(())
+}

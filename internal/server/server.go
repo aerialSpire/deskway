@@ -162,6 +162,19 @@ func (s *Server) EnableLocalMode(ca *LocalCA) {
 	s.stun = nil
 }
 
+// LocalUsage reports live connections to the supervising Host over its private pipe.
+func (s *Server) LocalUsage() (computers, browsers int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]struct{})
+	for c := range s.clients {
+		if !c.ai {
+			seen[c.browser] = struct{}{}
+		}
+	}
+	return len(s.hosts), len(seen)
+}
+
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -209,6 +222,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/computers/{id}", s.requireLogin(s.handleComputerRemove))
 	mux.HandleFunc("POST /api/computers/{id}/ai", s.requireLogin(s.handleAISwitch))
 	mux.HandleFunc("POST /api/host/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /api/computers/enroll", s.handleEnroll)
 	mux.HandleFunc("POST /api/host/leave", s.handleLeave)
 	mux.HandleFunc("GET /ws/client", s.requireClient(s.handleClientWS))
 	mux.HandleFunc("GET /ws/host", s.handleHostWS)

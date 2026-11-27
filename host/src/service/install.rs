@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -21,6 +22,8 @@ use super::net::{AGENT_SERVICE, NET_SERVICE};
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 pub const TRUST_DIR: &str = "server-trust";
+const SERVER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/deskway-server.bin"));
+const FIREWALL_RULE: &str = "Deskway Local Service";
 
 pub fn program_dir() -> PathBuf {
     crate::platform::known_folder(crate::platform::KnownFolder::ProgramFiles).join("Deskway")
@@ -421,6 +424,26 @@ pub fn set_autostart(on: bool) -> Result<()> {
     }
 }
 
+fn local_firewall(exe: &Path, install: bool) -> Result<()> {
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = [0u16; 260];
+    let len = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    anyhow::ensure!(len > 0 && len < buffer.len(), "find the Windows system directory");
+    let netsh = PathBuf::from(String::from_utf16(&buffer[..len])?).join("netsh.exe");
+    let program = format!("program={}", exe.display());
+    let name = format!("name={FIREWALL_RULE}");
+    let _ = Command::new(&netsh)
+        .args(["advfirewall", "firewall", "delete", "rule", &name, &program])
+        .output()?;
+    if install {
+        let output = Command::new(netsh)
+            .args(["advfirewall", "firewall", "add", "rule", &name, &program, "dir=in", "action=allow", "profile=private", "enable=yes"])
+            .output()?;
+        anyhow::ensure!(output.status.success(), "add the local service firewall rule: {}", String::from_utf8_lossy(&output.stdout).trim());
+    }
+    Ok(())
+}
+
 /// Opened by hand after automatic start was turned off: it starts with Windows again, and
 /// runs now. Administrator.
 pub fn start_services() -> Result<()> {
@@ -492,6 +515,13 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
         release(&[exe.clone()], keep);
         std::fs::copy(&src, &exe).context("copy program")?;
     }
+    let server = dir.join(crate::local_server::SERVER_EXE);
+    if !SERVER.is_empty() {
+        crate::config::write_private(&server, SERVER).context("write the bundled local server")?;
+    }
+    if server.is_file() {
+        local_firewall(&server, true)?;
+    }
 
     let data = crate::service::machine_dir();
 
@@ -536,11 +566,8 @@ pub fn install(keep: Option<u32>, lang: Option<String>) -> Result<()> {
     fresh_dir(&service_dir, &service_sddl()?)?;
     // Signing in is the panel's (`sign_in`): installing only installs. An update keeps the
     // service's own data, which only administrators and the service can change.
-    let path = data.join("host.json");
-    if let Some(lang) = lang.filter(|l| crate::i18n::Lang::parse(l).is_some() && path.exists()) {
-        let mut cfg: crate::config::Config = serde_json::from_slice(&std::fs::read(&path)?)?;
-        cfg.lang = Some(lang);
-        crate::config::write_private(&path, &serde_json::to_vec_pretty(&cfg)?)?;
+    if let Some(lang) = lang.filter(|l| crate::i18n::Lang::parse(l).is_some() && crate::config::Config::load_from(&data).is_ok()) {
+        crate::config::Config::update_in(&data, |cfg| cfg.lang = Some(lang))?;
     }
     // Settings left in the user's profile would be confusing: the service no longer reads them.
     set_run(Some(&format!("\"{}\" --at-login", exe.display())))?;
@@ -570,6 +597,21 @@ pub fn sign_in(from: &Path, pin: Option<&str>) -> Result<()> {
         check_trust_dir(&trust)?;
     }
     crate::config::Config::settle_in(&dir, new).map(drop)
+}
+
+/// The consent prompt authorizes exactly the local server root shown by this panel.
+pub fn authorize_local_root(pin: &str) -> Result<()> {
+    anyhow::ensure!(is_elevated(), t("err.need_admin"));
+    let dir = crate::service::machine_dir();
+    anyhow::ensure!(crate::settings::local_forces_settings(&dir), t("local.failed"));
+    let address = crate::local_server::own_address(&dir)?;
+    anyhow::ensure!(address.fingerprint() == Some(pin), "the local root has changed");
+    let pem = address.fetch_root()?.context("the local root is missing")?;
+    let der = address.verified_root(&pem)?;
+    let trust = dir.join(TRUST_DIR);
+    fresh_dir(&trust, &service_sddl()?)?;
+    check_trust_dir(&trust)?;
+    crate::config::write_private(&trust.join(crate::platform::HUB_ROOT), &der)
 }
 
 fn check_sign_in_pin(cfg: &crate::config::Config, pin: Option<&str>) -> Result<()> {
@@ -637,6 +679,11 @@ fn clear_sign_in(dir: &Path) -> Result<()> {
     if moved {
         let _ = std::fs::remove_file(retired);
     }
+    match std::fs::remove_file(root.with_file_name(crate::platform::HUB_ROOT)) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).context("revoke the hub's browser trust"),
+    }
     Ok(())
 }
 
@@ -666,7 +713,7 @@ fn remove_program(keep: Option<u32>) {
 }
 
 /// `keep` is the uninstaller window that asked: it stays open to say it is done.
-pub fn uninstall(purge: bool, keep: Option<u32>) -> Result<()> {
+pub fn uninstall(purge: bool, purge_local: bool, keep: Option<u32>) -> Result<()> {
     if !is_elevated() {
         bail!(t("err.need_admin"));
     }
@@ -677,6 +724,12 @@ pub fn uninstall(purge: bool, keep: Option<u32>) -> Result<()> {
     if let Err(e) = stop_and_remove_root(&m, &data) {
         return restart_after_cleanup(&m, Err(e));
     }
+    let hub = crate::local_server::data_dir(&data);
+    if let Some(mut setting) = crate::config::Config::local_service(&data)? {
+        setting.enabled = false;
+        crate::config::Config::set_local_service(&data, setting)?;
+    }
+    local_firewall(&program_dir().join(crate::local_server::SERVER_EXE), false)?;
     for name in [AGENT_SERVICE, NET_SERVICE] {
         if let Ok(s) = m.open_service(name, ServiceAccess::DELETE) {
             s.delete()?;
@@ -689,8 +742,34 @@ pub fn uninstall(purge: bool, keep: Option<u32>) -> Result<()> {
     let _ = std::fs::remove_file(start_menu_link());
     remove_program(keep);
     let _ = std::fs::remove_dir_all(data.join("service"));
-    if purge {
-        std::fs::remove_dir_all(&data).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })?;
+    if purge_local {
+        if crate::config::Config::load_from(&data).is_ok_and(|cfg| crate::local_server::is_own(&data, &cfg.server)) {
+            crate::config::Config::forget_in(&data)?;
+        }
+        remove_data_dir(&hub)?;
     }
+    if purge {
+        if !purge_local && hub.exists() {
+            crate::config::Config::forget_in(&data)?;
+            for entry in std::fs::read_dir(&data)? {
+                let entry = entry?;
+                if entry.path() == hub || entry.file_name() == "host.json" {
+                    continue;
+                }
+                if entry.file_type()?.is_dir() {
+                    remove_data_dir(&entry.path())?;
+                } else {
+                    std::fs::remove_file(entry.path())?;
+                }
+            }
+        } else {
+            remove_data_dir(&data)?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_data_dir(path: &Path) -> Result<()> {
+    std::fs::remove_dir_all(path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })?;
     Ok(())
 }

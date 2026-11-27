@@ -70,6 +70,13 @@ fn main() {
         return;
     }
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    println!("cargo:rerun-if-env-changed=DESKWAY_SERVER_EXE");
+    let server = std::env::var_os("DESKWAY_SERVER_EXE");
+    if let Some(server) = &server {
+        println!("cargo:rerun-if-changed={}", std::path::Path::new(server).display());
+    }
+    let server = server.map_or_else(Vec::new, |path| std::fs::read(path).expect("read the bundled deskway-server.exe"));
+    std::fs::write(out.join("deskway-server.bin"), server).unwrap();
     let ico = out.join("deskway.ico");
     std::fs::write(&ico, ico_file(&[16, 20, 24, 32, 40, 48, 64, 256])).unwrap();
     let rc = out.join("deskway.rc");

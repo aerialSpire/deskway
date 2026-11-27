@@ -28,6 +28,7 @@ use crate::settings::PanelRequest;
 use crate::signal::Status;
 
 mod indicator;
+mod local;
 #[cfg(target_os = "macos")]
 mod inprocess;
 #[cfg(windows)]
@@ -117,6 +118,7 @@ pub enum PageMessage {
     RemoveDevice { id: String },
     StartService,
     FindLocalServers,
+    LocalService { action: crate::local_server::Request },
     Login { server: String, user: String, password: String },
     Leave,
     ScreenRequest,
@@ -158,6 +160,7 @@ trait Backend {
     /// The facts of this computer the panel shows besides the host's status (whether it is
     /// signed in, how it starts, what it may do).
     fn extras(&self) -> Value;
+    fn local(&self) -> &local::Panel;
     /// A request for the host. True if the panel should be drawn again now.
     fn request(&mut self, r: PanelRequest) -> bool;
     /// A page message that is the backend's own. True if the panel should be drawn again now.
@@ -330,7 +333,7 @@ fn follow_language(app: &mut App, panel: &WebView, indicator: &mut Option<Indica
     }
 }
 
-pub fn run(at_login: bool) -> Result<()> {
+pub fn run(at_login: bool, dev: bool) -> Result<()> {
     let mut event_loop = EventLoopBuilder::<UiEvent>::with_user_event().build();
     native::configure_event_loop(&mut event_loop);
     let proxy = event_loop.create_proxy();
@@ -381,13 +384,14 @@ pub fn run(at_login: bool) -> Result<()> {
         let _ = p.send_event(UiEvent::Menu(e.id));
     }));
 
-    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login), status: None, panel_ready: false, discovery: None, shown: i18n::current() };
+    let mut app = App { backend: HostBackend::new(proxy.clone(), at_login, dev), status: None, panel_ready: false, discovery: None, shown: i18n::current() };
     if app.backend.start() {
         let _ = proxy.send_event(UiEvent::TrayOpen);
     }
 
     let mut indicator: Option<Indicator> = None;
-    let _tray = tray;
+    let mut tray_badge = None;
+    let mut tray_tooltip = String::new();
 
     event_loop.run(move |event, target, flow| {
         *flow = ControlFlow::Wait;
@@ -566,6 +570,30 @@ pub fn run(at_login: bool) -> Result<()> {
                 }
             }
             _ => {}
+        }
+        let badge = app.backend.local().state.as_ref().and_then(crate::local_server::State::badge);
+        if badge != tray_badge {
+            let mut pixels = native::tray_rgba(32);
+            local::draw_badge(&mut pixels, badge, native::TRAY_TEMPLATE);
+            if let Ok(icon) = Icon::from_rgba(pixels, 32, 32) {
+                let _ = tray.set_icon(Some(icon));
+            }
+        }
+        tray_badge = badge;
+        let local = app.backend.local().state.as_ref();
+        let tooltip_key = match badge {
+            Some(true) => Some("local.running"),
+            Some(false) => Some("local.failed"),
+            None if local.is_some_and(|s| s.own && !s.enabled) => Some("local.stopped"),
+            None if app.status.as_ref().is_some_and(|s| s.online) => Some("status.online"),
+            None => None,
+        };
+        let tooltip = tooltip_key.map_or_else(|| crate::product::NAME.to_owned(), |key| {
+            format!("{} · {}", crate::product::NAME, t(key))
+        });
+        if tooltip != tray_tooltip {
+            let _ = tray.set_tooltip(Some(tooltip.clone()));
+            tray_tooltip = tooltip;
         }
     })
 }

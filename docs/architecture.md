@@ -64,6 +64,8 @@ icon.rs            the shared Deskway D mark for the host, browser client and RE
                    the icon test writes and checks the browser and README PNGs
 config.rs          the host's config (host.json) and its local server root (host-ca.pem);
                    private writes
+local_server.rs    desktop hub's saved ports, server child, first setup and self-enrollment
+kept.rs            child lifetime and restart backoff for the Windows services and desktop hub
 discovery.rs       on-demand mDNS browsing with mdns-sd and mapping advertisements to pinned
                    server addresses. The Host panel and signaling own their browse lifetimes.
 settings.rs        what the panel asks (PanelRequest) and the settings the host carries out:
@@ -715,8 +717,8 @@ The source of truth is the viewer's constraints.
   writes the fixed admin link record under the links lock. The server resolves that record to
   first setup or admin recovery under the store lock. `admin-link -login` uses the same
   record to issue a two-minute link for an existing admin. The setup page prepares its
-  browser key and redeems the login link immediately. All three kinds use the same same-origin
-  JSON endpoint. Redemption commits the browser key, device log, approval and any new password
+  browser key and redeems the login link immediately. The three browser link kinds use the same
+  same-origin JSON endpoint. Redemption commits the browser key, device log, approval and any new password
   in one state save, then sets the browser's session cookie.
 - In local mode the root certificate in `local-ca/` beside the state file identifies the server
   by its SHA-256 fingerprint. The constrained intermediate signs the leaves. TLS selects and
@@ -731,6 +733,17 @@ The source of truth is the viewer's constraints.
   at startup. The server and Host check their records against `proto/local-discovery.json`.
   The desktop panel browses while its sign-in form is visible. It collects the first results for
   two seconds, then updates the list as announcements arrive or expire.
+  On Windows, DeskwayNet runs and supervises the bundled server under its own account.
+  On macOS, the app supervises its bundled server. The server keeps its state and CA in
+  `local-server/` in the Host's data directory. The switch and assigned listener ports live in
+  `host.json`, including while the Host is signed out. The first start tries 443/80 and then
+  the first available pair starting at 8443/8080. Once assigned, the ports stay fixed.
+  The supervisor waits for the child to report readiness on its stdout. The same private
+  pipe returns live connection counts on request. Closing the child's stdin stops it.
+  Both sides check their control messages against `proto/local-host.json`.
+  The Host polls for the admin password every two seconds during first setup. Until then,
+  the panel opens the one-time setup link. The Host redeems a separate ten-minute enrollment
+  token to join the admin's account already approved, using its pinned localhost address.
 - The Host and CLI keep the full sign-in address including `#ca=`. `crates/server` verifies
   the bootstrap certificate against the pin and builds same-server HTTP and signaling
   connections using system roots and that PEM. The CLI keeps the PEM in `account.json`.
@@ -788,6 +801,9 @@ the operating system still controls locking and verifies the sign-in password. N
 enrollments enable sleep prevention and register the per-user login item. On Windows, sleep
 prevention is off by default. The panel applies the setting through the network service on
 Windows and in the app on macOS.
+
+When the local service switch is on, the Host saves and applies sleep prevention and
+enables automatic startup. Both settings are locked in the panel until the service is stopped.
 
 The always-running part of Deskway (the network service on Windows, the app on macOS) requests
 keep-awake while the setting is on. On battery below 15%, Deskway releases the setting's request

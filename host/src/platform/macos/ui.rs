@@ -491,6 +491,12 @@ pub fn open_folder(path: &str) {
     let _ = std::process::Command::new("open").arg(path).spawn();
 }
 
+pub fn open_browser(url: &str) -> anyhow::Result<()> {
+    let status = std::process::Command::new("/usr/bin/open").arg(url).status()?;
+    anyhow::ensure!(status.success(), "cannot open the system browser");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,6 +16,75 @@ import (
 
 // Enrolling computers, approving them, and their owner renaming and removing them.
 
+func TestAdminEnrollmentLink(t *testing.T) {
+	f := newFixture(t)
+	browser := f.signedIn("me")
+	issue := func() string {
+		t.Helper()
+		link, err := IssueAdminEnrollLink(f.data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code, ok := strings.CutPrefix(link, "/api/computers/enroll#c=")
+		if !ok || code == "" {
+			t.Fatal("expected an enrollment token")
+		}
+		return code
+	}
+	old, token := issue(), issue()
+	links, err := openLinks(f.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Until(time.Unix(links.records[enrollLinkID].Expires, 0))
+	links.Close()
+	if expiry > 10*time.Minute || expiry < 9*time.Minute {
+		t.Fatalf("enrollment token lifetime: %v", expiry)
+	}
+	for _, tc := range []struct {
+		label, token, user string
+		status             int
+	}{
+		{"superseded", old, "", http.StatusUnauthorized},
+		{"mixed credential", token, "me", http.StatusBadRequest},
+		{"enroll", token, "", http.StatusOK},
+		{"replay", token, "", http.StatusUnauthorized},
+	} {
+		res := f.do(browser, "POST", "/api/computers/enroll", map[string]string{
+			"name": "Local hub", "os": "windows", "enroll_token": tc.token, "user": tc.user,
+		})
+		want(t, tc.label, res.StatusCode, tc.status)
+		if tc.status != http.StatusOK {
+			res.Body.Close()
+			continue
+		}
+		var got struct{ ID, Token, User string }
+		f.decode(res, &got)
+		if got.User != "me" || !f.s.store.DeviceTokenOK(got.ID, got.Token) || !f.s.store.CanAccess(f.id("me"), got.ID) {
+			t.Fatal("enrollment must return an approved computer and its credential")
+		}
+	}
+	if got := f.s.deviceList(&conn{user: f.id("me")}); len(got) != 1 || got[0].Name != "Local hub" {
+		t.Fatal("the approved hub must appear in the admin's list")
+	}
+	expired := issue()
+	links, err = openLinks(f.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := links.records[enrollLinkID]
+	record.Expires = time.Now().Add(-time.Second).Unix()
+	links.records[enrollLinkID] = record
+	err = links.save()
+	links.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want(t, "expired enrollment link", f.status(browser, "POST", "/api/computers/enroll", map[string]string{
+		"name": "Local hub", "enroll_token": expired,
+	}), http.StatusUnauthorized)
+}
+
 func TestNewComputerStaysHiddenUntilApproved(t *testing.T) {
 	f := newFixture(t)
 	first := f.signedIn("me")
