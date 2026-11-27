@@ -185,7 +185,7 @@ them unchanged ([Self-hosting, step 5](docs/self-hosting.md#5-put-the-ai-client-
   [AI clients](docs/ai-clients.md) · [Accounts](docs/accounts.md)
 - For developers: [Architecture](docs/architecture.md) · [Protocol](docs/protocol.md) ·
   [Security](docs/security.md) · [Session lifecycle](docs/session-lifecycle.md) ·
-  [Interface design](docs/design.md) · [Translations](docs/i18n.md)
+  [Interface design](docs/design.md) · [Translations](docs/i18n.md) · [Host resource use](docs/host-resources.md)
 
 ## Contributing and security
 
