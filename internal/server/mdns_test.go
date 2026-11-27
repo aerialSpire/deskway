@@ -1,0 +1,123 @@
+package server
+
+import (
+	"net/netip"
+	"reflect"
+	"strings"
+	"testing"
+
+	"golang.org/x/net/dns/dnsmessage"
+)
+
+func TestHostnameLabel(t *testing.T) {
+	for _, tt := range []struct{ host, want string }{
+		{"SEAN_ASUS", "sean-asus"},
+		{"--_Office__客廳...PC-09_--", "office-pc-09"},
+		{"A--B", "a--b"},
+		{"", "deskway"},
+		{"_K客!-", "deskway"},
+		{strings.Repeat("-", 64) + strings.Repeat("A", 64), strings.Repeat("a", 63)},
+		{strings.Repeat("A", 62) + "_B", strings.Repeat("a", 62)},
+	} {
+		if got := hostnameLabel(tt.host); got != tt.want || !dnsLabel(got) {
+			t.Errorf("hostnameLabel(%q) = %q, want %q", tt.host, got, tt.want)
+		}
+	}
+	if dnsLabel("sean_asus") {
+		t.Error("dnsLabel accepted an underscore")
+	}
+}
+
+func TestMDNSAnswers(t *testing.T) {
+	fingerprint := strings.Repeat("a", 64)
+	records := newMDNSRecords(hostnameLabel("SEAN_ASUS"), "客廳", fingerprint, 18499, 18498)
+	v4 := netip.MustParseAddr("192.168.1.2")
+	v6 := netip.MustParseAddr("fd00::2")
+	ips := func() []netip.Addr { return []netip.Addr{v4, v6} }
+	instance := "sean-asus._deskway._tcp.local."
+	host := "sean-asus.local."
+	for _, tt := range []struct {
+		name       string
+		kind       dnsmessage.Type
+		class      dnsmessage.Class
+		legacy     bool
+		answer     dnsmessage.ResourceBody
+		additional int
+	}{
+		{"_Deskway._TCP.local.", dnsmessage.TypePTR, dnsmessage.ClassINET, false, &dnsmessage.PTRResource{PTR: dnsmessage.MustNewName(instance)}, 4},
+		{instance, dnsmessage.TypeSRV, dnsmessage.ClassINET, false, &dnsmessage.SRVResource{Port: 18499, Target: dnsmessage.MustNewName(host)}, 3},
+		{instance, dnsmessage.TypeTXT, dnsmessage.ClassINET, false, &dnsmessage.TXTResource{TXT: []string{"v=1", "fp=" + fingerprint, "name=客廳", "guide=18498"}}, 0},
+		{host, dnsmessage.TypeA, dnsmessage.ClassINET, false, &dnsmessage.AResource{A: v4.As4()}, 0},
+		{host, dnsmessage.TypeAAAA, dnsmessage.ClassINET | mdnsClassBit, false, &dnsmessage.AAAAResource{AAAA: v6.As16()}, 0},
+		{host, dnsmessage.TypeA, dnsmessage.ClassINET, true, &dnsmessage.AResource{A: v4.As4()}, 0},
+		{host, dnsmessage.TypeTXT, dnsmessage.ClassINET, false, nil, 0},
+		{"sean_asus.local.", dnsmessage.TypeA, dnsmessage.ClassINET, false, nil, 0},
+		{"other.local.", dnsmessage.TypeA, dnsmessage.ClassINET, false, nil, 0},
+		{host, dnsmessage.TypeA, dnsmessage.ClassCHAOS, false, nil, 0},
+	} {
+		t.Run(tt.name+tt.kind.String()+tt.class.String(), func(t *testing.T) {
+			query := dnsmessage.Message{Header: dnsmessage.Header{ID: 123},
+				Questions: []dnsmessage.Question{{Name: dnsmessage.MustNewName(tt.name), Type: tt.kind, Class: tt.class}}}
+			packet, err := query.Pack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, unicast, err := records.answer(packet, ips, tt.legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.answer == nil {
+				if len(data) != 0 {
+					t.Fatal("answered an unrelated question")
+				}
+				return
+			}
+			if unicast != (tt.legacy || tt.class&mdnsClassBit != 0) {
+				t.Fatalf("unexpected unicast=%t", unicast)
+			}
+			var msg dnsmessage.Message
+			if err := msg.Unpack(data); err != nil {
+				t.Fatal(err)
+			}
+			if !msg.Response || !msg.Authoritative || len(msg.Answers) != 1 || len(msg.Additionals) != tt.additional {
+				t.Fatalf("invalid response: %+v", msg)
+			}
+			answer := msg.Answers[0]
+			if !reflect.DeepEqual(answer.Body, tt.answer) || answer.Header.Type != tt.kind || !strings.EqualFold(answer.Header.Name.String(), tt.name) {
+				t.Fatalf("answer = %v, want %v", answer, tt.answer)
+			}
+			if tt.legacy {
+				if msg.ID != query.ID || !reflect.DeepEqual(msg.Questions, query.Questions) || answer.Header.TTL != 10 ||
+					answer.Header.Class != dnsmessage.ClassINET {
+					t.Fatalf("invalid legacy unicast response: %+v", msg)
+				}
+			} else if msg.ID != 0 || len(msg.Questions) != 0 || answer.Header.TTL != mdnsTTL ||
+				(answer.Header.Class&mdnsClassBit != 0) != (tt.kind != dnsmessage.TypePTR) {
+				t.Fatalf("invalid multicast response: %+v", msg)
+			}
+		})
+	}
+}
+
+func TestMDNSAnnouncementAndGoodbye(t *testing.T) {
+	records := newMDNSRecords("hub", "Hub", strings.Repeat("a", 64), 18499, 18498)
+	ips := []netip.Addr{netip.MustParseAddr("192.168.1.2"), netip.MustParseAddr("fd00::2")}
+	for _, ttl := range []uint32{mdnsTTL, 0} {
+		packet, err := records.announcement(ips, ttl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var msg dnsmessage.Message
+		if err := msg.Unpack(packet); err != nil {
+			t.Fatal(err)
+		}
+		if !msg.Response || !msg.Authoritative || len(msg.Answers) != 5 || len(msg.Questions) != 0 {
+			t.Fatalf("invalid announcement: %+v", msg)
+		}
+		for _, rr := range msg.Answers {
+			if rr.Header.TTL != ttl {
+				t.Fatalf("%s TTL = %d, want %d", rr.Header.Type, rr.Header.TTL, ttl)
+			}
+		}
+	}
+}

@@ -101,6 +101,9 @@ button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+.topbar { min-height: var(--h-control); display: flex; align-items: center; justify-content: space-between; gap: var(--s4); }
+.brand { font-size: var(--fs-subtitle); font-weight: 400; letter-spacing: .01em; }
+
 /* ---- Buttons: secondary by default; primary, text and danger; two heights ---- */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: var(--s2);

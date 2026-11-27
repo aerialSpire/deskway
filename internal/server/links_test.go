@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -246,6 +247,91 @@ func TestSetupRequiresSameOriginJSON(t *testing.T) {
 		res := httptest.NewRecorder()
 		f.s.Handler().ServeHTTP(res, req)
 		want(t, trial.site+" "+trial.content, res.Code, trial.status)
+	}
+}
+
+func TestAdminLoginLink(t *testing.T) {
+	f := newFixture(t)
+	id := f.id("me")
+	before := f.s.store.Users[id].Hash
+	c := f.browser()
+	for _, tt := range []struct {
+		name       string
+		password   string
+		expired    bool
+		wantRedeem int
+	}{
+		{"expired", "", true, http.StatusGone},
+		{"password change", "another password", false, http.StatusBadRequest},
+		{"sign in", "", false, http.StatusNoContent},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Now()
+			link, err := IssueAdminLoginLink(f.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code := setupCode(link)
+			details := "/api/setup?c=" + hashToken(code)
+			links, err := openLinks(f.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record := links.records[adminLinkID]
+			if record.Kind != linkLogin || record.Expires < start.Add(2*time.Minute).Unix() ||
+				record.Expires > time.Now().Add(2*time.Minute).Unix() {
+				links.Close()
+				t.Fatalf("wrong login link kind or expiry: %+v", record)
+			}
+			if tt.expired {
+				record.Expires = time.Now().Unix()
+				links.records[adminLinkID] = record
+				if err := links.save(); err != nil {
+					links.Close()
+					t.Fatal(err)
+				}
+			}
+			links.Close()
+			if tt.expired {
+				want(t, "expired lookup", f.status(c, "GET", details, nil), http.StatusGone)
+			} else {
+				var result setupDetails
+				f.decode(f.do(c, "GET", details, nil), &result)
+				if result != (setupDetails{Kind: linkLogin, Name: "me"}) {
+					t.Fatalf("login link details: %+v", result)
+				}
+			}
+			body := setupRequest{Code: code, Password: tt.password, Device: &setupTestKey}
+			want(t, "redeem", f.status(c, "POST", "/api/setup", body), tt.wantRedeem)
+			var saved Store
+			if err := readState(f.data, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if saved.Users[id].Hash != before {
+				t.Fatal("the admin password hash changed")
+			}
+			if tt.wantRedeem == http.StatusNoContent {
+				want(t, "admin session", f.status(c, "GET", "/api/members", nil), http.StatusOK)
+				want(t, "one-time link", f.status(c, "POST", "/api/setup", body), http.StatusGone)
+				approved := f.s.store.ApprovedBrowsers(id)
+				if len(approved) != 1 || approved[0].Key == nil || *approved[0].Key != setupTestKey {
+					t.Fatalf("missing approved browser with submitted key: %+v", approved)
+				}
+			} else {
+				want(t, "no admin session", f.status(c, "GET", "/api/members", nil), http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
+func TestAdminLoginLinkRequiresAdmin(t *testing.T) {
+	f := emptyFixture(t, nil, httptest.NewServer)
+	f.addAccount("member")
+	for _, path := range []string{f.data, filepath.Join(t.TempDir(), "missing.json")} {
+		link, err := IssueAdminLoginLink(path)
+		if link != "" || err == nil || !strings.Contains(err.Error(), "no admin yet") {
+			t.Fatalf("issued %q, error %v", link, err)
+		}
 	}
 }
 

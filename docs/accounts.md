@@ -22,6 +22,10 @@ link approves the browser, registers its device key and signs you in. A newly ap
 can trust that browser from its first connection. Once you have set a password, use it for later sign-ins.
 An approved device must approve a new browser that signs in with a password.
 
+The server operator can also use `admin-link -login` to issue a two-minute sign-in link for
+the existing admin. The browser registers its device key and signs in as soon as the link opens,
+with the account password left intact.
+
 ## Managing members
 
 **Members** shows each member’s sign-in name, display name, creation time, last activity and

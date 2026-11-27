@@ -1,5 +1,29 @@
 # Self-hosting the Deskway server
 
+## Local mode
+
+Run the server on a computer on your home or office network. Local mode uses direct
+connections on that network, with no domain, public server, STUN or TURN.
+
+```sh
+deskway-server -local -listen :18499 -guide-listen :18498 -local-name "Office computer"
+```
+
+`-listen` sets the HTTPS address. `-guide-listen` is required and sets the plain HTTP
+address for the certificate setup page. Use a LAN address or leave the address before the port
+empty to listen on all LAN interfaces. `-local-name` defaults to the computer's hostname and
+accepts up to 40 UTF-8 characters. Omit `-domain`, `-tls-cert`, `-tls-key`, `-public-ip`
+and `-stun` in local mode.
+
+On a phone, open `http://HOSTNAME.local:18498/` or use the server's LAN IP with the same port.
+Compare the CA fingerprint shown by the guide with the one printed by the server. Follow the
+guide to install the certificate, then choose **Continue** to open Deskway over HTTPS. Keep
+`local-ca/` beside the state file when backing up the server so devices keep trusting it.
+
+Run `deskway-server admin-link -data FILE -url https://HOSTNAME.local:18499` to set up the
+admin. Once an admin exists, add `-login` to issue a one-time link that signs in the browser
+without changing the password. Open it within two minutes.
+
 ## Quick install
 
 On Debian or Ubuntu with systemd, point your domain's DNS A record to the server's public
@@ -326,7 +350,10 @@ Set these flags on the `ExecStart` line of the unit.
 | Flag | Default | Meaning |
 |---|---|---|
 | `-listen` | `127.0.0.1:8080` | Address to listen on. Use `:443` with `-domain` or `-tls-cert` |
-| `-data` | `deskway-data/state.json` | State file. The `certs` and `clients` folders sit beside it |
+| `-data` | `deskway-data/state.json` | State file. The `certs`, `local-ca` and `clients` folders sit beside it when used |
+| `-local` | off | Run [local mode](#local-mode) with a local CA and mDNS discovery |
+| `-guide-listen` | | Plain HTTP address for the certificate guide in local mode |
+| `-local-name` | hostname | Name advertised in local mode, up to 40 UTF-8 characters |
 | `-domain` | | Get a Let's Encrypt certificate for this domain automatically, through port 443 (port 80 can stay closed) |
 | `-tls-cert`, `-tls-key` | | Use your own certificate and key files instead of `-domain` |
 | `-public-host` | | Public hostname for TURN over TLS with your own certificate, when it has no single concrete DNS name |
@@ -494,7 +521,7 @@ hour. Browsers pick up the new web client and show “A new version of Deskway i
 
 ## Backup and restore
 
-Everything the server keeps is in `/var/lib/deskway`: `state.json` (accounts, devices, approvals),
+Everything the service keeps is in `/var/lib/deskway`: `state.json` (accounts, devices, approvals),
 `state.json.links` (account links), `certs/`, `clients/` and, with remote MCP, `mcp/`
 (approved applications' AI profiles and device keys). For a consistent copy, stop the service and issue links only after it is running again.
 

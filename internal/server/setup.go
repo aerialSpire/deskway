@@ -10,7 +10,7 @@ import (
 
 func (s *Server) handleSetupDetails(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	// Only the digest is needed to look up the form details. Redemption requires the code.
+	// Only the digest is needed to look up the link's details. Redemption requires the code.
 	details, err := s.store.setupDetails(r.URL.Query().Get("c"))
 	if errors.Is(err, errAccountLink) {
 		http.Error(w, err.Error(), http.StatusGone)
@@ -44,6 +44,10 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, errSetupKey) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if errors.Is(err, errLoginFields) {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if err != nil {

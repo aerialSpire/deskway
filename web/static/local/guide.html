@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="{{.Design}}">
+  <style>
+    body { background: var(--ground); }
+    .guide { max-width: 1280px; margin: auto; padding: var(--s6) var(--s8) var(--s12); }
+    main { max-width: 360px; margin: var(--s8) auto 0; }
+    h1 { font-size: var(--fs-display); line-height: var(--lh-title); }
+    ol { display: grid; gap: var(--s2); padding-left: var(--s5); margin: var(--s3) 0 var(--s6); }
+    code { display: block; margin: var(--s1) 0 var(--s6); color: var(--quiet); font: var(--fs-caption)/var(--lh-body) var(--font-mono); overflow-wrap: anywhere; }
+    @media (min-width: 721px) { main { margin-top: max(var(--s8), 12vh); } }
+    @media (max-width: 720px) { .guide { padding: var(--s4) var(--s4) var(--s12); } }
+  </style>
+</head>
+<body data-https-port="{{.Port}}">
+  <div class="guide">
+    <header class="topbar"><span class="brand">Deskway</span></header>
+    <main hidden>
+      <h1 data-text="guide.title"></h1>
+      <ol>
+        <li><a id="download" class="btn" data-text="guide.download"></a></li>
+        <li id="install"></li>
+        <li id="trust" data-text="guide.ios.trust" hidden></li>
+      </ol>
+      <p data-text="guide.fingerprint"></p>
+      <code>{{.Fingerprint}}</code>
+      <a id="continue" class="btn primary block" data-text="common.continue"></a>
+    </main>
+  </div>
+  <script type="module">
+    import { browserLanguage } from {{.Language}};
+    import { showGuide } from {{.Script}};
+    showGuide(browserLanguage(), {{.Catalogs}});
+  </script>
+</body>
+</html>

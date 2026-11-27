@@ -31,6 +31,7 @@ type Server struct {
 	store  *Store
 	turn   TURNConfig
 	stun   []string
+	local  *LocalCA
 	relays relayState
 	web    fs.FS
 	build  string // which client files are served: their hash, told to every browser
@@ -149,6 +150,14 @@ func (s *Server) Shutdown() {
 	s.sessions.close()
 }
 
+// EnableLocalMode confines this server to direct peer connections and adds its CA download.
+// Call it before serving requests.
+func (s *Server) EnableLocalMode(ca *LocalCA) {
+	s.local = ca
+	s.turn = TURNConfig{}
+	s.stun = nil
+}
+
 // Handler returns the HTTP routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -175,13 +184,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/members/{id}/link", s.requireAdmin(s.handleMemberLink))
 	mux.HandleFunc("DELETE /api/members/{id}/link", s.requireAdmin(s.handleMemberRevoke))
 	mux.HandleFunc("DELETE /api/members/{id}", s.requireAdmin(s.handleMemberRemove))
-	mux.HandleFunc("GET /api/relays", s.requireAdmin(s.handleRelays))
-	mux.HandleFunc("GET /api/relays/check", s.requireAdmin(s.handleRelayCheck))
-	mux.HandleFunc("POST /api/relays/token", s.requireAdmin(s.handleRelayToken))
-	mux.HandleFunc("PATCH /api/relays/{id}", s.requireAdmin(s.handleRelayRename))
-	mux.HandleFunc("DELETE /api/relays/{id}", s.requireAdmin(s.handleRelayRemove))
-	mux.HandleFunc("POST /api/relays/join", s.handleRelayJoin)
-	mux.HandleFunc("POST /api/relays/report", s.handleRelayReport)
+	if s.local != nil {
+		mux.HandleFunc("GET /local/ca.crt", s.local.serveCertificate)
+	} else {
+		mux.HandleFunc("GET /api/relays", s.requireAdmin(s.handleRelays))
+		mux.HandleFunc("GET /api/relays/check", s.requireAdmin(s.handleRelayCheck))
+		mux.HandleFunc("POST /api/relays/token", s.requireAdmin(s.handleRelayToken))
+		mux.HandleFunc("PATCH /api/relays/{id}", s.requireAdmin(s.handleRelayRename))
+		mux.HandleFunc("DELETE /api/relays/{id}", s.requireAdmin(s.handleRelayRemove))
+		mux.HandleFunc("POST /api/relays/join", s.handleRelayJoin)
+		mux.HandleFunc("POST /api/relays/report", s.handleRelayReport)
+	}
 	mux.HandleFunc("POST /api/approvals", s.requireLogin(s.handleApprove))
 	mux.HandleFunc("GET /api/devices", s.requireClient(s.handleBrowserKeys))
 	mux.HandleFunc("DELETE /api/browsers/{id}", s.requireLogin(s.handleBrowserRemove))
@@ -198,8 +211,9 @@ func (s *Server) Handler() http.Handler {
 	if s.mcp != nil {
 		s.registerMCP(mux)
 	}
+	mux.Handle("GET /local/", http.NotFoundHandler())
 	mux.Handle("GET /", http.FileServerFS(s.web))
-	return securityHeaders(mux)
+	return securityHeaders(mux, s.local == nil)
 }
 
 // buildOf names the client files: a hash of every file's path and contents. A browser that was
@@ -221,7 +235,7 @@ func buildOf(web fs.FS) string {
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
-func securityHeaders(next http.Handler) http.Handler {
+func securityHeaders(next http.Handler, hsts bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'")
@@ -229,7 +243,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cache-Control", "no-cache")
-		if r.TLS != nil {
+		if hsts && r.TLS != nil {
 			h.Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		next.ServeHTTP(w, r)

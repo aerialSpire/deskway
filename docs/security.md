@@ -66,14 +66,26 @@ on the website (`/api/members`). See [Accounts](accounts.md).
 The server generates 32 random bytes per link and encodes them in base64url. Its separate links
 file stores the SHA-256 of the code, the intended account when known, the kind of link, the
 issuer and the expiry. The code stays in the URL fragment until the setup page removes it from
-the address bar. The page sends the hash to obtain the form details and sends the code when
-submitting the password. Invalid codes count toward the same per-address limit as wrong passwords.
+the address bar. The page sends the hash to obtain the link's details and sends the code when
+redeeming the link. Invalid codes count toward the same per-address limit as wrong passwords.
 
 A new link replaces an outstanding link for the same account. A link works once. Member links
-expire after seven days and admin links after one hour. Redeeming a link approves the browser
-that uses it and signs it in. Its registered key joins the device log unsigned. A computer that
+expire after seven days and admin setup and recovery links after one hour. An admin login link
+expires after two minutes and leaves the account password intact. Redeeming a link approves the
+browser that uses it and signs it in. Its registered key joins the device log unsigned. A computer that
 already trusts devices requires its own approval or a signed endorsement from a trusted device
 before accepting that key.
+
+### Local server certificates
+
+A local-mode server keeps a P-256 root CA for ten years in `local-ca/` beside its state file.
+Its private key has mode `0600` on Unix. The critical X.509 name constraints limit trust to
+the `local` and `localhost` DNS subtrees, IPv4 private, loopback and link-local ranges, and
+IPv6 loopback, unique-local and link-local ranges. A verifier that enforces the constraints
+cannot use this CA to authenticate public sites even if the key is leaked. Deskway only issues
+leaves for .local names, localhost and permitted local IP addresses. Compare the fingerprint on
+the plain HTTP installation guide with the fingerprint printed by the intended server before
+installing its CA.
 
 ### An account is its id
 
