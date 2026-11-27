@@ -19,6 +19,7 @@ use wire::terminal::FRAME;
 
 use super::{Link, Remote, RequestOp};
 use crate::platform::{Pty, WorkspaceState};
+use crate::platform::workspace::{WorkspaceActivity, WorkspaceUse};
 use crate::workspace::{Answer, Browser, BrowserUser, Code, Conflict, Download, FileTransfers, Upload, WorkError};
 
 const PUBLISH_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,6 +32,7 @@ pub(super) enum Operation {
     OpenUpload { path: Vec<u16>, size: u64 },
     OpenDownload { path: Vec<u16> },
     OpenPty { rows: u16, cols: u16 },
+    OpenLease,
     Step { resource: u64, step: Step },
     Close { resource: u64 },
 }
@@ -104,16 +106,19 @@ impl Remote {
             bind: Arc::new(move |user| {
                 let link = bound.worker.lock().unwrap().clone()?;
                 let current = *link.state.lock().unwrap();
-                (current.user == Some(user) && current.refusal(false).is_none()).then(|| link.browser_user())
+                if current.user != Some(user) || current.refusal(false).is_some() { return None; }
+                link.browser_user()
             }),
         }
     }
 }
 
 impl Link {
-    fn browser_user(self: Arc<Self>) -> BrowserUser {
+    fn browser_user(self: Arc<Self>) -> Option<BrowserUser> {
+        let id = self.browser_request::<Result<u64, Error>>(Operation::OpenLease, None).ok()?.ok()?;
+        let lease = Arc::new(ResourceLink { link: self.clone(), id });
         let (browse, resolve, upload, download) = (self.clone(), self.clone(), self.clone(), self.clone());
-        BrowserUser {
+        Some(BrowserUser {
             open: Arc::new(move |rows, cols| {
                 let id = self.browser_request::<Result<u64, PtyError>>(Operation::OpenPty { rows, cols }, None)
                     .map_err(|_| io::ErrorKind::BrokenPipe)??;
@@ -141,7 +146,8 @@ impl Link {
                     Ok(Box::new(Source { resource: ResourceLink { link: download.clone(), id }, size }))
                 }),
             },
-        }
+            _lease: Some(lease),
+        })
     }
 
     fn browser_request<T: DeserializeOwned>(&self, operation: Operation, timeout: Option<Duration>) -> Result<T, Error> {
@@ -258,23 +264,30 @@ impl Pty for ResourceLink {
 }
 
 enum Resource {
+    Lease,
     Upload(Box<dyn Upload>),
     Download(Box<dyn Download>),
     Pty(Box<dyn Pty>),
+}
+
+struct OpenResource {
+    resource: Arc<Mutex<Resource>>,
+    _used: WorkspaceUse,
 }
 
 pub(super) struct Worker {
     browser: Browser,
     next: AtomicU64,
     alive: AtomicBool,
-    resources: Mutex<HashMap<u64, Arc<Mutex<Resource>>>>,
+    resources: Mutex<HashMap<u64, OpenResource>>,
+    activity: Arc<WorkspaceActivity>,
 }
 
 impl Worker {
-    pub fn new(browser: Browser) -> Self {
+    pub fn new(browser: Browser, activity: Arc<WorkspaceActivity>) -> Self {
         Self {
             browser, next: AtomicU64::new(0),
-            alive: AtomicBool::new(true), resources: Mutex::default(),
+            alive: AtomicBool::new(true), resources: Mutex::default(), activity,
         }
     }
 
@@ -287,7 +300,7 @@ impl Worker {
         let mut resources = self.resources.lock().unwrap();
         if !self.alive.load(Ordering::Acquire) { return Err(Error::Cancelled); }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        resources.insert(id, Arc::new(Mutex::new(resource)));
+        resources.insert(id, OpenResource { resource: Arc::new(Mutex::new(resource)), _used: self.activity.begin() });
         Ok(id)
     }
 
@@ -298,7 +311,8 @@ impl Worker {
             self.alive.load(Ordering::Acquire) && user == current.user && current.refusal(false).is_none()
         };
         if let Operation::Step { resource, step } = op {
-            let resource = self.resources.lock().unwrap().get(&resource).cloned().ok_or_else(invalid)?;
+            let resource = self.resources.lock().unwrap().get(&resource)
+                .map(|open| open.resource.clone()).ok_or_else(invalid)?;
             return resource.lock().unwrap().step(step, &allowed);
         }
         if let Operation::Close { resource } = op {
@@ -308,6 +322,7 @@ impl Worker {
         }
         let Some(browser) = user.and_then(|user| (self.browser.bind)(user)) else { return Err(invalid()); };
         match op {
+            Operation::OpenLease => value(if allowed() { self.insert(Resource::Lease) } else { Err(Error::Cancelled) }),
             Operation::OpenPty { rows, cols } => value(if allowed() {
                 (browser.open)(rows, cols).map_err(PtyError::from).and_then(|pty| self.insert(Resource::Pty(pty)).map_err(|_| PtyError::Io))
             } else { Err(PtyError::Denied) }),
@@ -393,8 +408,8 @@ impl Resource {
 mod tests {
     use super::*;
     use crate::service::ipc::{self, Pipe};
+    use crate::wake::Waker;
     use std::fs;
-    use std::sync::mpsc::channel;
 
     #[test]
     fn browser_requests_keep_resources_on_the_worker_and_enforce_its_lock() {
@@ -412,13 +427,20 @@ mod tests {
             Arc::new(move || *current.lock().unwrap()),
         );
         client.send_json(&super::super::Reply::Workspace(WorkspaceState::READY)).unwrap();
+        let activity = Arc::new(WorkspaceActivity::default());
+        let (used, usage) = channel();
+        assert!(!activity.watch(move |active| { let _ = used.send(active); }));
+        let worker = Arc::new(Worker::new(browser, activity));
         let served = {
             let pipe = client.clone();
+            let worker = worker.clone();
             std::thread::spawn(move || super::super::serve_requests(
-                pipe, Arc::new(crate::workspace::Local::default()), Some(Arc::new(Worker::new(browser))),
+                pipe, Arc::new(crate::workspace::Local::default()),
+                // Observe resource activity on its own, without counting the requests.
+                Some(worker), None,
             ))
         };
-        let (updates, notices) = channel();
+        let (updates, notices) = Waker::default().channel();
         let remote = Arc::new(Remote::user(updates));
         let attached = {
             let remote = remote.clone();
@@ -428,6 +450,12 @@ mod tests {
         notices.recv_timeout(Duration::from_secs(5)).unwrap();
         let browser = remote.browser();
         assert!((browser.bind)(1).is_none());
+        let user = (browser.bind)(0).unwrap();
+        assert!(usage.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(matches!(*worker.resources.lock().unwrap()[&0].resource.lock().unwrap(), Resource::Lease));
+        drop(user);
+        assert!(!usage.recv_timeout(Duration::from_secs(5)).unwrap());
+        assert!(worker.resources.lock().unwrap().is_empty());
         let user = (browser.bind)(0).unwrap();
         let mut pty = (user.open)(24, 80).unwrap();
         assert_eq!(pty.write(b"pty bytes").unwrap(), 9);

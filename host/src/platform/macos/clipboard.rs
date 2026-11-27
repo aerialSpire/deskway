@@ -1,8 +1,9 @@
 //! The macOS pasteboard for the shared clipboard (`crate::clipboard`).
 //!
 //! - Changes: macOS has no change notification for the general pasteboard; its `changeCount`
-//!   is checked every `WATCH_EVERY`, as clipboard tools on macOS do. Nothing is read while
-//!   sharing is off, at the login window, or when the change is this host's own.
+//!   is checked when sharing starts and every `WATCH_EVERY` while sharing is on.
+//!   The watcher waits while sharing is off. Nothing is read at the login window or when
+//!   the change is this host's own.
 //! - The browser's formats are promised data: one `NSPasteboardItem` whose types are provided
 //!   by an `NSPasteboardItemDataProvider`; a paste asks the browser through `ClipboardRender`
 //!   and waits up to `RENDER_DEADLINE`.
@@ -12,7 +13,7 @@
 //! take only that), file URLs with the paths as text.
 
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -59,6 +60,7 @@ struct Inner {
     // Serializes pasteboard writes and the state updates that accompany them.
     writes: Mutex<()>,
     shared: Mutex<Shared>,
+    wake: SyncSender<()>,
     events: Sender<PlatformEvent>,
 }
 
@@ -188,58 +190,84 @@ fn describe(items: &NSArray<NSPasteboardItem>) -> (Vec<Format>, Option<String>, 
     (formats, text, files)
 }
 
-fn watch(inner: Weak<Inner>) {
+fn watch(inner: Weak<Inner>, wake: Receiver<()>, mut check: impl FnMut(&Inner) -> bool) {
+    let mut polling = false;
     loop {
-        std::thread::sleep(WATCH_EVERY);
+        // Only Inner owns the sender. Dropping it ends either kind of wait.
+        let disconnected = if polling {
+            wake.recv_timeout(WATCH_EVERY) == Err(RecvTimeoutError::Disconnected)
+        } else {
+            wake.recv().is_err()
+        };
+        if disconnected {
+            break;
+        }
         let Some(inner) = inner.upgrade() else { break };
-        autoreleasepool(|_| {
-            let (pb, items, count, epoch) = {
-                let _writes = inner.writes.lock().unwrap();
-                let mut state = inner.shared.lock().unwrap();
-                if !state.on || !console_active() {
-                    return;
-                }
-                let pb = NSPasteboard::generalPasteboard();
-                let count = pb.changeCount();
-                if state.seen.replace(count) == Some(count) || state.own == Some(count) {
-                    return;
-                }
-                if let Some(promise) = state.promise.take() {
-                    promise.cancel();
-                }
-                let items = pb.pasteboardItems().unwrap_or_else(NSArray::new);
-                if pb.changeCount() != count {
-                    return;
-                }
-                (pb, items, count, state.epoch)
-            };
-            // The items belong to this copy only. If another writer takes the pasteboard
-            // while we read, these items become stale rather than fetching the new data.
-            let (formats, text, files) = describe(&items);
-            let mut state = inner.shared.lock().unwrap();
-            if state.on && state.epoch == epoch && pb.changeCount() == count {
-                state.reported = Some(Reported { count, files });
-                let _ = inner
-                    .events
-                    .send(PlatformEvent::ClipboardChanged { formats, text });
-            }
-        });
+        polling = check(&inner);
     }
 }
 
+/// Checks for a change and returns whether sharing is on and polling should continue.
+fn check_pasteboard(inner: &Inner) -> bool {
+    let writes = inner.writes.lock().unwrap();
+    let mut state = inner.shared.lock().unwrap();
+    if !state.on {
+        return false;
+    }
+    autoreleasepool(|_| {
+        if !console_active() {
+            return;
+        }
+        let pb = NSPasteboard::generalPasteboard();
+        let count = pb.changeCount();
+        if state.seen.replace(count) == Some(count) || state.own == Some(count) {
+            return;
+        }
+        if let Some(promise) = state.promise.take() {
+            promise.cancel();
+        }
+        let items = pb.pasteboardItems().unwrap_or_else(NSArray::new);
+        if pb.changeCount() != count {
+            return;
+        }
+        let epoch = state.epoch;
+        drop(state);
+        drop(writes);
+
+        // The items belong to this copy only. If another writer takes the pasteboard
+        // while we read, these items become stale rather than fetching the new data.
+        let (formats, text, files) = describe(&items);
+        let mut state = inner.shared.lock().unwrap();
+        if state.on && state.epoch == epoch && pb.changeCount() == count {
+            state.reported = Some(Reported { count, files });
+            let _ = inner
+                .events
+                .send(PlatformEvent::ClipboardChanged { formats, text });
+        }
+    });
+    true
+}
+
 impl Clipboard {
-    /// Starts watching the pasteboard. Changes and render requests go to `events`.
-    pub fn start(events: Sender<PlatformEvent>) -> Clipboard {
+    fn new(events: Sender<PlatformEvent>) -> (Self, Receiver<()>) {
+        let (wake, changed) = sync_channel(1);
         let inner = Arc::new(Inner {
             writes: Mutex::new(()),
             shared: Mutex::new(Shared::default()),
+            wake,
             events,
         });
-        let watcher = Arc::downgrade(&inner);
+        (Self { inner }, changed)
+    }
+
+    /// Starts watching the pasteboard. Changes and render requests go to `events`.
+    pub fn start(events: Sender<PlatformEvent>) -> Clipboard {
+        let (clipboard, changed) = Self::new(events);
+        let watcher = Arc::downgrade(&clipboard.inner);
         let _ = std::thread::Builder::new()
             .name("clipboard".into())
-            .spawn(move || watch(watcher));
-        Clipboard { inner }
+            .spawn(move || watch(watcher, changed, check_pasteboard));
+        clipboard
     }
 
     /// Writes under `writes`, so the watcher never sees a new count before it is recorded.
@@ -309,8 +337,12 @@ impl clipboard::Native for Clipboard {
                 state.on = on;
                 state.epoch += 1;
                 state.reported = None;
+                // What is already on the pasteboard when sharing starts at the active console is
+                // not announced; at the login window it is unreadable, so nothing is marked seen.
                 state.seen = (on && console_active())
                     .then(|| NSPasteboard::generalPasteboard().changeCount());
+                // One pending wake is enough. The watcher reads the current sharing state.
+                let _ = self.inner.wake.try_send(());
                 (state.promise.take(), state.own)
             };
             if let Some(old) = old {
@@ -465,6 +497,29 @@ mod tests {
             .collect();
         pb.clearContents();
         assert!(pb.writeObjects(&NSArray::from_retained_slice(&items)));
+    }
+
+    #[test]
+    fn watcher_wakes_when_sharing_turns_on() {
+        let (events, _received) = std::sync::mpsc::channel();
+        let (clipboard, changed) = Clipboard::new(events);
+        let inner = Arc::downgrade(&clipboard.inner);
+        let (checked, checks) = std::sync::mpsc::channel();
+        let watcher = std::thread::spawn(move || {
+            watch(inner, changed, |inner| {
+                assert!(inner.shared.lock().unwrap().on);
+                checked.send(()).unwrap();
+                false
+            });
+        });
+
+        clipboard::Native::share(&clipboard, true);
+        let timeout = Duration::from_secs(5);
+        assert_eq!(checks.recv_timeout(timeout), Ok(()));
+
+        drop(clipboard);
+        assert_eq!(checks.recv_timeout(timeout), Err(RecvTimeoutError::Disconnected));
+        watcher.join().unwrap();
     }
 
     #[test]

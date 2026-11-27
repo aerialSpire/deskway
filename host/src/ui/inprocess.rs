@@ -2,7 +2,6 @@
 //! Signing in and out happens here too, as do the Mac's own settings: its permissions and the
 //! login item.
 
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -14,7 +13,8 @@ use crate::config::Config;
 use crate::i18n::t;
 use crate::platform;
 use crate::settings::{PanelRequest, Settings};
-use crate::signal::{Control, Status};
+use crate::signal::{self, Control, Status};
+use crate::wake::Wake;
 
 pub enum BackendEvent {
     /// Signing in finished: the new config, or why it failed.
@@ -32,7 +32,7 @@ pub struct InProcess {
     /// This Mac's config; None while signed out.
     cfg: Option<Config>,
     /// The running host's queue and settings.
-    control: Option<Sender<Control>>,
+    control: Option<Wake<Control>>,
     settings: Option<Arc<Settings>>,
     /// Signing in.
     busy: bool,
@@ -62,7 +62,7 @@ impl InProcess {
         let Some(cfg) = self.cfg.clone() else { return };
         let (events, platform_events) = std::sync::mpsc::channel();
         let local: Arc<dyn crate::platform::Platform> = Arc::new(platform::Local::new(events));
-        let (control, requests) = std::sync::mpsc::channel();
+        let (control, requests) = signal::control_channel();
         let dir = match crate::config::dir() {
             Ok(d) => d,
             Err(e) => {
@@ -119,7 +119,7 @@ impl InProcess {
         };
         std::thread::Builder::new().name("signal".into()).spawn(move || {
             let _watch = watch;
-            crate::signal::run(params, requests);
+            signal::run(params, requests);
         }).expect("spawn signal thread");
         self.control = Some(control);
         self.settings = Some(settings);
