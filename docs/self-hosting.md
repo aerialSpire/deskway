@@ -14,6 +14,8 @@ The checkbox is off by default, so the account, computers and local address are 
 the next time you start the service. Choose **Also delete the local service data** and
 **Stop and delete** to erase the accounts, computers and approved devices and sign this
 Host out of its hub. Starting again requires setup.
+The Host moves the data folder aside before applying these changes. If the move fails, the
+data and settings stay intact. The Host retries any leftover file cleanup at startup.
 
 On a headless machine, run the server yourself:
 
@@ -28,7 +30,10 @@ all LAN interfaces. The default `-listen 127.0.0.1:8080` is refused in local mod
 `-local-name` defaults to the computer's hostname and accepts up to 40 UTF-8 characters.
 Omit `-domain`, `-tls-cert`, `-tls-key`, `-public-ip` and `-stun` in local mode.
 
-On a phone, open the normalized `.local` hostname, for example `http://sean-asus.local:18498/`
+In the signed-in web client, use **Scan to open** to share the certificate guide's plain HTTP
+address as a QR code when the hub has a private IPv4 address.
+
+You can also open the normalized `.local` hostname, for example `http://sean-asus.local:18498/`
 for a computer named `SEAN_ASUS`. Normalization lowercases ASCII letters and replaces runs of
 unsupported characters with a hyphen. You can also use the server's LAN IP with the same port.
 mDNS answers use current addresses for interfaces it joined at startup. Restart the server

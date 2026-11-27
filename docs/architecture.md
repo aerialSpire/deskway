@@ -731,6 +731,9 @@ The source of truth is the viewer's constraints.
   display name, guide port and private interface addresses. It answers on-link queries with the
   current interface addresses and withdraws its records on orderly shutdown. It joins interfaces
   at startup. The server and Host check their records against `proto/local-discovery.json`.
+  In local mode, `/api/me` supplies the plain HTTP guide address for the browser's **Scan to
+  open** dialog. It uses the request's private IPv4 host or a current private IPv4 address
+  from mDNS, and omits the URL when neither is available.
   The desktop panel browses while its sign-in form is visible. It collects the first results for
   two seconds, then updates the list as announcements arrive or expire.
   On Windows, DeskwayNet runs and supervises the bundled server under its own account.
@@ -741,10 +744,12 @@ The source of truth is the viewer's constraints.
   The supervisor waits for the child to report readiness on its stdout. The same private
   pipe returns live connection counts on request. Closing the child's stdin stops it.
   Both sides check their control messages against `proto/local-host.json`.
-  The stop dialog keeps the server data by default. Its deletion option stops the child,
-  signs this Host out of its own hub, and removes `local-server/` and the corresponding
-  pinned root. On installed Windows hosts the checked action runs elevated
-  and restarts the Windows Host services with the local service switch off.
+  The stop dialog keeps the server data by default. Its deletion option stops the child and
+  atomically renames `local-server/` to a sibling `local-server.deleting-<n>` before saving the
+  off switch, signing the Host out of its own hub, and removing the pinned root. If the rename
+  fails, the data and settings stay intact. After sign-out the Host deletes the renamed folder
+  and retries any leftover cleanup at startup. On installed Windows hosts the checked action
+  runs elevated and restarts the Windows Host services.
   The Host polls for the admin password every two seconds during first setup. Until then,
   the panel opens the one-time setup link. The Host redeems a separate ten-minute enrollment
   token to join the admin's account already approved, using its pinned localhost address.
@@ -930,7 +935,9 @@ vendor/              upstream xterm.js modules and stylesheet for Terminal, and 
   relay-only host), `first-use` (which runs its own fresh server and Windows hosts), and
   `previous-protocol` (which opens a session on a previous-version host using a fresh account
   on the current server), and `windows-workspace` (which starts an isolated Windows
-  foreground host and exercises Terminal, Files and lock).
+  foreground host and exercises Terminal, Files and lock). Run `scan-open` against fresh
+  public-mode and local-mode test servers to check their dialogs. The local server needs a
+  private IPv4 address.
 - Use `--areas relay --relay-tls` with an HTTPS `--url` and start the host with
   `DESKWAY_TEST_RELAY=tls` to exercise TURN over the HTTPS port. Silently drop the host's UDP
   and TCP traffic to the server's `-turn-port` (3478 by default) so both attempts time out.

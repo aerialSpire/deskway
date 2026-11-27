@@ -317,6 +317,20 @@ func (m *MDNS) advertisedIPs(iface *net.Interface, networks []netip.Prefix) []ne
 	return ips
 }
 
+// privateIPv4 returns a current LAN address from one of the interfaces we joined.
+func (m *MDNS) privateIPv4() netip.Addr {
+	if m != nil {
+		for _, sk := range m.sockets {
+			for _, ip := range m.advertisedIPs(sk.iface, interfaceNetworks(sk.iface)) {
+				if ip.Is4() && ip.IsPrivate() {
+					return ip
+				}
+			}
+		}
+	}
+	return netip.Addr{}
+}
+
 // StartMDNS announces the service and starts answering queries. A failed interface is reported
 // independently, so an unavailable multicast family does not stop the HTTPS service.
 func StartMDNS(host, name, fingerprint string, https, guide *net.TCPAddr) (*MDNS, error) {

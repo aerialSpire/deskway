@@ -32,8 +32,9 @@ export function dialog(title, text, actions) {
 export const gotIt = (title, text, { primary = false, also = null } = {}) =>
   dialog(title, text, [{ label: t('common.gotIt'), primary }, also]);
 
-export function scanOpenDialog() {
-  const url = location.origin + '/';
+export function scanOpenDialog(me) {
+  const guide = me?.local_mode && me.local_guide_url;
+  const url = guide || location.origin + '/';
   const code = qrcode(0, 'M');
   code.addData(url);
   code.make();
@@ -42,7 +43,7 @@ export function scanOpenDialog() {
   image.setAttribute('aria-hidden', 'true');
   dialog(t('scanOpen.title'), h('div', {},
     h('div', { class: 'qr' }, image),
-    h('p', { class: 'qr-lead' }, t('scanOpen.lead')),
+    h('p', { class: 'qr-lead' }, t(guide ? 'scanOpen.localLead' : 'scanOpen.lead')),
     h('p', { class: 'qr-addr' }, copyableCode(url))),
   [{ label: t('common.close') }]);
 }

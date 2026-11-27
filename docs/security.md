@@ -682,8 +682,8 @@ The per-user panel handles signing in and out. DeskwayNet enrolls its own Host w
 local service has an admin. The panel uses one-time admin links to open that local service
 in a browser. Authorizing the hub's root for Windows browsers requires administrator consent.
 Stopping with **Also delete the local service data** also requires administrator consent.
-The elevated command uses the same sign-out and trust cleanup as **Sign out** before erasing
-the hub's files.
+The elevated command moves the hub's data folder aside atomically before running the same
+sign-out and trust cleanup as **Sign out**. It then erases the renamed folder.
 
 DeskwayNet is not restricted further for this reason: Windows' TLS and DTLS implementation
 (SChannel) fails with "no credentials available" when the service runs with a write-restricted

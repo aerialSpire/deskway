@@ -73,8 +73,9 @@ top on the page ground. Content is not wrapped in a card; a card is used only fo
 list, such as a computer.
 
 The browser's top bar (`.topbar`) shows `Deskway` on the left. On the right, **Scan to open**
-comes first, followed by the language and account menus where shown. The button opens a dialog
-with the site's root address as a QR code and as copyable text. The title (`.heading h1`,
+comes first, followed by the language and account menus where shown. The dialog shows a QR code
+and copyable address for the site's root. When the local hub provides a guide address, the
+dialog uses it and mentions the one-time certificate install. The title (`.heading h1`,
 `--fs-display`) is in the same place on every page. Forms are at most 360 wide and pages at most 1280.
 
 On the browser's sub-pages (a computer, **My devices**), the title begins with a back control: a

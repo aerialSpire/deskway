@@ -31,7 +31,6 @@ type Server struct {
 	store  *Store
 	turn   TURNConfig
 	stun   []string
-	local  *LocalCA
 	relays relayState
 	web    fs.FS
 	build  string // which client files are served: their hash, told to every browser
@@ -43,6 +42,10 @@ type Server struct {
 	programs *clientPrograms
 	mcp      *remoteMCP
 	sessions *Sessions
+
+	local          *LocalCA
+	localGuidePort uint16
+	localMDNS      *MDNS
 
 	mu       sync.Mutex
 	hosts    map[string]*conn
@@ -154,10 +157,13 @@ func (s *Server) Shutdown() {
 	s.sessions.close()
 }
 
-// EnableLocalMode confines this server to direct peer connections and adds its CA download.
+// EnableLocalMode confines this server to direct peer connections and adds its CA download
+// and a link to the HTTP guide. Discovery may be unavailable.
 // Call it before serving requests.
-func (s *Server) EnableLocalMode(ca *LocalCA) {
+func (s *Server) EnableLocalMode(ca *LocalCA, guidePort uint16, mdns *MDNS) {
 	s.local = ca
+	s.localGuidePort = guidePort
+	s.localMDNS = mdns
 	s.turn = TURNConfig{}
 	s.stun = nil
 }

@@ -10,9 +10,25 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 )
+
+func localGuideURL(host string, port uint16, advertisedIPv4 func() netip.Addr) string {
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	ip, _ := netip.ParseAddr(host)
+	if !ip.Is4() || !ip.IsPrivate() {
+		ip = advertisedIPv4()
+	}
+	if !ip.IsValid() {
+		return ""
+	}
+	return fmt.Sprintf("http://%s:%d/", ip, port)
+}
 
 // GuideHandler serves a standalone HTTP page and the two ways to download the CA.
 func (ca *LocalCA) GuideHandler(web fs.FS, httpsPort uint16) (http.Handler, error) {

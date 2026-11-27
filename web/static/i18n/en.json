@@ -317,6 +317,7 @@
   "qr.failed": "Adding failed. Please try again.",
   "scanOpen.title": "Scan to open",
   "scanOpen.lead": "Scan the QR code to open this address.",
+  "scanOpen.localLead": "Scan the QR code and install the certificate once as the page shows; then it opens.",
   "pw.title": "Change password",
   "pw.intro": "Your computers aren’t affected: they connect to the server with their own credentials.",
   "pw.current": "Current password",

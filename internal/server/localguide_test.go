@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -59,7 +60,7 @@ func TestLocalGuideRoutes(t *testing.T) {
 
 func TestLocalHTTPSCertificateRoute(t *testing.T) {
 	ca := testLocalCA(t)
-	f := emptyFixture(t, func(s *Server) { s.EnableLocalMode(ca) }, httptest.NewTLSServer)
+	f := emptyFixture(t, func(s *Server) { s.EnableLocalMode(ca, 18498, nil) }, httptest.NewTLSServer)
 	res := f.do(f.browser(), "GET", "/local/ca.crt", nil)
 	want(t, "HTTPS CA download", res.StatusCode, http.StatusOK)
 	if res.Header.Get("Content-Type") != "application/x-x509-ca-cert" {
@@ -77,7 +78,7 @@ func TestMeReportsLocalMode(t *testing.T) {
 		f := newHTTPFixture(t, func(s *Server) {
 			if local {
 				ca := testLocalCA(t)
-				s.EnableLocalMode(ca)
+				s.EnableLocalMode(ca, 18498, nil)
 				fingerprint = ca.Fingerprint()
 			}
 		}, httptest.NewTLSServer)
@@ -91,6 +92,33 @@ func TestMeReportsLocalMode(t *testing.T) {
 		if me["local_ca_fingerprint"] != fingerprint {
 			t.Fatalf("local_ca_fingerprint = %v, want %v", me["local_ca_fingerprint"], fingerprint)
 		}
+		if _, present := me["local_guide_url"]; present {
+			t.Fatalf("local_guide_url should be omitted: %v", me)
+		}
+	}
+}
+
+func TestLocalGuideURL(t *testing.T) {
+	for _, tt := range []struct {
+		host, advertised, want string
+	}{
+		{"192.168.1.7:8443", "192.168.1.2", "http://192.168.1.7:8080/"},
+		{"10.0.0.7", "", "http://10.0.0.7:8080/"},
+		{"localhost:8443", "192.168.1.2", "http://192.168.1.2:8080/"},
+		{"hub.local", "192.168.1.2", "http://192.168.1.2:8080/"},
+		{"[fd00::7]:8443", "192.168.1.2", "http://192.168.1.2:8080/"},
+		{"[::ffff:10.0.0.7]:8443", "192.168.1.2", "http://192.168.1.2:8080/"},
+		{"127.0.0.1:8443", "192.168.1.2", "http://192.168.1.2:8080/"},
+		{"169.254.1.7", "192.168.1.2", "http://192.168.1.2:8080/"},
+		{"203.0.113.7", "192.168.1.2", "http://192.168.1.2:8080/"},
+		{"localhost", "", ""},
+	} {
+		t.Run(tt.host, func(t *testing.T) {
+			advertised, _ := netip.ParseAddr(tt.advertised)
+			if got := localGuideURL(tt.host, 8080, func() netip.Addr { return advertised }); got != tt.want {
+				t.Errorf("guide URL = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -17,6 +17,7 @@ use crate::config::Config;
 use crate::kept::{Child, Kept};
 
 pub const DATA_DIR: &str = "local-server";
+const DELETING_PREFIX: &str = "local-server.deleting-";
 pub const SERVER_EXE: &str = if cfg!(windows) {
     "deskway-server.exe"
 } else {
@@ -257,102 +258,95 @@ pub fn data_dir(dir: &Path) -> PathBuf {
     dir.join(DATA_DIR)
 }
 
+#[cfg(windows)]
 pub fn remove_data(dir: &Path) -> Result<()> {
-    match fs::remove_dir_all(data_dir(dir)) {
+    remove_tree(&data_dir(dir))
+}
+
+fn remove_tree(path: &Path) -> Result<()> {
+    match fs::remove_dir_all(path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Err(e).context("remove the local service data")
+            Err(e).with_context(|| format!("remove the local service data at {}", path.display()))
         }
         _ => Ok(()),
     }
 }
 
-/// Check the whole tree before removing anything. In particular, a Windows file held without
-/// delete sharing would otherwise stop the recursive removal after it had erased other files.
-fn check_delete(path: &Path, parent: bool) -> std::io::Result<()> {
-    let meta = match fs::symlink_metadata(path) {
-        Err(e) if parent && e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        result => result?,
+fn sweep_deleted_data(dir: &Path) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            eprintln!("find local service data awaiting deletion: {e}");
+            return;
+        }
     };
-    #[cfg(windows)]
-    let reparse = {
-        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-        use windows::Win32::Storage::FileSystem::*;
-        fs::OpenOptions::new()
-            .access_mode(DELETE.0)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
-            .open(path)?;
-        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
-    };
-    #[cfg(unix)]
-    let reparse = meta.file_type().is_symlink();
-    if meta.is_dir() && !reparse {
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
-            if unsafe { libc::access(name.as_ptr(), libc::W_OK | libc::X_OK) } != 0 {
-                return Err(std::io::Error::last_os_error());
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                eprintln!("read local service data directory entry: {e}");
+                continue;
             }
-        }
-        for entry in fs::read_dir(path)? {
-            check_delete(&entry?.path(), false)?;
+        };
+        if entry.file_name().to_str().is_some_and(|name| {
+            name.strip_prefix(DELETING_PREFIX)
+                .is_some_and(|suffix| suffix.parse::<u64>().is_ok())
+        }) && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        {
+            finish_deleting(&entry.path());
         }
     }
-    #[cfg(windows)]
-    if meta.is_file() && meta.permissions().readonly() && !reparse {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!("{} is read-only", path.display()),
-        ));
-    }
-    Ok(())
 }
 
-/// The supervisor (or the elevated Windows command) has stopped the child and saved the
-/// switch. Identify the hub enrollment while its CA is still available.
-pub fn delete_stopped_data(dir: &Path, sign_out: impl FnOnce() -> Result<()>) -> Result<()> {
+fn finish_deleting(path: &Path) {
+    if let Err(e) = remove_tree(path) {
+        eprintln!("{e:#}; will retry at startup");
+    }
+}
+
+/// With the child stopped, retire the live tree before saving the off switch or clearing trust.
+/// Keep the tree intact if those steps fail so the command can be retried.
+pub fn delete_stopped_data(
+    dir: &Path,
+    disable: impl FnOnce() -> Result<()>,
+    sign_out: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    use crate::platform::file_metadata::rename_new;
+    use std::io::ErrorKind::NotFound;
+
     let clear = match Config::load_from(dir) {
-        Ok(cfg) if is_own(dir, &cfg.server) => {
-            // Keep identifying this enrollment if deleting succeeds but clearing it must be retried.
-            if let Some(mut setting) =
-                Config::local_service(dir)?.filter(|s| s.fingerprint.is_none())
-            {
-                let address = Address::parse(&cfg.server)?;
-                setting.fingerprint = address.fingerprint().map(str::to_owned);
-                Config::set_local_service(dir, &setting)?;
-            }
-            true
-        }
-        Ok(_) => false,
+        Ok(cfg) => is_own(dir, &cfg.server),
         Err(e)
             if e.downcast_ref::<std::io::Error>()
-                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                .is_some_and(|e| e.kind() == NotFound) =>
         {
             true
         }
         Err(e) => return Err(e),
     };
-    delete_then_clear(
-        || {
-            check_delete(&data_dir(dir), true)
-                .context("check the local service data can be deleted")?;
-            remove_data(dir)
-        },
-        || {
-            if clear {
-                sign_out()?;
-            }
-            Ok(())
-        },
-    )
-}
-
-fn delete_then_clear(
-    delete: impl FnOnce() -> Result<()>,
-    clear: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    delete()?;
-    clear()
+    let stop_and_clear = || {
+        disable()?;
+        if clear {
+            sign_out()?;
+        }
+        Ok(())
+    };
+    let live = data_dir(dir);
+    let n = u64::from_ne_bytes(wire::crypto::random());
+    let retired = dir.join(format!("{DELETING_PREFIX}{n}"));
+    match rename_new(&live, &retired) {
+        Err(e) if e.kind() == NotFound => return stop_and_clear(),
+        result => result.context("move the local service data aside")?,
+    }
+    if let Err(e) = stop_and_clear() {
+        rename_new(&retired, &live).with_context(|| {
+            format!("restore the local service data after stopping failed: {e:#}")
+        })?;
+        return Err(e);
+    }
+    finish_deleting(&retired);
+    Ok(())
 }
 
 pub fn is_own(dir: &Path, address: &str) -> bool {
@@ -431,6 +425,7 @@ fn browser_origin(hostname: &str, port: u16, resolves: impl Fn(&str, u16) -> boo
 
 impl Server {
     fn new(dir: PathBuf) -> Self {
+        sweep_deleted_data(&dir);
         let setting = Config::local_service(&dir).unwrap_or_else(|e| {
             eprintln!("read local service setting: {e:#}");
             None
@@ -492,12 +487,8 @@ impl Server {
         let result = match request {
             Request::Start => self.start(previous, read_autostart),
             Request::Retry => self.retry(),
-            Request::Stop | Request::StopAndDelete => self.stop(autostart).and_then(|()| {
-                if request == Request::StopAndDelete {
-                    delete_stopped_data(&self.dir, || sign_out(&self.dir))?;
-                }
-                Ok(Reply::Done)
-            }),
+            Request::Stop => self.stop(autostart).map(|()| Reply::Done),
+            Request::StopAndDelete => self.delete(autostart, sign_out).map(|()| Reply::Done),
             Request::Setup | Request::Open => self.link(request),
             Request::Usage => {
                 if let Some(process) = self.kept.child() {
@@ -554,6 +545,7 @@ impl Server {
             !Config::load_from(&self.dir).is_ok_and(|c| !is_own(&self.dir, &c.server)),
             crate::i18n::t("local.leave_first")
         );
+        sweep_deleted_data(&self.dir);
         let mut setting = self.setting.clone().unwrap_or_default();
         let previous = match previous {
             Some(previous) => previous,
@@ -590,6 +582,22 @@ impl Server {
         );
         let sleep = crate::platform::prevent_sleep(awake);
         disabled.and(sleep)
+    }
+
+    fn delete(
+        &mut self,
+        autostart: &impl Fn(bool) -> Result<()>,
+        sign_out: &impl Fn(&Path) -> Result<()>,
+    ) -> Result<()> {
+        // A failed rename leaves the saved switch alone. The next tick restarts a running child.
+        if self.kept.child().is_some() {
+            self.kept.stop();
+            self.ready = None;
+            self.reset_setup();
+            self.phase = Phase::Starting;
+        }
+        let dir = self.dir.clone();
+        delete_stopped_data(&dir, || self.stop(autostart), || sign_out(&dir))
     }
 
     fn admin_link(&self, origin: &str, args: &[&str]) -> Result<String> {
@@ -1123,22 +1131,37 @@ mod tests {
     }
 
     #[test]
-    fn failed_deletion_leaves_sign_in_and_trust_alone_for_retry() {
-        let cleared = std::cell::Cell::new(false);
-        let clear = || {
-            cleared.set(true);
-            Ok(())
-        };
-        assert!(delete_then_clear(|| anyhow::bail!("data in use"), clear).is_err());
-        assert!(!cleared.get());
-        delete_then_clear(|| Ok(()), clear).unwrap();
-        assert!(cleared.get());
+    fn failed_sign_out_restores_the_live_data_for_retry() {
+        let (dir, data) = deletion_fixture();
+        let result = delete_stopped_data(
+            &dir,
+            || Ok(()),
+            || {
+                assert!(!data.exists());
+                anyhow::bail!("cannot remove the pinned root")
+            },
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "cannot remove the pinned root"
+        );
+        assert_eq!(
+            fs::read_to_string(data.join("state.json")).unwrap(),
+            "state"
+        );
+        delete_stopped_data(
+            &dir,
+            || Ok(()),
+            || {
+                assert!(!data.exists());
+                Ok(())
+            },
+        )
+        .unwrap();
+        fs::remove_dir(dir).unwrap();
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn locked_data_file_is_reported_before_deleting_anything() {
-        use std::os::windows::fs::OpenOptionsExt;
+    fn deletion_fixture() -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "deskway-test-delete-{}",
             hex(&wire::crypto::random::<8>())
@@ -1146,26 +1169,68 @@ mod tests {
         let data = data_dir(&dir);
         fs::create_dir_all(&data).unwrap();
         fs::write(data.join("state.json"), "state").unwrap();
-        let locked = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        (dir, data)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn deletion_waits_for_an_atomic_move_and_retries_retired_data_at_startup() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+        let (dir, data) = deletion_fixture();
+        let locked_dir = fs::OpenOptions::new()
+            .read(true)
             .share_mode(0)
-            .open(data.join("held"))
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+            .open(&data)
             .unwrap();
-        assert!(delete_stopped_data(&dir, || panic!("cleared trust with a locked file")).is_err());
+        let err = delete_stopped_data(
+            &dir,
+            || panic!("changed settings before the move"),
+            || panic!("cleared trust before the move"),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "move the local service data aside");
+        drop(locked_dir);
         assert_eq!(
             fs::read_to_string(data.join("state.json")).unwrap(),
             "state"
         );
-        drop(locked);
-        let cleared = std::cell::Cell::new(false);
-        delete_stopped_data(&dir, || {
-            assert!(!data.exists());
-            cleared.set(true);
-            Ok(())
-        })
+
+        let mut locked_file = None;
+        let mut retired = None;
+        delete_stopped_data(
+            &dir,
+            || Ok(()),
+            || {
+                assert!(!data.exists());
+                let entry = fs::read_dir(&dir).unwrap().next().unwrap().unwrap();
+                assert!(entry
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .starts_with(DELETING_PREFIX));
+                let path = entry.path();
+                let state = path.join("state.json");
+                assert_eq!(fs::read_to_string(&state).unwrap(), "state");
+                locked_file = Some(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(0)
+                        .open(state)?,
+                );
+                retired = Some(path);
+                Ok(())
+            },
+        )
         .unwrap();
-        assert!(cleared.get());
+        let retired = retired.unwrap();
+        assert!(retired.is_dir());
+        assert!(!data.exists());
+        drop(locked_file);
+        Server::new(dir.clone());
+        assert!(!retired.exists());
         fs::remove_dir(dir).unwrap();
     }
 

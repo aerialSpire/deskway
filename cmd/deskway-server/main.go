@@ -196,8 +196,17 @@ func main() {
 	}
 
 	s := server.New(store, turnCfg, stunURLs, web.Files())
+	var mdns *server.MDNS
 	if ca != nil {
-		s.EnableLocalMode(ca)
+		fingerprint := ca.Fingerprint()
+		guideTCP := guide.Addr().(*net.TCPAddr)
+		mdns, err = server.StartMDNS(hostname, *localName, fingerprint, https.Addr().(*net.TCPAddr), guideTCP)
+		if err != nil {
+			log.Printf("mDNS for %s.local: %v", hostname, err)
+		} else {
+			log.Printf("mDNS advertising %s.local", hostname)
+		}
+		s.EnableLocalMode(ca, uint16(guideTCP.Port), mdns)
 	}
 	s.ServeClients(clientDirectory(*dataPath, *clients), *fetch)
 	if *remoteMCP {
@@ -251,10 +260,8 @@ func main() {
 			serveErr <- srv.ListenAndServe()
 		}
 	}()
-	var mdns *server.MDNS
 	if ca != nil {
-		fingerprint := ca.Fingerprint()
-		log.Printf("local CA SHA-256 fingerprint %s", fingerprint)
+		log.Printf("local CA SHA-256 fingerprint %s", ca.Fingerprint())
 		if !store.HasAdmin() {
 			host, port, _ := net.SplitHostPort(actualAddr)
 			if net.ParseIP(host).IsUnspecified() {
@@ -262,13 +269,6 @@ func main() {
 			}
 			origin := "https://" + net.JoinHostPort(host, port)
 			log.Printf("no admin yet, run deskway-server admin-link -data %q -url %s", *dataPath, origin)
-		}
-		var mdnsErr error
-		mdns, mdnsErr = server.StartMDNS(hostname, *localName, fingerprint, https.Addr().(*net.TCPAddr), guide.Addr().(*net.TCPAddr))
-		if mdnsErr != nil {
-			log.Printf("mDNS for %s.local: %v", hostname, mdnsErr)
-		} else {
-			log.Printf("mDNS advertising %s.local", hostname)
 		}
 	}
 	if *supervised {

@@ -842,8 +842,11 @@ pub fn stop_local_and_delete() -> Result<()> {
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let cleanup = (|| {
         stop_services(&m)?;
-        disable_local(&dir)?;
-        crate::local_server::delete_stopped_data(&dir, || remove_root_and_sign_out(&dir))
+        crate::local_server::delete_stopped_data(
+            &dir,
+            || disable_local(&dir),
+            || remove_root_and_sign_out(&dir),
+        )
     })();
     restart_after_cleanup(&m, cleanup)
 }

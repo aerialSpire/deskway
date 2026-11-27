@@ -31,9 +31,15 @@ test('Scan to open comes before the menus on signed-out and signed-in pages', as
   t.mock.method(globalThis, 'fetch', async () => Response.json(english));
   await setLanguage('en');
 
-  for (const [me, draw, menus] of [
-    [null, showLogin, ['btn text bar-btn lang-btn']],
-    [{ display: 'Sean' }, renderList, ['btn text bar-btn lang-btn', 'btn text bar-btn name-btn']],
+  const publicUrl = 'https://desk.example:18492/';
+  const guideUrl = 'http://192.168.3.2:18498/';
+  const lang = 'btn text bar-btn lang-btn';
+  const signedIn = [lang, 'btn text bar-btn name-btn'];
+  for (const [me, draw, menus, url, leadKey] of [
+    [null, showLogin, [lang], publicUrl, 'scanOpen.lead'],
+    [{ display: 'Sean', local_mode: false }, renderList, signedIn, publicUrl, 'scanOpen.lead'],
+    [{ display: 'Sean', local_mode: true }, renderList, signedIn, publicUrl, 'scanOpen.lead'],
+    [{ display: 'Sean', local_mode: true, local_guide_url: guideUrl }, renderList, signedIn, guideUrl, 'scanOpen.localLead'],
   ]) {
     state.me = me;
     draw();
@@ -49,13 +55,12 @@ test('Scan to open comes before the menus on signed-out and signed-in pages', as
     const [title, body, actions] = dialogs.firstElementChild.firstElementChild.childNodes;
     assert.deepEqual(title.childNodes, [english['scanOpen.title']]);
     const [qr, lead, address] = body.childNodes;
-    const url = 'https://desk.example:18492/';
     const expected = qrcode(0, 'M');
     expected.addData(url);
     expected.make();
     assert.equal(qr.className, 'qr');
     assert.equal(qr.firstElementChild.markup, expected.createSvgTag({ cellSize: 1, scalable: true }));
-    assert.deepEqual(lead.childNodes, [english['scanOpen.lead']]);
+    assert.deepEqual(lead.childNodes, [english[leadKey]]);
     assert.equal(address.firstElementChild.className, 'copyable-code');
     assert.deepEqual(address.firstElementChild.childNodes, [url]);
 

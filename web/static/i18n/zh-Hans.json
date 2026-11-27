@@ -317,6 +317,7 @@
   "qr.failed": "添加失败，请重试。",
   "scanOpen.title": "扫码打开",
   "scanOpen.lead": "扫描二维码即可打开当前地址。",
+  "scanOpen.localLead": "扫描二维码，按页面提示安装一次证书后即可打开。",
   "pw.title": "修改密码",
   "pw.intro": "电脑不受影响，它们用自己的凭据连接服务器。",
   "pw.current": "当前密码",
