@@ -91,7 +91,7 @@ pub fn refusal(reason: Option<Reason>, computer: &str) -> (&'static str, String,
         Some(Reason::Unpaired) => ("unpaired", format!("{computer} does not know this AI client"), "A browser of the account approves this AI client again (deskway login)."),
         Some(Reason::Auth) => ("auth", format!("{computer} did not accept this AI client's signature"), "Sign in again: deskway login."),
         Some(Reason::Offline) | Some(Reason::Gone) => ("offline", format!("{computer} is offline"), "Try again once it is online."),
-        Some(Reason::Idle) => ("idle", "the computer was given up after 10 idle minutes".into(), "Call the tool again: it connects again."),
+        Some(Reason::Idle) => ("idle", format!("the seat on {computer} was given up after 10 minutes without a tool call. Programs started there keep running"), "Call any tool to connect again. Use proc_list to find programs and proc_read for their output and exit code."),
         Some(Reason::Forbidden) => ("forbidden", format!("{computer} refused this AI client"), "Check that the account owns it and AI is allowed on it."),
         Some(Reason::Permissions) => ("permissions", format!("{computer} cannot take a session now (its permissions)"), "A person at the computer grants Deskway what it asks for."),
         Some(Reason::Ended) | Some(Reason::Taken) => ("ended", format!("the session on {computer} was ended there"), "Call the tool again to connect again."),
@@ -103,6 +103,18 @@ pub fn refusal(reason: Option<Reason>, computer: &str) -> (&'static str, String,
 /// An MCP error result, as a tool's would be.
 pub fn error_result(code: &str, message: &str, next: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": format!("{code}: {message} Next: {next}") }], "structuredContent": { "error": code, "message": message, "next": next }, "isError": true })
+}
+
+fn call_refusal(code: &str, message: &str, next: &str, sent: bool) -> Value {
+    if sent {
+        error_result(
+            code,
+            &format!("{message}. The call may have been carried out on the computer."),
+            &format!("Programs it started keep running. Check proc_list (mine) before repeating the call. {next}"),
+        )
+    } else {
+        error_result(code, message, next)
+    }
 }
 
 /// The computer's signature over both descriptions holds, with its key `hk`.
@@ -248,9 +260,13 @@ impl Link {
     /// The link is over: every request it still holds gets why as its answer.
     fn refuse_all(&mut self, reason: Option<Reason>) {
         let (code, message, next) = refusal(reason, &self.p.name);
-        let waiting: Vec<(Value, Sender<Value>)> = self.queued.drain(..).map(|(r, tx, _)| (r["id"].clone(), tx)).chain(self.waiting.drain().map(|(_, v)| v)).collect();
-        for (id, reply) in waiting {
-            let _ = reply.send(json!({ "jsonrpc": "2.0", "id": id, "result": error_result(code, &message, next) }));
+        let queued = call_refusal(code, &message, next, false);
+        for (request, reply, _) in self.queued.drain(..) {
+            let _ = reply.send(json!({ "jsonrpc": "2.0", "id": request["id"], "result": queued }));
+        }
+        let waiting = call_refusal(code, &message, next, true);
+        for (_, (id, reply)) in self.waiting.drain() {
+            let _ = reply.send(json!({ "jsonrpc": "2.0", "id": id, "result": waiting }));
         }
     }
 
@@ -506,13 +522,39 @@ mod tests {
 
     #[test]
     fn every_way_a_link_ends_is_told_to_the_ai_client_with_what_to_do() {
-        for r in [Some(Reason::AiOff), Some(Reason::Busy), Some(Reason::Unpaired), Some(Reason::Offline), Some(Reason::Idle), Some(Reason::Failed), None] {
+        for (r, want) in [
+            (Some(Reason::AiOff), "ai_off"),
+            (Some(Reason::Busy), "busy"),
+            (Some(Reason::Unpaired), "unpaired"),
+            (Some(Reason::Offline), "offline"),
+            (Some(Reason::Idle), "idle"),
+            (Some(Reason::Failed), "failed"),
+            (None, "left"),
+        ] {
             let (code, message, next) = refusal(r, "Desk");
             let v = error_result(code, &message, next);
+            assert_eq!(code, want);
             assert_eq!(v["isError"], true);
             assert!(!next.is_empty() && v["content"][0]["text"].as_str().unwrap().starts_with(code), "{r:?}");
         }
-        assert_eq!(refusal(Some(Reason::AiOff), "Desk").0, "ai_off");
+        let (_, message, next) = refusal(Some(Reason::Idle), "Desk");
+        assert_eq!(message, "the seat on Desk was given up after 10 minutes without a tool call. Programs started there keep running");
+        assert_eq!(next, "Call any tool to connect again. Use proc_list to find programs and proc_read for their output and exit code.");
+    }
+
+    #[test]
+    fn only_unanswered_calls_that_were_sent_may_have_run() {
+        let (code, message, next) = refusal(Some(Reason::Ended), "Desk");
+        for (sent, message_suffix, next_prefix) in [
+            (false, "", ""),
+            (true, ". The call may have been carried out on the computer.",
+                "Programs it started keep running. Check proc_list (mine) before repeating the call. "),
+        ] {
+            let result = call_refusal(code, &message, next, sent);
+            assert_eq!(result["structuredContent"], json!({
+                "error": code, "message": format!("{message}{message_suffix}"), "next": format!("{next_prefix}{next}")
+            }));
+        }
     }
 
     #[test]

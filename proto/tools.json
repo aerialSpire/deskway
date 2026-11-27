@@ -309,7 +309,7 @@
       "batch": 1,
       "screen": "none",
       "needs_user": true,
-      "description": "Runs a command as the workspace user (the host user on Linux) and waits up to wait_ms. Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. Ordinary commands on macOS and Linux use $SHELL -lc, defaulting to /bin/zsh and /bin/sh respectively. Programs outlive the AI session. Use proc_read with the returned id and next to read on.",
+      "description": "Runs a command as the workspace user (the host user on Linux) and waits up to wait_ms. Windows uses the first pwsh.exe on PATH, then %ProgramFiles%\\PowerShell\\7\\pwsh.exe, then Windows PowerShell from the Windows system folder. Ordinary commands on macOS and Linux use $SHELL -lc, defaulting to /bin/zsh and /bin/sh respectively. Use proc_read with id and next to read on. Waiting in proc_read with wait_ms keeps the seat. After 10 minutes without a tool call, tool reply or tunnel traffic, the unused seat is given up and programs keep running. Each program keeps its last 1 MiB of output. Past 64 records per table, the oldest ended programs drop off. Restarting Deskway on the computer clears all records and output.",
       "input": {
         "type": "object",
         "properties": {
@@ -458,7 +458,7 @@
       "batch": 1,
       "screen": "none",
       "needs_user": true,
-      "description": "The programs AI clients started on this computer that it still keeps: id, command, running or its exit code, and how much they printed.",
+      "description": "Lists only retained programs AI clients started on this computer. Includes id, command, running or exit code, running_for in seconds while running, output size, started_by (the starter's name) and mine (same AI client device). Check this list after reconnecting before repeating work.",
       "input": {
         "type": "object",
         "properties": {},

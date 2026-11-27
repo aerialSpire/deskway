@@ -252,6 +252,7 @@ fn serve_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::ClientIdentity;
     use crate::service::ipc;
     use serde_json::json;
 
@@ -276,9 +277,12 @@ mod tests {
 
     #[test]
     fn workspace_requests_keep_their_pipe_shape() {
+        let starter = ClientIdentity { device: "c1".into(), name: "Claude".into() };
         for (op, wire_op) in [
             (RequestOp::Work(Op::FsStat { path: "p".into() }), json!({ "op": "fs_stat", "path": "p" })),
             (RequestOp::Desktop(DesktopOp::ClipboardSet { text: "t".into() }), json!({ "op": "clipboard_set", "text": "t" })),
+            (RequestOp::Work(Op::ProcStart { command: None, cwd: None, cols: 120, rows: 30, elevated: false, starter }),
+                json!({ "op": "proc_start", "command": null, "cwd": null, "cols": 120, "rows": 30, "elevated": false, "starter": { "device": "c1", "name": "Claude" } })),
         ] {
             let wire = json!({ "id": 1, "op": wire_op });
             assert_eq!(serde_json::to_value(Request { id: 1, op }).unwrap(), wire);
@@ -330,7 +334,8 @@ mod tests {
         }
         let slow = {
             let r = remote.clone();
-            std::thread::spawn(move || r.call(Op::Run { command: "x".into(), cwd: None, wait_ms: 400, elevated: false }))
+            let starter = ClientIdentity { device: "c1".into(), name: "Claude".into() };
+            std::thread::spawn(move || r.call(Op::Run { command: "x".into(), cwd: None, wait_ms: 400, elevated: false, starter }))
         };
         let t = std::time::Instant::now();
         assert_eq!(remote.call(Op::ProcList).unwrap(), json!({ "op": "proc_list" }));

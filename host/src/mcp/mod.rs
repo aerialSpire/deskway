@@ -150,12 +150,14 @@ pub fn spawn(features: Features, gate: Gate, ctx: Ctx, out: Sender<SessionEvent>
 mod tests {
     use super::*;
     use crate::audit::Audit;
+    use crate::auth::ClientIdentity;
     use std::time::Duration;
 
     fn server(features: Features) -> (Sender<String>, std::sync::mpsc::Receiver<SessionEvent>) {
-        let gate = Gate { audit: Arc::new(Audit::new(None)), client: "Claude".into(), device: "c1".into(), session: "s1".into() };
+        let client = Arc::new(ClientIdentity { device: "c1".into(), name: "Claude".into() });
+        let gate = Gate { audit: Arc::new(Audit::new(None)), client: client.clone(), session: "s1".into() };
         let facts = Facts { name: "Desk".into(), os: "windows".into(), ..Facts::default() };
-        let ctx = Ctx { facts: Arc::new(RwLock::new(facts)), platform: None, session: "s1".into(), replies: Arc::default(), shot: Default::default(), workspace: None, tunnels: Default::default(), admin: None, audit: Arc::new(Audit::new(None)) };
+        let ctx = Ctx { facts: Arc::new(RwLock::new(facts)), platform: None, client, session: "s1".into(), replies: Arc::default(), shot: Default::default(), workspace: None, tunnels: Default::default(), admin: None, audit: Arc::new(Audit::new(None)) };
         let (out, rx) = channel();
         (spawn(features, gate, ctx, out), rx)
     }

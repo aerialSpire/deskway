@@ -97,6 +97,13 @@ fn device_name(v: &Value, fallback: &str) -> String {
     v.as_str().map(str::to_string).unwrap_or_else(|| crate::i18n::t(fallback)).chars().take(60).collect()
 }
 
+/// The verified device and display name of an admitted AI client.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct ClientIdentity {
+    pub device: String,
+    pub name: String,
+}
+
 /// A device allowed to control this host: a person's browser, or an AI client's `deskway`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Controller {

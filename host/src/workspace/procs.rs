@@ -14,8 +14,10 @@ use std::process::Child;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::auth::ClientIdentity;
 use crate::workspace::{Answer, Code, WorkError};
 
 /// Output kept per program.
@@ -155,7 +157,9 @@ fn key(name: &str) -> Option<&'static str> {
 
 struct Proc {
     command: String,
+    starter: ClientIdentity,
     started: u64,
+    started_at: Instant,
     terminal: bool,
     program: Mutex<Box<dyn Program>>,
     output: Arc<Mutex<Output>>,
@@ -165,6 +169,29 @@ impl Proc {
     fn exit(&self) -> Option<i32> {
         self.program.lock().unwrap().exit()
     }
+}
+
+/// One program in the workspace's list.
+#[derive(Deserialize, Serialize)]
+pub struct Record {
+    #[serde(flatten)]
+    pub info: Info,
+    pub starter: ClientIdentity,
+}
+
+/// The program's state and output size.
+#[derive(Deserialize, Serialize)]
+pub struct Info {
+    id: u64,
+    command: String,
+    pid: u32,
+    terminal: bool,
+    started: u64,
+    running: bool,
+    exit_code: Option<i32>,
+    output_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    running_for: Option<u64>,
 }
 
 #[derive(Default)]
@@ -183,10 +210,10 @@ impl Table {
 
     /// Starts `command` and waits for it, at most `wait_ms`: then it runs on, and its id reads
     /// on from where the answer stopped.
-    pub fn run(&self, command: &str, cwd: Option<&str>, wait_ms: u64, elevated: bool) -> Answer {
+    pub fn run(&self, command: &str, cwd: Option<&str>, wait_ms: u64, elevated: bool, starter: ClientIdentity) -> Answer {
         let mut child = crate::platform::start_program(command, cwd, elevated).map_err(cannot_start)?;
         let output: Vec<Box<dyn Read + Send>> = [child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>), child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>)].into_iter().flatten().collect();
-        let (id, p) = self.keep(command, false, Started { program: Box::new(Piped(child)), output });
+        let (id, p) = self.keep(command, false, Started { program: Box::new(Piped(child)), output }, starter);
         let until = Instant::now() + Duration::from_millis(wait_ms);
         while p.exit().is_none() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(30));
@@ -200,15 +227,17 @@ impl Table {
 
     /// Starts `command` (a shell, when there is none) in a terminal of `cols` × `rows`, and
     /// answers with what it shows after a moment.
-    pub fn start(&self, command: Option<&str>, cwd: Option<&str>, cols: u16, rows: u16, elevated: bool) -> Answer {
+    pub fn start(&self, command: Option<&str>, cwd: Option<&str>, cols: u16, rows: u16, elevated: bool, starter: ClientIdentity) -> Answer {
         let started = crate::platform::start_terminal(command, cwd, cols.clamp(20, 500), rows.clamp(5, 200), elevated).map_err(cannot_start)?;
-        let (id, p) = self.keep(command.unwrap_or("(shell)"), true, started);
+        let (id, p) = self.keep(command.unwrap_or("(shell)"), true, started, starter);
         self.wait_output(&p, 0, 1000);
         Ok(self.answer(id, &p, 0))
     }
 
     /// Keeps a program started: its output read as it comes, and room made for it.
-    fn keep(&self, command: &str, terminal: bool, started: Started) -> (u64, Arc<Proc>) {
+    fn keep(&self, command: &str, terminal: bool, started: Started, starter: ClientIdentity) -> (u64, Arc<Proc>) {
+        let started_at = Instant::now();
+        let started_unix = crate::auth::unix_now();
         let output = Arc::new(Mutex::new(Output::default()));
         for mut r in started.output {
             let out = output.clone();
@@ -227,7 +256,7 @@ impl Table {
             *n += 1;
             *n
         };
-        let p = Arc::new(Proc { command: command.to_string(), started: crate::auth::unix_now(), terminal, program: Mutex::new(started.program), output });
+        let p = Arc::new(Proc { command: command.to_string(), starter, started: started_unix, started_at, terminal, program: Mutex::new(started.program), output });
         let mut all = self.procs.lock().unwrap();
         all.insert(id, p.clone());
         // Room for the next: programs that ended go, oldest first.
@@ -300,17 +329,20 @@ impl Table {
 
     pub fn list(&self) -> Value {
         let all = self.procs.lock().unwrap();
-        Value::Array(
-            all.iter()
-                .map(|(id, p)| {
-                    let (pid, exit) = {
-                        let mut program = p.program.lock().unwrap();
-                        (program.pid(), program.exit())
-                    };
-                    json!({ "id": id, "command": p.command, "pid": pid, "terminal": p.terminal, "started": p.started, "running": exit.is_none(), "exit_code": exit, "output_bytes": p.output.lock().unwrap().total })
-                })
-                .collect(),
-        )
+        let records: Vec<_> = all.iter().map(|(&id, p)| {
+            let (pid, exit_code) = {
+                let mut program = p.program.lock().unwrap();
+                (program.pid(), program.exit())
+            };
+            let running = exit_code.is_none();
+            let info = Info {
+                id, command: p.command.clone(), pid, terminal: p.terminal, started: p.started,
+                running, exit_code, output_bytes: p.output.lock().unwrap().total,
+                running_for: running.then(|| p.started_at.elapsed().as_secs()),
+            };
+            Record { info, starter: p.starter.clone() }
+        }).collect();
+        json!(records)
     }
 }
 
@@ -387,16 +419,27 @@ mod tests {
     #[test]
     fn a_program_runs_and_one_that_takes_longer_runs_on() {
         let t = Table::default();
+        let own = ClientIdentity { device: "c1".into(), name: "First".into() };
+        let other = ClientIdentity { device: "c2".into(), name: "Second".into() };
         for (command, code, expected) in RUN {
-            let done = t.run(command, None, SHELL_START.as_millis() as u64, false).unwrap();
+            let done = t.run(command, None, SHELL_START.as_millis() as u64, false, own.clone()).unwrap();
             assert_eq!((done["running"].as_bool(), done["exit_code"].as_i64()), (Some(false), Some(code)), "{done}");
             let output = done["output"].as_str().unwrap();
             assert!(expected.iter().all(|text| output.contains(text)), "{done}");
         }
-        let slow = t.run(SLOW, None, 200, false).unwrap();
+        let slow = t.run(SLOW, None, 200, false, other.clone()).unwrap();
         assert_eq!(slow["running"], true, "a wait that ends leaves it running");
         let id = slow["id"].as_u64().unwrap();
-        assert_eq!(t.list().as_array().unwrap().len(), RUN.len() + 1);
+        let list = t.list();
+        let records = list.as_array().unwrap();
+        assert_eq!(records.len(), RUN.len() + 1);
+        for (i, record) in records.iter().enumerate() {
+            let running = i == RUN.len();
+            let starter = if running { &other } else { &own };
+            assert_eq!(record["starter"], json!(starter));
+            assert_eq!(record["running"], running);
+            assert_eq!(record.get("running_for").is_some_and(Value::is_u64), running);
+        }
         assert_eq!(t.write(id, Some("x"), &[]).unwrap_err().code, Code::InvalidArgs, "a piped program takes no input");
         let killed = t.kill(id).unwrap();
         assert_eq!(killed["running"], false, "{killed}");
@@ -407,7 +450,8 @@ mod tests {
     #[test]
     fn a_shell_in_a_terminal_takes_input_and_answers() {
         let t = Table::default();
-        let started = t.start(None, None, 100, 30, false).unwrap();
+        let starter = ClientIdentity { device: "c1".into(), name: "First".into() };
+        let started = t.start(None, None, 100, 30, false, starter.clone()).unwrap();
         let id = started["id"].as_u64().unwrap();
         assert_eq!(started["running"], true, "{started}");
         let from = started["next"].as_u64().unwrap();
@@ -429,6 +473,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(100));
         }
         assert_eq!(t.read(id, 0, 0).unwrap()["running"], false, "exit ends it");
-        assert_eq!(t.list()[0]["terminal"], true);
+        let list = t.list();
+        assert_eq!(list[0]["terminal"], true);
+        assert_eq!(list[0]["starter"], json!(starter));
     }
 }

@@ -629,10 +629,11 @@ mod tests {
         const JOB: &str = "/bin/sleep 30 & printf '\\ndeskway_job=%s\\n' $!";
         for terminal in [false, true] {
             let table = Table::default();
+            let starter = crate::auth::ClientIdentity { device: "c1".into(), name: "Claude".into() };
             let started = if terminal {
-                table.start(Some("exec /bin/sh -i"), None, 100, 30, false)
+                table.start(Some("exec /bin/sh -i"), None, 100, 30, false, starter)
             } else {
-                table.run(&format!("{JOB}; wait"), None, 0, false)
+                table.run(&format!("{JOB}; wait"), None, 0, false, starter)
             }.unwrap();
             let id = started["id"].as_u64().unwrap();
             let leader = table.list()[0]["pid"].as_i64().unwrap() as libc::pid_t;
