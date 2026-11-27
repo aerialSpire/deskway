@@ -333,6 +333,12 @@ fn follow_language(app: &mut App, panel: &WebView, indicator: &mut Option<Indica
     }
 }
 
+fn tray_icon(badge: Option<bool>) -> Result<Icon> {
+    let size = native::tray_size();
+    let pixels = crate::icon::rgba_with_badge(size, native::TRAY_TEMPLATE, badge);
+    Ok(Icon::from_rgba(pixels, size, size)?)
+}
+
 pub fn run(at_login: bool, dev: bool) -> Result<()> {
     let mut event_loop = EventLoopBuilder::<UiEvent>::with_user_event().build();
     native::configure_event_loop(&mut event_loop);
@@ -363,10 +369,14 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
     let open_item = MenuItem::new(t("tray.open"), true, None);
     let quit_item = MenuItem::new(t("tray.quit"), true, None);
     let menu = Menu::new();
+    #[cfg(target_os = "macos")]
+    let tray_status = MenuItem::new(crate::product::NAME, false, None);
+    #[cfg(target_os = "macos")]
+    menu.append(&tray_status)?;
     menu.append(&open_item)?;
     menu.append(&quit_item)?;
     let tray = TrayIconBuilder::new()
-        .with_icon(Icon::from_rgba(native::tray_rgba(32), 32, 32)?)
+        .with_icon(tray_icon(None)?)
         .with_tooltip(crate::product::NAME)
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
@@ -573,13 +583,14 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
         }
         let badge = app.backend.local().state.as_ref().and_then(crate::local_server::State::badge);
         if badge != tray_badge {
-            let mut pixels = native::tray_rgba(32);
-            local::draw_badge(&mut pixels, badge, native::TRAY_TEMPLATE);
-            if let Ok(icon) = Icon::from_rgba(pixels, 32, 32) {
+            if let Ok(icon) = tray_icon(badge) {
+                #[cfg(windows)]
                 let _ = tray.set_icon(Some(icon));
+                #[cfg(target_os = "macos")]
+                let _ = tray.set_icon_with_as_template(Some(icon), native::TRAY_TEMPLATE);
             }
+            tray_badge = badge;
         }
-        tray_badge = badge;
         let local = app.backend.local().state.as_ref();
         let tooltip_key = match badge {
             Some(true) => Some("local.running"),
@@ -593,6 +604,8 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
         });
         if tooltip != tray_tooltip {
             let _ = tray.set_tooltip(Some(tooltip.clone()));
+            #[cfg(target_os = "macos")]
+            tray_status.set_text(tooltip_key.map_or_else(|| crate::product::NAME.to_owned(), t));
             tray_tooltip = tooltip;
         }
     })

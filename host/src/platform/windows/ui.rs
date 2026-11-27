@@ -2,6 +2,7 @@ use windows::core::{w, HSTRING};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::CreateSolidBrush;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use anyhow::Result;
 use tao::dpi::{PhysicalPosition, PhysicalSize};
@@ -21,8 +22,12 @@ pub const TRAY_TEMPLATE: bool = false;
 /// A transfer note is part of the indicator strip.
 pub const NOTE_WINDOW: bool = false;
 
-pub fn tray_rgba(size: u32) -> Vec<u8> {
-    crate::icon::rgba(size, false)
+pub fn tray_size() -> u32 {
+    unsafe {
+        let dpi = FindWindowW(w!("Shell_TrayWnd"), None).map_or(0, |taskbar| GetDpiForWindow(taskbar));
+        let dpi = if dpi == 0 { GetDpiForSystem() } else { dpi };
+        GetSystemMetricsForDpi(SM_CXSMICON, dpi) as u32
+    }
 }
 
 pub fn configure_event_loop<T: 'static>(_event_loop: &mut EventLoop<T>) {}

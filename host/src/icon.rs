@@ -2,6 +2,8 @@
 // Plain Rust with no dependencies, so build.rs can include it too.
 
 const ACCENT: [u8; 3] = [0x25, 0x63, 0xEB]; // design.css --accent
+const BADGE_RUNNING: [u8; 3] = [0x22, 0xA0, 0x60]; // --ok is too dark on a dark taskbar.
+const BADGE_FAILED: [u8; 3] = [0xD9, 0x8A, 0x1C];
 const WHITE: [f32; 3] = [255.0; 3];
 const APP_SCALE: f32 = 1.12;
 
@@ -33,7 +35,7 @@ fn mark(x: f32, y: f32, scale: f32) -> Option<Region> {
     }
     let cx = x.max(140.0);
     let cy = y.clamp(150.0, 362.0);
-    (x >= 96.0 && x <= JOIN && (x - cx).powi(2) + (y - cy).powi(2) <= CORNER_RADIUS.powi(2))
+    ((96.0..=JOIN).contains(&x) && (x - cx).powi(2) + (y - cy).powi(2) <= CORNER_RADIUS.powi(2))
         .then_some(Region::Screen)
 }
 
@@ -57,10 +59,30 @@ fn tile_pixel(x: f32, y: f32, scale: f32) -> ([f32; 3], f32) {
 
 /// Straight RGBA pixels for the native app tile or the white menu bar template.
 pub fn rgba(size: u32, template: bool) -> Vec<u8> {
-    if template {
-        return draw(size, |x, y| mark(x, y, APP_SCALE).map(|region| (WHITE, region.opacity())));
-    }
+    rgba_with_badge(size, template, None)
+}
+
+/// The running (true) or failed (false) service badge, in the same samples as the mark.
+pub fn rgba_with_badge(size: u32, template: bool, badge: Option<bool>) -> Vec<u8> {
     draw(size, |x, y| {
+        if let Some(running) = badge {
+            const CENTRE: f32 = 0.79;
+            const DOT: f32 = 0.21;
+            const CUTOUT: f32 = 0.30;
+            const RING_HOLE: f32 = 0.11;
+            let distance = (x - CENTRE).powi(2) + (y - CENTRE).powi(2);
+            if distance <= CUTOUT.powi(2) {
+                let dot = distance <= DOT.powi(2);
+                if template {
+                    return (dot && (running || distance >= RING_HOLE.powi(2))).then_some((WHITE, 1.0));
+                }
+                let rgb = if running { BADGE_RUNNING } else { BADGE_FAILED };
+                return dot.then_some((rgb.map(f32::from), 1.0));
+            }
+        }
+        if template {
+            return mark(x, y, APP_SCALE).map(|region| (WHITE, region.opacity()));
+        }
         const RADIUS: f32 = 0.225;
         let cx = x.clamp(RADIUS, 1.0 - RADIUS);
         let cy = y.clamp(RADIUS, 1.0 - RADIUS);
@@ -144,6 +166,44 @@ mod tests {
         assert_eq!(pixel(5, 16), &[255, 255, 255, 158]);
         assert_eq!(pixel(13, 16), &[255, 255, 255, 255]);
         assert_eq!(pixel(22, 16), &[255, 255, 255, 92]);
+    }
+
+    #[test]
+    fn tray_badges_cut_out_the_mark_and_show_the_service_state() {
+        for size in [16, 20, 24, 32] {
+            let pixel = |pixels: &[u8], x: f32, y: f32| -> [u8; 4] {
+                let offset = ((y * size as f32) as usize * size as usize + (x * size as f32) as usize) * 4;
+                pixels[offset..offset + 4].try_into().unwrap()
+            };
+            for (template, running, centre, edge) in [
+                (false, true, [0x22, 0xA0, 0x60, 255], [0x22, 0xA0, 0x60, 255]),
+                (false, false, [0xD9, 0x8A, 0x1C, 255], [0xD9, 0x8A, 0x1C, 255]),
+                (true, true, [255; 4], [255; 4]),
+                (true, false, [0; 4], [255; 4]),
+            ] {
+                let unbadged = rgba(size, template);
+                let badged = rgba_with_badge(size, template, Some(running));
+                assert_eq!(pixel(&badged, 0.79, 0.79), centre);
+                assert_eq!(pixel(&badged, 0.64, 0.74), edge);
+                assert_eq!(pixel(&badged, 0.54, 0.79), [0; 4]);
+                assert_ne!(pixel(&unbadged, 0.54, 0.79)[3], 0);
+                assert_eq!(pixel(&badged, 0.40, 0.40), pixel(&unbadged, 0.40, 0.40));
+            }
+        }
+    }
+
+    #[test]
+    fn the_unbadged_tray_rasters_match_the_originals() {
+        use wire::crypto::{hex, sha256};
+        for (size, template, original) in [
+            (16, false, "1ea2141eee940a5ba31ea93a73f4fe89040176bb551f1afdfaa692ebb69f5e7d"),
+            (20, false, "dab5e77f3ad79776e941288740bad83f7525cd1c4ec8723a6dd2d0d88c47fd80"),
+            (24, false, "f6bc5be22609fdb89c67db492b57e3c1caf6ec17877aa2f8db6858abc4c51f92"),
+            (32, false, "48aaa24aebb779cef1ff526dc6bc5b577c1c70651ea2281402f67931d075418b"),
+            (32, true, "451d8ebe7b9a8e4e1dbeb687b6d916da43a0146300a39411036696a23541b631"),
+        ] {
+            assert_eq!(hex(&sha256(&rgba_with_badge(size, template, None))), original);
+        }
     }
 
     /// Run with DESKWAY_WRITE_ICONS=1 to regenerate the browser icons and README logo.

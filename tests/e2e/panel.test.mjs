@@ -90,29 +90,59 @@ export const area = {
       h.check(`panel ${lang}: View opens an admin link and the stop dialog requests live counts`,
         (await sent()).slice(-2).map((m) => m.action).join(',') === 'open,usage');
       await hubPanel('running', {}, { id: 1, action: 'usage', computers: 3, browsers: 2 });
-      h.check(`panel ${lang}: stop confirmation shows live counts and retained data`, await p.eval(`
+      h.check(`panel ${lang}: stop confirmation shows live counts and defaults to keeping data`, await p.eval(`
         $('local-body').textContent === ${lit(localText('stop_usage', { computers: localText('computers', { n: 3 }), browsers: localText('browsers', { n: 2 }) }))} &&
-        $('local-note').textContent === ${lit(localText('stop_note'))}`));
+        $('local-note').textContent === ${lit(localText('stop_note'))} &&
+        !$('local-stop-delete').checked &&
+        $('local-stop-delete').closest('label').textContent.trim() === ${lit(localText('stop_delete'))} &&
+        $('local-stop-delete-note').textContent === ${lit(localText('stop_delete_note'))} &&
+        $('local-confirm').textContent.trim() === ${lit(localText('stop_title_button'))}`));
       await localShot('stop');
       await p.eval(`$('local-confirm').click()`);
-      h.check(`panel ${lang}: a fast stop shows no spinner`, await p.eval(`$('local-confirm').firstElementChild.hidden`));
+      h.check(`panel ${lang}: an unchecked stop sends stop only and starts without a spinner`,
+        (await sent()).at(-1)?.action === 'stop' && await p.eval(`$('local-confirm').firstElementChild.hidden`));
       await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: stop spinner`);
-      h.check(`panel ${lang}: the stop spinner disables both buttons`, await p.eval(`$('local-confirm').disabled && $('local-cancel').disabled`));
+      h.check(`panel ${lang}: the stop spinner disables the dialog controls`, await p.eval(`
+        ['local-confirm', 'local-cancel', 'local-stop-delete'].every(id => $(id).disabled)`));
       await localShot('stopping');
       await hubPanel('off', {}, { id: 2, action: 'stop' });
-      h.check(`panel ${lang}: stopped stays signed in, unlocks preferences, and offers deletion`, await p.eval(`
-        $('local-overlay').hidden && $('local-status').hidden && !$('local-delete').hidden &&
+      h.check(`panel ${lang}: stopped stays signed in and unlocks preferences`, await p.eval(`
+        $('local-overlay').hidden && $('local-status').hidden &&
         !$('autostart').disabled && !$('prevent-sleep').disabled && $('status').textContent === ${lit(localText('stopped'))}`));
       await localShot('stopped');
-      await p.eval(`$('local-delete').click()`);
-      h.check(`panel ${lang}: deleting kept data asks first`, await p.eval(`$('local-title').textContent === ${lit(localText('delete_title'))}`));
-      await localShot('delete');
-      await p.eval(`$('local-cancel').click(); $('local-switch').click(); $('local-confirm').click()`);
+      await hubPanel('running');
+      await p.eval(`$('local-switch').click(); $('local-stop-delete').click(); $('local-cancel').click(); $('local-switch').click()`);
+      h.check(`panel ${lang}: turning the switch off opens the same stop dialog and resets the checkbox`,
+        (await sent()).at(-1)?.action === 'usage' && await p.eval(`
+        $('local-title').textContent === ${lit(localText('stop_title'))} && !$('local-stop-delete').checked`));
+      await hubPanel('running', {}, { id: 3, action: 'usage', computers: 3, browsers: 2 });
+      await p.eval(`$('local-stop-delete').click()`);
+      h.check(`panel ${lang}: checking deletion changes the primary action`, await p.eval(`
+        $('local-note').hidden && $('local-confirm').textContent.trim() === ${lit(localText('stop_delete_button'))}`));
+      await localShot('stop-and-delete');
+      await p.eval(`$('local-confirm').click()`);
+      h.check(`panel ${lang}: the checked confirmation sends stop and delete once and disables the controls`,
+        (await sent()).filter(m => m.action === 'stop_and_delete').length === 1 && await p.eval(`
+        $('local-confirm').firstElementChild.hidden &&
+        ['local-confirm', 'local-cancel', 'local-stop-delete'].every(id => $(id).disabled)`));
+      await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: stop and delete spinner`);
+      await localShot('stopping-and-deleting');
+      await hubPanel('off', {}, { id: 4, action: 'stop_and_delete', error: t['err.not_done'] });
+      h.check(`panel ${lang}: a deletion failure keeps the checked stop dialog open for retry`, await p.eval(`
+        !$('local-overlay').hidden && $('local-stop-delete').checked && !$('local-stop-delete').disabled &&
+        !$('local-confirm').disabled && $('local-dialog-error').textContent === ${lit(t['err.not_done'])}`));
+      await p.eval(`$('local-confirm').click()`);
+      await render(base({ enrolled: false, local: local('off', { own: false, has_data: false }, { id: 5, action: 'stop_and_delete' }) }));
+      h.check(`panel ${lang}: after deletion the Host shows sign-in and first setup`, await p.eval(`
+        $('local-overlay').hidden && !$('login').hidden && !$('local-alternative').hidden`));
+      await localShot('deleted');
+      await hubPanel('off');
+      await p.eval(`$('local-switch').click(); $('local-confirm').click()`);
       await hubPanel('starting', { enabled: false });
       await p.until(`$('local-dialog').getAttribute('aria-busy') === 'true'`, `${lang}: start spinner`);
       h.check(`panel ${lang}: starting shows its row and the dialog spinner`, await localLine('starting'));
       await localShot('starting');
-      await hubPanel('failed', { port: 443 }, { id: 3, action: 'start' });
+      await hubPanel('failed', { port: 443 }, { id: 6, action: 'start' });
       h.check(`panel ${lang}: an occupied port closes the dialog and offers Retry`, await localLine('port_taken', { port: 443 }) &&
         await p.eval(`$('local-overlay').hidden && $('local-status').classList.contains('bad')`));
       await localShot('port-error');

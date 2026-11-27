@@ -88,6 +88,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
             Ok(())
         },
         |_| {},
+        dev_sign_out,
     )?);
     serve_ui(dev, for_panels.clone(), Arc::downgrade(&local), platform.clone())?;
     while let Some(cfg) = signed_in() {
@@ -350,6 +351,15 @@ fn serve_worker(remote: Arc<crate::workspace::remote::Remote>, kind: super::work
     Ok(())
 }
 
+fn dev_sign_out(dir: &std::path::Path) -> Result<()> {
+    crate::platform::sync_dev_browser_root(dir, None)?;
+    Config::sign_out()?;
+    if let Some(host) = HOST.lock().unwrap().as_ref() {
+        let _ = host.send(Control::Quit);
+    }
+    crate::config::remove_sign_in_root(dir)
+}
+
 fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<local_server::Handle>, agent: Arc<Remote>) -> Result<()> {
     let ui_name = ipc::pipe_name(UI_PIPE, dev);
     // SYSTEM and this service have full access. Signed-in (interactive) users may read and
@@ -388,7 +398,9 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
             std::thread::spawn(move || {
                 while let Ok(r) = pipe.recv_json::<PanelRequest>() {
                     if let PanelRequest::Local(request) = r {
-                        if let Some(local) = local.upgrade() {
+                        if request == local_server::Request::StopAndDelete && !dev {
+                            let _ = pipe.send_json(&ToPanel::LocalReply(request, Err(crate::i18n::t("err.need_admin"))));
+                        } else if let Some(local) = local.upgrade() {
                             let reply = pipe.clone();
                             local.request(request, move |r| {
                                 let _ = reply.send_json(&ToPanel::LocalReply(request, r));
@@ -403,14 +415,8 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
                     if r == PanelRequest::DevLeave {
                         if dev {
                             let result = crate::config::dir()
-                                .and_then(|dir| crate::platform::sync_dev_browser_root(&dir, None))
-                                .and_then(|()| Config::sign_out())
+                                .and_then(|dir| dev_sign_out(&dir))
                                 .map_err(|e| format!("{e:#}"));
-                            if result.is_ok() {
-                                if let Some(host) = HOST.lock().unwrap().as_ref() {
-                                    let _ = host.send(Control::Quit);
-                                }
-                            }
                             let _ = pipe.send_json(&ToPanel::DevLeft(result));
                         }
                         continue;

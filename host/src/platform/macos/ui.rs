@@ -95,8 +95,8 @@ pub const TRAY_TEMPLATE: bool = true;
 /// A transfer note has a window of its own, which stays in the remote stream.
 pub const NOTE_WINDOW: bool = true;
 
-pub fn tray_rgba(size: u32) -> Vec<u8> {
-    crate::icon::rgba(size, true)
+pub fn tray_size() -> u32 {
+    32
 }
 
 pub fn configure_event_loop<T: 'static>(event_loop: &mut EventLoop<T>) {

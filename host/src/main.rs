@@ -263,6 +263,8 @@ fn main() -> Result<()> {
             write_result(&args, &r);
             r
         }
+        #[cfg(windows)]
+        Some("stop-local-and-delete") => install::stop_local_and_delete(),
         // Settings → Apps runs this without elevation: show the uninstall window.
         #[cfg(windows)]
         Some("uninstall") if !install::is_elevated() && !args.iter().any(|a| a == "--quiet") => ui::setup::run(ui::setup::Mode::Uninstall),

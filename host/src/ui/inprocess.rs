@@ -2,7 +2,7 @@
 //! Signing in and out happens here too, as do the Mac's own settings: its permissions and the
 //! login item.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -31,12 +31,17 @@ pub enum BackendEvent {
     LocalReply(Request, Result<Reply, String>),
 }
 
+struct RunningHost {
+    control: Wake<Control>,
+    thread: std::thread::JoinHandle<()>,
+}
+
 pub struct InProcess {
     proxy: EventLoopProxy<UiEvent>,
     /// This Mac's config; None while signed out.
     cfg: Option<Config>,
-    /// The running host's queue and settings.
-    control: Option<Wake<Control>>,
+    /// The running host and its queue, shared with the local service's sign-out callback.
+    signal: Arc<Mutex<Option<RunningHost>>>,
     settings: Option<Arc<Settings>>,
     /// A sign-in, sign-out or browser trust prompt is in progress.
     busy: bool,
@@ -49,19 +54,16 @@ pub struct InProcess {
     local: super::local::Panel,
     local_handle: Option<Handle>,
     after_leave: Option<Request>,
-    signal_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl InProcess {
     pub fn new(proxy: EventLoopProxy<UiEvent>, _at_login: bool, _dev: bool) -> InProcess {
-        InProcess { proxy, cfg: Config::load().ok(), control: None, settings: None, busy: false, error: String::new(), root_problem: None, settings_error: String::new(), permission_request: None, local: super::local::Panel::default(), local_handle: None, after_leave: None, signal_thread: None }
+        InProcess { proxy, cfg: Config::load().ok(), signal: Arc::default(), settings: None, busy: false, error: String::new(), root_problem: None, settings_error: String::new(), permission_request: None, local: super::local::Panel::default(), local_handle: None, after_leave: None }
     }
 
     fn local_request(&mut self, action: Request) {
         let own = self.local.state.as_ref().is_some_and(|s| s.own);
-        if (action == Request::Start && self.cfg.is_some() && !own)
-            || (action == Request::Delete && (own || (self.cfg.is_none() && self.root_cleanup_pending())))
-        {
+        if action == Request::Start && self.cfg.is_some() && !own {
             self.after_leave = Some(action);
             self.leave();
         } else {
@@ -97,6 +99,12 @@ impl InProcess {
     /// the settings as they start; a newly enrolled Mac registers its login item.
     fn start_host(&mut self) {
         let Some(cfg) = self.cfg.clone() else { return };
+        let signal = self.signal.clone();
+        let mut running = signal.lock().unwrap();
+        // A local stop can clear the sign-in after enrollment posted its event.
+        if Config::load().is_err() {
+            return;
+        }
         let (events, platform_events) = std::sync::mpsc::channel();
         let local: Arc<dyn crate::platform::Platform> = Arc::new(platform::Local::new(events));
         let (control, requests) = signal::control_channel();
@@ -158,8 +166,7 @@ impl InProcess {
             let _watch = watch;
             signal::run(params, requests);
         }).expect("spawn signal thread");
-        self.signal_thread = Some(thread);
-        self.control = Some(control);
+        *running = Some(RunningHost { control, thread });
         self.settings = Some(settings);
     }
 
@@ -188,19 +195,9 @@ impl InProcess {
         self.busy = true;
         self.error.clear();
         let proxy = self.proxy.clone();
-        let control = self.control.clone();
-        let thread = self.signal_thread.take();
+        let signal = self.signal.clone();
         std::thread::spawn(move || {
-            let result = Config::sign_out().map(|()| {
-                if let Some(control) = control {
-                    let _ = control.send(Control::Quit);
-                }
-                if let Some(thread) = thread {
-                    let _ = thread.join();
-                }
-                crate::config::dir().and_then(|dir| platform::remove_installed_server_root(&dir))
-                    .err().map(|e| format!("{e:#}"))
-            }).map_err(|e| format!("{e:#}"));
+            let result = crate::config::dir().and_then(|dir| sign_out(&dir, &signal)).map_err(|e| format!("{e:#}"));
             let _ = proxy.send_event(UiEvent::Backend(BackendEvent::Left(result)));
         });
     }
@@ -214,6 +211,7 @@ impl Backend for InProcess {
     fn start(&mut self) -> bool {
         self.start_host();
         let (state, enrolled) = (self.proxy.clone(), self.proxy.clone());
+        let (left, signal) = (self.proxy.clone(), self.signal.clone());
         self.local_handle = crate::config::dir().and_then(|dir| Handle::start(
             dir,
             move |s| { let _ = state.send_event(UiEvent::Backend(BackendEvent::Local(s))); },
@@ -223,6 +221,11 @@ impl Backend for InProcess {
                 let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::Enrolled(Ok(cfg))));
                 let error = trust_hub(&address).err().map(|e| format!("{e:#}"));
                 let _ = enrolled.send_event(UiEvent::Backend(BackendEvent::RootChanged(error)));
+            },
+            move |dir| {
+                let root_error = sign_out(dir, &signal)?;
+                let _ = left.send_event(UiEvent::Backend(BackendEvent::Left(Ok(root_error.clone()))));
+                root_error.map_or(Ok(()), |error| Err(anyhow::anyhow!(error)))
             },
         )).map_err(|e| eprintln!("{e:#}")).ok();
         self.cfg.is_none() || !platform::permissions().ready()
@@ -340,7 +343,6 @@ impl Backend for InProcess {
                     }
                 };
                 self.cfg = None;
-                self.control = None;
                 self.settings = None;
                 // Signed out: nothing here should start at login or keep the Mac awake.
                 let _ = crate::power::prevent_sleep(false);
@@ -384,11 +386,27 @@ impl Backend for InProcess {
     }
 
     fn quit(&mut self) {
-        if let Some(c) = &self.control {
-            let _ = c.send(Control::Quit);
+        if let Some(host) = self.signal.lock().unwrap().as_ref() {
+            let _ = host.control.send(Control::Quit);
         }
         self.local_handle.take();
     }
+}
+
+fn sign_out(dir: &std::path::Path, signal: &Mutex<Option<RunningHost>>) -> Result<Option<String>> {
+    let host = {
+        let mut running = signal.lock().unwrap();
+        Config::sign_out()?;
+        running.take()
+    };
+    if let Some(host) = host {
+        let _ = host.control.send(Control::Quit);
+        let _ = host.thread.join();
+    }
+    let root_error = crate::config::remove_sign_in_root(dir)
+        .and_then(|()| platform::remove_installed_server_root(dir))
+        .err().map(|e| format!("{e:#}"));
+    Ok(root_error)
 }
 
 fn open_local(url: &str, address: &str) -> Result<()> {

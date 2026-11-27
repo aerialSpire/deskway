@@ -32,6 +32,11 @@ by the document's `lang` attribute, and `--font-mono` for codes.
 standard manifest icons and README use the three-colour mark on a transparent background.
 The Windows app and tray icons and the macOS app icon use the white mark on a rounded blue
 gradient tile. The macOS menu bar uses a monochrome template with one opacity per region.
+The tray and menu bar show the local service at the bottom right. A transparent cut-out
+separates the badge from the mark. Windows uses the notification area's small icon size
+at its DPI, with green for running and amber for failure. The macOS template uses a solid
+dot for running and a ring for failure, with the state named in the menu and tooltip.
+Stopped service uses the plain icon.
 The maskable and Apple touch icons use the gradient to the edges for system cropping.
 
 ## Components (`design.css`)

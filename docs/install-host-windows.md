@@ -56,6 +56,10 @@ Windows asks for permission to trust this hub's certificate. The Host joins auto
 after you set the admin password in your browser. The installer allows inbound connections
 to the bundled server on Private networks.
 
+The stop dialog keeps the hub's data by default. Check **Also delete the local service data**,
+choose **Stop and delete**, and approve the administrator prompt to erase it and sign the
+Host out of the hub.
+
 ## 4. Allow the devices you control from
 
 A computer accepts control only from devices that were added to it at the computer itself. The
@@ -116,7 +120,8 @@ offers **Update**. Sign-in details and allowed devices are kept.
 Run `DeskwayHost-Setup-windows-x64.exe` again, or use **Settings → Apps → Deskway Host → Uninstall**, then choose
 **Uninstall**. The installer keeps this computer's sign-in details and allowed devices for a later
 reinstall unless you check the option to delete them.
-It keeps `%ProgramData%\Deskway\local-server\` unless you check **Delete local service data**.
+The uninstall dialog has its own **Also delete the local service data** checkbox for
+`%ProgramData%\Deskway\local-server\`.
 
 ## Building from source
 

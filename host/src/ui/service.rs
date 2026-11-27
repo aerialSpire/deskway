@@ -74,9 +74,9 @@ impl Service {
 
     fn local_request(&mut self, action: Request) {
         let own = self.local.state.as_ref().is_some_and(|s| s.own);
-        let leave = (action == Request::Start && !self.signed_out && !own)
-            || (action == Request::Delete && (own || self.signed_out));
-        if leave {
+        if action == Request::StopAndDelete && !self.dev {
+            self.admin("stop-and-delete", "stop-local-and-delete");
+        } else if action == Request::Start && !self.signed_out && !own {
             self.after_leave = Some(action);
             self.leaving = true;
             if self.dev {
@@ -307,6 +307,9 @@ impl Backend for Service {
                 }
                 if what == "local-leave" {
                     self.finish_leave(if ok { Ok(()) } else { Err(t("err.not_done")) });
+                }
+                if what == "stop-and-delete" {
+                    self.local.replied(Request::StopAndDelete, if ok { Ok(Reply::Done) } else { Err(t("err.not_done")) });
                 }
                 true
             }

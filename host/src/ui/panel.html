@@ -49,7 +49,9 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 .local-alternative { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--line); }
 .local-alternative .note { margin-top: var(--s2); line-height: var(--lh-body); }
 #local-confirm .spinner { width: 12px; height: 12px; border-color: color-mix(in srgb, var(--on-accent) 35%, transparent); border-top-color: var(--on-accent); }
-#local-delete { margin-top: var(--s2); }
+#local-stop-options { margin-top: var(--s4); }
+#local-stop-options .note { margin-left: var(--s6); margin-top: var(--s1); }
+#local-dialog-error { margin-top: var(--s3); }
 
 /* Settings */
 .sec { margin-top: var(--s4); color: var(--quiet); font-size: var(--fs-caption); font-weight: 400; }
@@ -200,7 +202,6 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
       </div>
       </div>
     </div>
-    <button class="btn text compact danger" id="local-delete" type="button" data-i18n="local.delete" hidden></button>
 
     <section id="mac" hidden>
       <div id="mac-permissions" hidden>
@@ -246,6 +247,14 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
     <h2 id="local-title"></h2>
     <p id="local-body"></p>
     <p id="local-note"></p>
+    <div id="local-stop-options" hidden>
+      <label class="check">
+        <input type="checkbox" id="local-stop-delete" aria-describedby="local-stop-delete-note">
+        <span data-i18n="local.stop_delete"></span>
+      </label>
+      <p class="note" id="local-stop-delete-note" data-i18n="local.stop_delete_note"></p>
+    </div>
+    <div class="error" id="local-dialog-error" role="alert" hidden></div>
     <div class="dialog-actions">
       <button class="btn" id="local-cancel" type="button" data-i18n="common.cancel"></button>
       <button class="btn primary" id="local-confirm" type="button"><span class="spinner" aria-hidden="true" hidden></span><span></span></button>
@@ -425,6 +434,7 @@ function localDialog(action) {
   const switching = action === 'start' && s.enrolled && !s.local?.state?.own;
   const server = s.server?.split('#')[0].replace(/^https?:\/\//, '');
   localUi.dialog = { action, switching, hadData: s.local?.state?.has_data, server, usage: null };
+  $('local-stop-delete').checked = false;
   if (action === 'stop') localCommand('usage');
   renderLocal(s);
   $('local-cancel').focus();
@@ -440,10 +450,16 @@ function renderLocal(s) {
   const { state, result } = s.local || {};
   if (result?.id && result.id !== localUi.seen) {
     localUi.seen = result.id;
-    if (result.action === 'usage' && localUi.dialog?.action === 'stop') {
-      localUi.dialog.usage = result;
+    const dialog = localUi.dialog;
+    if (result.action === 'usage' && dialog?.action === 'stop') {
+      dialog.usage = result;
+    } else if (result.action === 'stop_and_delete' && result.action === dialog?.request && result.error) {
+      clearTimeout(dialog.timer);
+      dialog.request = null;
+      dialog.spinning = false;
+      dialog.error = result.error;
     } else {
-      if (result.action === localUi.dialog?.action) finishLocalDialog();
+      if (result.action === dialog?.request) finishLocalDialog();
       if (result.error) localUi.error = result.error;
     }
   }
@@ -462,40 +478,43 @@ function renderLocal(s) {
   $('local-open').textContent = t(failed ? 'local.retry' : setup ? 'local.complete_setup' : 'local.view');
   $('local-stop').hidden = !visible || starting || failed;
   $('local-setting').hidden = !state;
-  $('local-switch').disabled = !state?.available || !!localUi.dialog?.sent || !!s.busy;
+  $('local-switch').disabled = !state?.available || !!localUi.dialog?.request || !!s.busy;
   $('local-switch').setAttribute('aria-checked', !!state?.enabled);
   $('local-setting-note').textContent = t(state?.available ? 'local.note' : 'local.unavailable');
   $('local-alternative').hidden = !state || !!state.enabled;
   $('local-signed-out').disabled = !state?.available || !!s.busy;
   $('local-alternative-note').textContent = t(state?.available ? 'local.note' : 'local.unavailable');
-  $('local-delete').hidden = !state?.has_data || !!state.enabled;
-  $('local-delete').disabled = !!s.busy;
   $('local-error').hidden = !localUi.error;
   $('local-error').textContent = localUi.error;
 
   const dialog = localUi.dialog;
   $('local-overlay').hidden = !dialog;
   if (!dialog) return;
-  const { action, switching, server, hadData, usage, sent, spinning } = dialog;
-  const start = action === 'start', stop = action === 'stop';
+  const { action, switching, server, hadData, usage, request, spinning } = dialog;
+  const start = action === 'start';
+  const deleting = !start && $('local-stop-delete').checked;
   const bodyKey = start ? (switching ? 'local.switch_body' : hadData ? 'local.resume_body' : 'local.start_body')
-    : stop ? 'local.stop_body' : 'local.delete_body';
-  const noteKey = start ? (switching ? 'local.switch_note' : 'local.start_note') : stop ? 'local.stop_note' : '';
+    : 'local.stop_body';
+  const noteKey = start ? (switching ? 'local.switch_note' : 'local.start_note') : deleting ? '' : 'local.stop_note';
   const count = (key, n) => t(`local.${key}.${n === 1 ? 'one' : 'other'}`, { n });
   $('local-title').textContent = t(switching ? 'local.switch_title' : `local.${action}_title`);
-  $('local-body').textContent = stop && typeof usage?.computers === 'number'
+  $('local-body').textContent = !start && typeof usage?.computers === 'number'
     ? t('local.stop_usage', { computers: count('computers', usage.computers), browsers: count('browsers', usage.browsers) })
     : t(bodyKey, { server });
   $('local-note').hidden = !noteKey;
   $('local-note').textContent = noteKey ? t(noteKey, { server }) : '';
+  $('local-stop-options').hidden = start;
+  $('local-stop-delete').disabled = !!request;
+  $('local-dialog-error').hidden = !dialog.error;
+  $('local-dialog-error').textContent = dialog.error || '';
   $('local-dialog').setAttribute('aria-busy', !!spinning);
   $('local-confirm').classList.toggle('danger', !start);
-  $('local-confirm').disabled = !!sent || (stop && !usage);
-  $('local-cancel').disabled = !!sent;
+  $('local-confirm').disabled = !!request || (!start && !usage);
+  $('local-cancel').disabled = !!request;
   $('local-confirm').firstElementChild.hidden = !spinning;
   $('local-confirm').lastElementChild.textContent = t(spinning
-    ? (start ? 'local.starting_button' : stop ? 'local.stopping_button' : 'local.deleting')
-    : (start ? 'local.run' : stop ? 'local.stop_title_button' : 'local.delete'));
+    ? (start ? 'local.starting_button' : 'local.stopping_button')
+    : (start ? 'local.run' : deleting ? 'local.stop_delete_button' : 'local.stop_title_button'));
 }
 
 function deviceRow(d) {
@@ -762,7 +781,7 @@ $('find-again').addEventListener('click', () => send({ cmd: 'find-local-servers'
 $('local-signed-out').onclick = () => localDialog('start');
 $('local-switch').onclick = () => localDialog(window.last.local.state.enabled ? 'stop' : 'start');
 $('local-stop').onclick = () => localDialog('stop');
-$('local-delete').onclick = () => localDialog('delete');
+$('local-stop-delete').onchange = () => renderLocal(window.last);
 $('local-open').onclick = () => {
   const phase = window.last.local.state.phase;
   localUi.error = '';
@@ -771,14 +790,15 @@ $('local-open').onclick = () => {
 $('local-cancel').onclick = finishLocalDialog;
 $('local-confirm').onclick = () => {
   const dialog = localUi.dialog;
-  if (!dialog || dialog.sent) return;
-  dialog.sent = true;
+  if (!dialog || dialog.request) return;
+  dialog.request = dialog.action === 'stop' && $('local-stop-delete').checked ? 'stop_and_delete' : dialog.action;
+  dialog.error = '';
   dialog.timer = setTimeout(() => {
     dialog.spinning = true;
     renderLocal(window.last);
   }, 300);
   renderLocal(window.last);
-  localCommand(dialog.action);
+  localCommand(dialog.request);
 };
 $('server').addEventListener('input', () => {
   serverChoice = 'typed';

@@ -68,7 +68,8 @@ verified root even if you decline. Signing out removes the root if Deskway Host 
 To serve your own network, choose **Run local service** and then **Complete setup**. Approve
 the system's certificate prompt and set the admin password in the browser. The Host joins
 automatically. Local service keeps **Open at login** and **Keep this computer awake** on.
-After stopping, choose **Delete local service data** to remove the server's files and sign out.
+To remove the server's files and sign out of the hub, check **Also delete the local service data**
+in the stop dialog, then choose **Stop and delete**.
 The files are in `~/Library/Application Support/Deskway/local-server/`.
 
 ## 4. Allow the devices you control from
@@ -144,9 +145,9 @@ Quit Deskway Host (**Quit** in its menu bar menu), download the new release's DM
 
 ## Uninstalling
 
-If this Mac runs the local service, stop it first. Use **Delete local service data** if you
-want to remove the hub's data too. Otherwise, it stays in
-`~/Library/Application Support/Deskway/local-server/`.
+If this Mac runs the local service, use the stop dialog before uninstalling. To erase
+the hub's data and sign the Mac out of the hub, select **Also delete the local service data**.
+By default the data stays in `~/Library/Application Support/Deskway/local-server/`.
 
 For a local server, click **Sign out** in the Host panel and approve any macOS prompt to
 remove the root certificate Deskway Host added. Then remove the Mac on **My devices** in the

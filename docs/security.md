@@ -680,6 +680,9 @@ prompt, and they change files that only administrators can write:
 The per-user panel handles signing in and out. DeskwayNet enrolls its own Host when its
 local service has an admin. The panel uses one-time admin links to open that local service
 in a browser. Authorizing the hub's root for Windows browsers requires administrator consent.
+Stopping with **Also delete the local service data** also requires administrator consent.
+The elevated command uses the same sign-out and trust cleanup as **Sign out** before erasing
+the hub's files.
 
 DeskwayNet is not restricted further for this reason: Windows' TLS and DTLS implementation
 (SChannel) fails with "no credentials available" when the service runs with a write-restricted

@@ -329,11 +329,7 @@ impl Config {
                 _ => {}
             }
         }
-        match std::fs::remove_file(root_path(dir)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e).context("remove the local server root"),
-            _ => {}
-        }
-        Ok(())
+        remove_sign_in_root(dir)
     }
 
     fn load_from_file(path: &Path) -> Result<Config> {
@@ -390,6 +386,13 @@ pub fn root_path(dir: &Path) -> PathBuf {
         return dir.join(crate::service::install::TRUST_DIR).join(ROOT_FILE);
     }
     dir.join(ROOT_FILE)
+}
+
+pub fn remove_sign_in_root(dir: &Path) -> Result<()> {
+    match std::fs::remove_file(root_path(dir)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).context("remove the local server root"),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]

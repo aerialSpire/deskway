@@ -60,7 +60,7 @@ const page = (s) => {
   if (s.page === 'uninstall') {
     return [picture('logo'), h('h1', null, t('setup.title_uninstall')), h('p', null, t('setup.uninstall_body')),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'purge' }), h('span', null, t('setup.purge'))),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'purge-local' }), h('span', null, t('local.delete'))),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', id: 'purge-local' }), h('span', null, t('local.stop_delete'))),
       h('div', { class: 'error', role: 'alert' }, s.error), grow(),
       actions(btn('cancel', t('common.cancel')), btn('do-uninstall', t('setup.uninstall'), true)), h('div', { class: 'note' }, t('setup.uninstall_note'))];
   }

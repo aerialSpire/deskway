@@ -59,7 +59,7 @@ server/            the Host and CLI's server address, pinned root bootstrap and 
 ```
 main.rs            command line only
 product.rs         the program's name as people see it (Deskway Host), also for build.rs
-icon.rs            the shared Deskway D mark for the host, browser client and README. build.rs
+icon.rs            the shared Deskway D mark and local-service tray badge. build.rs
                    makes the Windows .ico, the mac-icon example draws the macOS iconset, and
                    the icon test writes and checks the browser and README PNGs
 config.rs          the host's config (host.json) and its local server root (host-ca.pem);
@@ -741,6 +741,10 @@ The source of truth is the viewer's constraints.
   The supervisor waits for the child to report readiness on its stdout. The same private
   pipe returns live connection counts on request. Closing the child's stdin stops it.
   Both sides check their control messages against `proto/local-host.json`.
+  The stop dialog keeps the server data by default. Its deletion option stops the child,
+  signs this Host out of its own hub, and removes `local-server/` and the corresponding
+  pinned root. On installed Windows hosts the checked action runs elevated
+  and restarts the Windows Host services with the local service switch off.
   The Host polls for the admin password every two seconds during first setup. Until then,
   the panel opens the one-time setup link. The Host redeems a separate ten-minute enrollment
   token to join the admin's account already approved, using its pinned localhost address.

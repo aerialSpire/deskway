@@ -658,7 +658,24 @@ pub fn sign_out() -> Result<()> {
     let dir = crate::service::machine_dir();
     crate::config::use_dir(dir.clone());
     let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-    let cleanup = stop_and_remove_root(&m, &dir).and_then(|()| clear_sign_in(&dir));
+    let cleanup = stop_services(&m).and_then(|()| remove_root_and_sign_out(&dir));
+    restart_after_cleanup(&m, cleanup)
+}
+
+pub fn stop_local_and_delete() -> Result<()> {
+    if !is_elevated() {
+        bail!(t("err.need_admin"));
+    }
+    let dir = crate::service::machine_dir();
+    crate::config::use_dir(dir.clone());
+    let m = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let cleanup = (|| {
+        stop_services(&m)?;
+        if let Some(setting) = crate::config::Config::local_service(&dir)? {
+            setting.disable(&dir)?;
+        }
+        crate::local_server::delete_stopped_data(&dir, || remove_root_and_sign_out(&dir))
+    })();
     restart_after_cleanup(&m, cleanup)
 }
 
@@ -688,9 +705,18 @@ fn clear_sign_in(dir: &Path) -> Result<()> {
 }
 
 fn stop_and_remove_root(m: &ServiceManager, dir: &Path) -> Result<()> {
-    stop_and_wait(m, AGENT_SERVICE)?;
-    stop_and_wait(m, NET_SERVICE)?;
+    stop_services(m)?;
     crate::platform::remove_installed_server_root(dir)
+}
+
+fn stop_services(m: &ServiceManager) -> Result<()> {
+    stop_and_wait(m, AGENT_SERVICE)?;
+    stop_and_wait(m, NET_SERVICE)
+}
+
+fn remove_root_and_sign_out(dir: &Path) -> Result<()> {
+    crate::platform::remove_installed_server_root(dir)?;
+    clear_sign_in(dir)
 }
 
 fn restart_after_cleanup(m: &ServiceManager, cleanup: Result<()>) -> Result<()> {
@@ -725,9 +751,8 @@ pub fn uninstall(purge: bool, purge_local: bool, keep: Option<u32>) -> Result<()
         return restart_after_cleanup(&m, Err(e));
     }
     let hub = crate::local_server::data_dir(&data);
-    if let Some(mut setting) = crate::config::Config::local_service(&data)? {
-        setting.enabled = false;
-        crate::config::Config::set_local_service(&data, setting)?;
+    if let Some(setting) = crate::config::Config::local_service(&data)? {
+        setting.disable(&data)?;
     }
     local_firewall(&program_dir().join(crate::local_server::SERVER_EXE), false)?;
     for name in [AGENT_SERVICE, NET_SERVICE] {
@@ -746,7 +771,7 @@ pub fn uninstall(purge: bool, purge_local: bool, keep: Option<u32>) -> Result<()
         if crate::config::Config::load_from(&data).is_ok_and(|cfg| crate::local_server::is_own(&data, &cfg.server)) {
             crate::config::Config::forget_in(&data)?;
         }
-        remove_data_dir(&hub)?;
+        crate::local_server::remove_data(&data)?;
     }
     if purge {
         if !purge_local && hub.exists() {

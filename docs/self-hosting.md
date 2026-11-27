@@ -9,8 +9,11 @@ On Windows and macOS, open Deskway Host and choose **Run local service**. Select
 **Complete setup** and set the admin password in your browser. The Host joins its own
 server automatically, and **View** opens the account in your default browser. Accept the
 system's certificate prompt when asked. Starting also turns on automatic startup and
-sleep prevention. **Stop** keeps the account, computers and local address for the next
-start. **Delete local service data** is available after stopping.
+sleep prevention. **Stop** and turning off the Settings switch open the same confirmation.
+The checkbox is off by default, so the account, computers and local address are available
+the next time you start the service. Choose **Also delete the local service data** and
+**Stop and delete** to erase the accounts, computers and approved devices and sign this
+Host out of its hub. Starting again requires setup.
 
 On a headless machine, run the server yourself:
 

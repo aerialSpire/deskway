@@ -32,13 +32,21 @@ pub struct Setting {
     pub enabled: bool,
 }
 
+impl Setting {
+    pub fn disable(self, dir: &Path) -> Result<Self> {
+        let disabled = Self { enabled: false, ..self };
+        Config::set_local_service(dir, disabled)?;
+        Ok(disabled)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Request {
     Start,
     Stop,
+    StopAndDelete,
     Retry,
-    Delete,
     Setup,
     Open,
     Usage,
@@ -101,6 +109,7 @@ impl Handle {
         publish: impl Fn(State) + Send + 'static,
         autostart: impl Fn() -> Result<()> + Send + 'static,
         enrolled: impl Fn(Config) + Send + 'static,
+        sign_out: impl Fn(&Path) -> Result<()> + Send + 'static,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -114,8 +123,8 @@ impl Handle {
                         Ok(Message::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => None,
                     };
-                    let complete =
-                        request.and_then(|(request, reply)| server.request(request, reply));
+                    let complete = request
+                        .and_then(|(request, reply)| server.request(request, reply, &sign_out));
                     server.tick(&autostart, &enrolled);
                     let state = server.state();
                     if last.as_ref() != Some(&state) {
@@ -162,6 +171,29 @@ impl Drop for Handle {
 
 pub fn data_dir(dir: &Path) -> PathBuf {
     dir.join(DATA_DIR)
+}
+
+pub fn remove_data(dir: &Path) -> Result<()> {
+    match fs::remove_dir_all(data_dir(dir)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).context("remove the local service data")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The supervisor (or the elevated Windows command) has stopped the child and saved the
+/// switch. Resolve the Host's enrollment before discarding the hub's identity on disk.
+pub fn delete_stopped_data(dir: &Path, sign_out: impl FnOnce() -> Result<()>) -> Result<()> {
+    match Config::load_from(dir) {
+        Ok(cfg) if is_own(dir, &cfg.server) => sign_out()?,
+        Ok(_) => {}
+        Err(e) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {
+            sign_out()?;
+        }
+        Err(e) => return Err(e),
+    }
+    remove_data(dir)
 }
 
 pub fn is_own(dir: &Path, address: &str) -> bool {
@@ -258,12 +290,21 @@ impl Server {
         }
     }
 
-    fn request(&mut self, request: Request, reply: Respond) -> Option<(Respond, Result<Reply>)> {
+    fn request(
+        &mut self,
+        request: Request,
+        reply: Respond,
+        sign_out: &impl Fn(&Path) -> Result<()>,
+    ) -> Option<(Respond, Result<Reply>)> {
         let result = match request {
             Request::Start => self.start(),
             Request::Retry => self.retry(),
-            Request::Stop => self.stop(),
-            Request::Delete => self.delete(),
+            Request::Stop | Request::StopAndDelete => self.stop().and_then(|()| {
+                if request == Request::StopAndDelete {
+                    delete_stopped_data(&self.dir, || sign_out(&self.dir))?;
+                }
+                Ok(Reply::Done)
+            }),
             Request::Setup | Request::Open => self.link(request),
             Request::Usage => {
                 if let Some(process) = self.kept.child() {
@@ -320,14 +361,9 @@ impl Server {
         Ok(Reply::Done)
     }
 
-    fn stop(&mut self) -> Result<Reply> {
+    fn stop(&mut self) -> Result<()> {
         if let Some(saved) = self.setting {
-            let disabled = Setting {
-                enabled: false,
-                ..saved
-            };
-            Config::set_local_service(&self.dir, disabled)?;
-            self.setting = Some(disabled);
+            self.setting = Some(saved.disable(&self.dir)?);
         }
         self.kept.stop();
         self.ready = None;
@@ -341,24 +377,7 @@ impl Server {
         if Config::load_from(&self.dir).is_err() {
             crate::platform::prevent_sleep(false)?;
         }
-        Ok(Reply::Done)
-    }
-
-    fn delete(&self) -> Result<Reply> {
-        ensure!(
-            !self.setting.is_some_and(|s| s.enabled),
-            crate::i18n::t("local.stop_first")
-        );
-        ensure!(
-            !Config::load_from(&self.dir).is_ok_and(|c| is_own(&self.dir, &c.server)),
-            crate::i18n::t("local.leave_first")
-        );
-        match fs::remove_dir_all(data_dir(&self.dir)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        Ok(Reply::Done)
+        Ok(())
     }
 
     fn admin_link(&self, origin: &str, args: &[&str]) -> Result<String> {
