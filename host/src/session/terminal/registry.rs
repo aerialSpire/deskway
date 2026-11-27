@@ -46,7 +46,13 @@ impl Registry {
     }
 
     pub fn admit_user(&self, id: String, name: String, cred: String, user: u64) -> Lease {
-        self.shared.state.lock().unwrap().seat = Some(id.clone());
+        let mut state = self.shared.state.lock().unwrap();
+        if let Some(old) = state.seat.clone().filter(|old| old != &id) {
+            if state.detach(&old, wire::types::Reason::Taken.as_str(), Instant::now(), SystemTime::now(), true) {
+                self.shared.changed();
+            }
+        }
+        state.seat = Some(id.clone());
         Lease { shared: self.shared.clone(), id, name, cred, user }
     }
 
@@ -272,7 +278,10 @@ impl State {
             "terminal.opened"
         };
         eprintln!("{}", tf(event, &[("name", name.into())]));
-        Ok(self.attached(id).map(|shell| (shell, returned)))
+        Ok(self.attached(id).map(|shell| {
+            shell.pty.set_attached(true);
+            (shell, returned)
+        }))
     }
 
     fn attached(&mut self, id: &str) -> Option<&mut Shell> {
@@ -289,6 +298,7 @@ impl State {
         }
         let Some(kept) = &mut self.terminal else { return false };
         let Place::Attached { name, cred, .. } = &kept.place else { return false };
+        kept.shell.pty.set_attached(false);
         eprintln!("{}", tf("terminal.left", &[("name", name.clone()), ("reason", why.into())]));
         kept.place = Place::Left(Left { at: now, report: KeptTerminal {
             since: wall.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), name: name.clone(), cred: Some(cred.clone()).filter(|cred| !cred.is_empty()),
@@ -347,6 +357,7 @@ impl State {
 }
 
 pub(super) struct Shell {
+    // Drop the receiver before the PTY so a reader blocked on the bounded queue can exit.
     events: Receiver<PtyEvent>,
     pending: Option<PtyEvent>,
     offset: usize,

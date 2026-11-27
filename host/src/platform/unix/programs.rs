@@ -2,15 +2,20 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::net::Shutdown;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+use wire::terminal::{FRAME, OUTPUT_WINDOW};
 
 use crate::i18n::t;
 use crate::platform::Pty;
-use crate::platform::pty::{PtyEvents, PtyInput};
+use crate::platform::pty::{PtyEvent, PtyEvents};
 use crate::workspace::procs::{Program, Started};
 
 pub fn shell(default: &str, command: Option<&str>, cwd: Option<&str>) -> Command {
@@ -104,10 +109,6 @@ impl Terminal {
         let child = c.spawn()?;
         Ok((Self { child, master }, output))
     }
-
-    fn resize(&self, rows: u16, cols: u16) -> io::Result<()> {
-        set_size(self.master.as_raw_fd(), size(cols, rows))
-    }
 }
 
 impl Program for Terminal {
@@ -138,8 +139,9 @@ struct BrowserPty {
     master: Option<File>,
     child: Arc<Mutex<Option<Child>>>,
     allowed: Arc<dyn Fn() -> bool + Send + Sync>,
-    input: Option<PtyInput>,
-    listening: bool,
+    input: Option<PtyWriter>,
+    reader: Option<(UnixStream, JoinHandle<()>)>,
+    waiter: Option<JoinHandle<()>>,
 }
 
 impl BrowserPty {
@@ -151,31 +153,171 @@ impl BrowserPty {
             if !allowed() { return Err(io::ErrorKind::PermissionDenied.into()); }
             Ok(())
         })?;
-        Ok(Self { master: Some(master), child: Arc::new(Mutex::new(Some(child))), allowed: Arc::new(allowed), input: None, listening: false })
+        Ok(Self { master: Some(master), child: Arc::new(Mutex::new(Some(child))), allowed: Arc::new(allowed),
+            input: None, reader: None, waiter: None })
     }
 }
 
-fn wait_ready(file: &File, events: libc::c_short) -> io::Result<()> {
-    let mut fd = libc::pollfd { fd: file.as_raw_fd(), events, revents: 0 };
+fn wait_ready(wake: &UnixStream, master: Option<&File>, events: libc::c_short) -> io::Result<bool> {
+    let mut fds = [
+        libc::pollfd { fd: wake.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+        libc::pollfd { fd: master.map_or(-1, AsRawFd::as_raw_fd), events, revents: 0 },
+    ];
     loop {
-        if unsafe { libc::poll(&mut fd, 1, -1) } > 0 { return Ok(()); }
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) } > 0 {
+            return Ok(fds[0].revents != 0);
+        }
         let error = io::Error::last_os_error();
         if error.kind() != io::ErrorKind::Interrupted { return Err(error); }
     }
 }
 
-struct PtyReader(File);
+#[derive(Default)]
+struct Input {
+    attached: bool,
+    closed: bool,
+    pending: Vec<u8>,
+    offset: usize,
+}
 
-impl Read for PtyReader {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+struct PtyWriter {
+    queue: Arc<Mutex<Input>>,
+    wake: UnixStream,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl PtyWriter {
+    fn start(mut master: File, allowed: Arc<dyn Fn() -> bool + Send + Sync>, writable: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
+        let (wake, mut ready) = UnixStream::pair()?;
+        wake.set_nonblocking(true)?;
+        let queue = Arc::new(Mutex::new(Input::default()));
+        let input = queue.clone();
+        let thread = thread::Builder::new().name("pty-input".into()).spawn(move || {
+            loop {
+                let waiting = {
+                    // Serialize the nonblocking write with detach, including partial writes.
+                    let mut input = input.lock().unwrap();
+                    if input.pending.is_empty() || !allowed() {
+                        // Detach will discard this input and wake the writer.
+                        false
+                    } else {
+                        match master.write(&input.pending[input.offset..]) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                input.offset += n;
+                                if input.offset < input.pending.len() { continue; }
+                                input.pending.clear();
+                                input.offset = 0;
+                                writable();
+                                false
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => true,
+                            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                            Err(_) => break,
+                        }
+                    }
+                };
+                match wait_ready(&ready, waiting.then_some(&master), libc::POLLOUT) {
+                    Ok(false) => {}
+                    Ok(true) => match ready.read(&mut [0; 64]) {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    },
+                    Err(_) => break,
+                }
+            }
+            input.lock().unwrap().closed = true;
+            writable();
+        })?;
+        Ok(Self { queue, wake, thread: Some(thread) })
+    }
+
+    fn notify(&self) -> io::Result<()> {
         loop {
-            match self.0.read(buf) {
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_ready(&self.0, libc::POLLIN)?,
-                Err(e) if e.raw_os_error() == Some(libc::EIO) => return Ok(0), // The last slave closed.
-                result => return result,
+            match (&self.wake).write(&[0]) {
+                Ok(_) => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
             }
         }
     }
+
+    fn set_attached(&self, attached: bool) {
+        let mut input = self.queue.lock().unwrap();
+        input.attached = attached;
+        if !attached {
+            input.pending.clear();
+            input.offset = 0;
+            let _ = self.notify();
+        }
+    }
+
+    fn write(&self, bytes: &[u8]) -> io::Result<usize> {
+        let mut input = self.queue.lock().unwrap();
+        if input.closed {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        if !input.attached || !input.pending.is_empty() {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let len = bytes.len().min(FRAME);
+        self.notify()?;
+        input.pending.extend_from_slice(&bytes[..len]);
+        Ok(len)
+    }
+}
+
+impl Drop for PtyWriter {
+    fn drop(&mut self) {
+        self.set_attached(false);
+        let _ = self.wake.shutdown(Shutdown::Write);
+        let _ = self.thread.take().unwrap().join();
+    }
+}
+
+fn read_output(mut master: File, wake: UnixStream, status: mpsc::Receiver<io::Result<i32>>, mut events: PtyEvents) {
+    let mut bytes = [0; FRAME];
+    let mut readable = true;
+    let mut exited = None;
+    let mut final_bytes = 0;
+    let result = loop {
+        if exited.is_none() {
+            match wait_ready(&wake, readable.then_some(&master), libc::POLLIN) {
+                Ok(true) => match status.try_recv() {
+                    Ok(result) => exited = Some(result),
+                    Err(_) => return, // The registry dropped the PTY.
+                },
+                Ok(false) => {}
+                Err(e) => break Err(e),
+            }
+        }
+        // The shell's wait status ends the stream, even if another process still holds
+        // the slave. Keep its last readable bytes ahead of the exit, with a bounded drain.
+        if !readable || final_bytes >= OUTPUT_WINDOW {
+            if let Some(exit) = exited.take() { break exit; }
+            continue;
+        }
+        match master.read(&mut bytes) {
+            Ok(0) => readable = false,
+            Ok(len) => {
+                if !(events.output)(PtyEvent::Bytes(bytes[..len].to_vec())) { return; }
+                if exited.is_some() { final_bytes += len; }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if let Some(exit) = exited.take() { break exit; }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if e.raw_os_error() == Some(libc::EIO) => readable = false,
+            Err(e) => break exited.take().unwrap_or(Err(e)),
+        }
+    };
+    (events.output)(match result {
+        Ok(code) => PtyEvent::Exit(code),
+        Err(e) => PtyEvent::Error(e),
+    });
 }
 
 impl Write for BrowserPty {
@@ -194,45 +336,39 @@ impl Write for BrowserPty {
 
 impl Pty for BrowserPty {
     fn listen(&mut self, events: PtyEvents) -> io::Result<()> {
-        if self.listening { return Err(io::ErrorKind::AlreadyExists.into()); }
+        if self.waiter.is_some() { return Err(io::ErrorKind::AlreadyExists.into()); }
         let master = self.master.as_ref().unwrap();
-        let reader = PtyReader(master.try_clone()?);
-        let mut writer = master.try_clone()?;
-        let allowed = self.allowed.clone();
-        self.input = Some(PtyInput::start(move |mut bytes| {
-            while !bytes.is_empty() && allowed() {
-                match writer.write(bytes) {
-                    Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                    Ok(written) => bytes = &bytes[written..],
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => wait_ready(&writer, libc::POLLOUT)?,
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(())
-        }, events.writable.clone())?);
+        let reader = master.try_clone()?;
+        let (wake, ready) = UnixStream::pair()?;
+        let exit_wake = wake.try_clone()?;
+        self.input = Some(PtyWriter::start(master.try_clone()?, self.allowed.clone(), events.writable.clone())?);
 
         let pid = self.child.lock().unwrap().as_ref().unwrap().id() as libc::pid_t;
         let child = self.child.clone();
         let (status, exited) = mpsc::channel();
-        std::thread::Builder::new().name("pty-exit".into()).spawn(move || {
-            let wait = wait_for_exit(pid, 0);
-            let mut slot = child.lock().unwrap();
-            let mut child = slot.take().unwrap();
-            // Keep the session leader waitable until its job-control groups are gone.
-            let result = wait.and_then(|_| {
-                let cleanup = kill_session(pid);
-                let status = child.wait()?;
-                cleanup?;
-                Ok(status.code().unwrap_or_else(|| -status.signal().expect("process exit signal")))
+        self.waiter = Some(thread::Builder::new().name("pty-exit".into()).spawn(move || {
+            if let Err(e) = wait_for_exit(pid, 0) {
+                eprintln!("{}: {e}", t("terminal.close_failed"));
+            }
+            let mut child = child.lock().unwrap().take().unwrap();
+            // Keep the session leader waitable until cleanup has identified its job-control groups.
+            if let Err(e) = kill_session(pid) {
+                eprintln!("{}: {e}", t("terminal.close_failed"));
+                let _ = child.kill();
+            }
+            let result = child.wait().map(|status| {
+                status.code().unwrap_or_else(|| -status.signal().expect("process exit signal"))
             });
             let _ = status.send(result);
-        })?;
-        self.listening = true;
-        std::thread::Builder::new().name("pty-output".into()).spawn(move || {
-            events.read(reader, || exited.recv().map_err(io::Error::other)?);
-        })?;
+            let _ = exit_wake.shutdown(Shutdown::Write);
+        })?);
+        let reader = thread::Builder::new().name("pty-output".into()).spawn(move || read_output(reader, ready, exited, events))?;
+        self.reader = Some((wake, reader));
         Ok(())
+    }
+
+    fn set_attached(&mut self, attached: bool) {
+        if let Some(input) = &self.input { input.set_attached(attached); }
     }
 
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> {
@@ -273,19 +409,23 @@ impl Pty for BrowserPty {
 
 impl Drop for BrowserPty {
     fn drop(&mut self) {
-        let mut slot = self.child.lock().unwrap();
-        if let Some(child) = slot.as_mut() {
-            if let Err(e) = kill_session(child.id() as libc::pid_t) {
-                eprintln!("{}: {e}", t("terminal.close_failed"));
-                let _ = child.kill();
-            }
-            if !self.listening {
-                // No reader can drain this terminal during cleanup.
-                self.master = None;
-                self.input = None;
-                let _ = child.wait();
+        self.master = None;
+        self.input = None;
+        if let Some((wake, reader)) = self.reader.take() {
+            let _ = wake.shutdown(Shutdown::Write);
+            let _ = reader.join();
+        }
+        {
+            let mut slot = self.child.lock().unwrap();
+            if let Some(child) = slot.as_mut() {
+                if let Err(e) = kill_session(child.id() as libc::pid_t) {
+                    eprintln!("{}: {e}", t("terminal.close_failed"));
+                    let _ = child.kill();
+                }
+                if self.waiter.is_none() { let _ = child.wait(); }
             }
         }
+        if let Some(waiter) = self.waiter.take() { let _ = waiter.join(); }
     }
 }
 
@@ -387,6 +527,7 @@ mod tests {
         let mut output = Vec::new();
         read_until(&events, &mut output, b"24 80\r\n");
         pty.resize(31, 93).unwrap();
+        pty.set_attached(true);
         pty.write_all(b"last line\n").unwrap();
         assert_eq!(read_exit(&events, &mut output), 17);
         assert_eq!(output, b"\x1b[31mready\x1b[0m\r\n24 80\r\n31 93\r\nlast line\r\n");
@@ -416,6 +557,59 @@ mod tests {
         let mut output = Vec::new();
         assert_eq!(read_exit(&events, &mut output), 17);
         assert!(crate::platform::session_members(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn browser_pty_drops_input_on_detach() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "stty -echo; echo ready; read -r line; printf '%s\\n' \"$line\""]);
+        let allowed = Arc::new(AtomicBool::new(true));
+        let check = allowed.clone();
+        let mut pty = BrowserPty::start(command, 24, 80, move || check.load(Ordering::Acquire)).unwrap();
+        let (listener, events) = test_events();
+        pty.listen(listener).unwrap();
+        let mut output = Vec::new();
+        read_until(&events, &mut output, b"ready\r\n");
+        pty.set_attached(true);
+        allowed.store(false, Ordering::Release);
+        pty.write_all(b"old attachment\n").unwrap();
+        pty.set_attached(false);
+        allowed.store(true, Ordering::Release);
+        pty.set_attached(true);
+        pty.write_all(b"current attachment\n").unwrap();
+        assert_eq!(read_exit(&events, &mut output), 0);
+        assert_eq!(output, b"ready\r\ncurrent attachment\r\n");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn browser_pty_reports_exit_and_closes_the_master_with_a_slave_still_open() {
+        for exit in [false, true] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "stty -echo; echo ready; read -r line; echo last; exit 17"]);
+            let mut pty = BrowserPty::start(command, 24, 80, || true).unwrap();
+            let fd = pty.master.as_ref().unwrap().as_raw_fd();
+            let slave = unsafe { libc::ioctl(fd, libc::TIOCGPTPEER, libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+            assert!(slave >= 0, "{}", io::Error::last_os_error());
+            let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+            let (listener, events) = test_events();
+            pty.listen(listener).unwrap();
+            let mut output = Vec::new();
+            read_until(&events, &mut output, b"ready\r\n");
+            if exit {
+                pty.set_attached(true);
+                pty.write_all(b"done\n").unwrap();
+                assert_eq!(read_exit(&events, &mut output), 17);
+                assert_eq!(output, b"ready\r\nlast\r\n");
+            }
+            drop(pty);
+            let mut status = libc::pollfd { fd: slave.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            assert_eq!(unsafe { libc::poll(&mut status, 1, 0) }, 1);
+            assert_ne!(status.revents & libc::POLLHUP, 0, "every master descriptor closed");
+            assert!(matches!(events.try_recv(), Err(mpsc::TryRecvError::Disconnected)));
+        }
     }
 
     #[test]

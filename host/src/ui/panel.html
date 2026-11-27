@@ -288,7 +288,7 @@ function renderLeave(s) {
 const ordered = (list) => [...list].sort((a, b) => (b.controlling - a.controlling) || (b.used - a.used) || a.name.localeCompare(b.name));
 
 // What this panel is showing: the device page, a device being confirmed, the add dialog.
-const ui = { page: 'home', confirm: '', adding: false, known: null, fresh: '', leaving: false };
+const ui = { page: 'home', confirm: '', adding: false, known: null, lastQr: null, fresh: '', leaving: false };
 
 function deviceRow(d) {
   if (ui.confirm === d.id) {
@@ -333,6 +333,12 @@ function renderDevices(s) {
 // meanwhile closes it and is said by name.
 function renderAdding(s) {
   const ids = (s.devices || []).map((d) => d.id);
+  const newQr = s.pair_qr && s.pair_qr !== ui.lastQr;
+  ui.lastQr = s.pair_qr;
+  if (newQr && !ui.adding) {
+    ui.adding = true;
+    ui.known = ids;
+  }
   if (ui.adding && ui.known) {
     const added = (s.devices || []).find((d) => !ui.known.includes(d.id));
     if (added) {

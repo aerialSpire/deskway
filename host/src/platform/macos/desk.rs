@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass};
-use objc2_app_kit::{NSWorkspace, NSWorkspaceSessionDidBecomeActiveNotification, NSWorkspaceSessionDidResignActiveNotification};
+use objc2_app_kit::{NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceSessionDidBecomeActiveNotification, NSWorkspaceSessionDidResignActiveNotification};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
 use objc2_core_graphics::CGSessionCopyCurrentDictionary;
 use objc2_foundation::{NSDistributedNotificationCenter, NSNotification, NSNotificationCenter, NSNotificationSuspensionBehavior, NSObject, NSObjectProtocol, NSString};
@@ -76,15 +76,26 @@ define_class!(
     impl WorkspaceObserver {
         #[unsafe(method(workspaceChanged:))]
         fn changed(&self, _: &NSNotification) {
-            self.refresh();
+            self.refresh(false);
+        }
+
+        #[unsafe(method(workspaceRevoked:))]
+        fn revoked(&self, _: &NSNotification) {
+            self.refresh(true);
         }
     }
 );
 
 impl WorkspaceObserver {
-    fn refresh(&self) {
+    fn refresh(&self, revoked: bool) {
         let mut previous = self.ivars().previous.lock().unwrap();
         let next = workspace_state();
+        if revoked {
+            // The screen may have unlocked by the time the run loop handles the lock.
+            let locked = WorkspaceState { locked: true, ..next };
+            *previous = Some(locked);
+            let _ = self.ivars().control.send(Control::WorkspaceChanged(locked));
+        }
         if *previous != Some(next) {
             *previous = Some(next);
             let _ = self.ivars().control.send(Control::WorkspaceChanged(next));
@@ -107,19 +118,21 @@ impl WorkspaceWatch {
             msg_send![super(WorkspaceObserver::alloc().set_ivars(ObserverState { control, previous: Mutex::default() })), init]
         };
         let selector = sel!(workspaceChanged:);
-        for name in ["com.apple.screenIsLocked", "com.apple.screenIsUnlocked"] {
+        let revoke = sel!(workspaceRevoked:);
+        for (name, handler) in [("com.apple.screenIsLocked", revoke), ("com.apple.screenIsUnlocked", selector)] {
             unsafe {
                 distributed.addObserver_selector_name_object_suspensionBehavior(
-                    &observer, selector, Some(&NSString::from_str(name)), None, NSNotificationSuspensionBehavior::DeliverImmediately,
+                    &observer, handler, Some(&NSString::from_str(name)), None, NSNotificationSuspensionBehavior::DeliverImmediately,
                 );
             }
         }
         unsafe {
-            for name in [NSWorkspaceSessionDidBecomeActiveNotification, NSWorkspaceSessionDidResignActiveNotification] {
+            for name in [NSWorkspaceSessionDidBecomeActiveNotification, NSWorkspaceDidWakeNotification] {
                 workspace.addObserver_selector_name_object(&observer, selector, Some(name), None);
             }
+            workspace.addObserver_selector_name_object(&observer, revoke, Some(NSWorkspaceSessionDidResignActiveNotification), None);
         }
-        observer.refresh();
+        observer.refresh(false);
         Self { distributed, workspace, observer }
     }
 }

@@ -1,8 +1,12 @@
 //! The browser PTY's ordered output and exit, and bounded input to its native writer.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
+#[cfg(windows)]
+use std::io::Read;
+#[cfg(windows)]
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::Arc;
+#[cfg(windows)]
 use std::thread;
 
 use wire::terminal::{FRAME, OUTPUT_WINDOW};
@@ -27,6 +31,7 @@ pub(crate) fn test_events() -> (PtyEvents, std::sync::mpsc::Receiver<PtyEvent>) 
     (PtyEvents { output: Box::new(move |event| tx.send(event).is_ok()), writable: Arc::new(|| {}) }, rx)
 }
 
+#[cfg(windows)]
 impl PtyEvents {
     /// Owns the blocking reader. Report the status after the last bytes, even if the
     /// process waiter finished before the browser had room for all the output.
@@ -51,6 +56,7 @@ impl PtyEvents {
 pub trait Pty: Write + Send {
     fn listen(&mut self, events: PtyEvents) -> io::Result<()>;
     fn consumed(&mut self) {}
+    fn set_attached(&mut self, _attached: bool) {}
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()>;
     /// Apply the size and notify the foreground program even if the size is unchanged.
     fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()>;
@@ -58,8 +64,10 @@ pub trait Pty: Write + Send {
     fn terminate(&mut self) -> io::Result<bool>;
 }
 
+#[cfg(windows)]
 pub(crate) struct PtyInput(SyncSender<Vec<u8>>);
 
+#[cfg(windows)]
 impl PtyInput {
     pub(crate) fn start(mut write: impl FnMut(&[u8]) -> io::Result<()> + Send + 'static, writable: Arc<dyn Fn() + Send + Sync>) -> io::Result<Self> {
         let (tx, rx) = sync_channel::<Vec<u8>>(1);

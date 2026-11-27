@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tao::window::{Window, WindowBuilder};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem};
 use tray_icon::{Icon, MouseButton, TrayIconBuilder, TrayIconEvent};
@@ -228,8 +228,32 @@ const PANEL_IDLE: Duration = Duration::from_secs(5 * 60);
 #[derive(Default)]
 struct Panel {
     page: Option<PanelPage>,
+    frame: Option<PanelFrame>,
     generation: u64,
     close_at: Option<Instant>,
+}
+
+struct PanelFrame {
+    native: native::PanelWindow,
+    window: Window,
+}
+
+impl PanelFrame {
+    fn new(target: &EventLoopWindowTarget<UiEvent>, proxy: &EventLoopProxy<UiEvent>) -> Result<Self> {
+        let window = native::panel_window(WindowBuilder::new())
+            .with_title(crate::product::NAME)
+            .with_decorations(false)
+            .with_inner_size(LogicalSize::new(380.0, native::panel_height(target.primary_monitor())))
+            .with_resizable(false)
+            .with_maximizable(false)
+            .with_visible(false)
+            .build(target)?;
+        let screens = proxy.clone();
+        let native = native::PanelWindow::new(&window, move || {
+            let _ = screens.send_event(UiEvent::ScreenChanged);
+        })?;
+        Ok(Self { native, window })
+    }
 }
 
 struct PanelPage {
@@ -238,7 +262,21 @@ struct PanelPage {
 }
 
 impl Panel {
-    fn show(&mut self, window: &Window, ctx: &mut WebContext, proxy: &EventLoopProxy<UiEvent>) {
+    fn window(&self) -> Option<&Window> {
+        self.frame.as_ref().map(|frame| &frame.window)
+    }
+
+    fn show(&mut self, target: &EventLoopWindowTarget<UiEvent>, ctx: &mut WebContext, proxy: &EventLoopProxy<UiEvent>) {
+        if let Err(e) = self.open(target, ctx, proxy) {
+            eprintln!("{}: {e}", t(native::PANEL_ERROR));
+        }
+    }
+
+    fn open(&mut self, target: &EventLoopWindowTarget<UiEvent>, ctx: &mut WebContext, proxy: &EventLoopProxy<UiEvent>) -> Result<()> {
+        if self.frame.is_none() {
+            self.frame = Some(PanelFrame::new(target, proxy)?);
+        }
+        let window = &self.frame.as_ref().unwrap().window;
         if self.page.is_none() {
             self.generation += 1;
             let generation = self.generation;
@@ -251,19 +289,35 @@ impl Panel {
             match view {
                 Ok(view) => self.page = Some(PanelPage { view, ready: false }),
                 Err(e) => {
-                    eprintln!("{}: {e}", t(native::PANEL_ERROR));
-                    return;
+                    self.release();
+                    return Err(e.into());
                 }
             }
         }
         self.close_at = None;
         native::show_panel(window);
+        Ok(())
     }
 
-    fn hide(&mut self, window: &Window) {
-        native::hide_panel(window);
+    fn hide(&mut self) {
+        if let Some(window) = self.window() {
+            native::hide_panel(window);
+        }
         if self.page.is_some() && self.close_at.is_none() {
             self.close_at = Some(Instant::now() + PANEL_IDLE);
+        }
+    }
+
+    fn release(&mut self) {
+        self.close_at = None;
+        self.page = None;
+        #[cfg(windows)]
+        {
+            self.frame = None;
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(frame) = &self.frame {
+            frame.native.set_region(None);
         }
     }
 
@@ -300,20 +354,11 @@ pub fn run(at_login: bool) -> Result<()> {
     native::configure_event_loop(&mut event_loop);
     let proxy = event_loop.create_proxy();
 
-    let window = native::panel_window(WindowBuilder::new())
-        .with_title(crate::product::NAME)
-        .with_decorations(false)
-        .with_inner_size(LogicalSize::new(380.0, native::panel_height(event_loop.primary_monitor())))
-        .with_resizable(false)
-        .with_maximizable(false)
-        .with_visible(false)
-        .build(&event_loop)?;
-    let screens = proxy.clone();
-    let panel_window = native::PanelWindow::new(&window, move || {
-        let _ = screens.send_event(UiEvent::ScreenChanged);
-    })?;
     let data_dir = crate::config::dir()?.join("webview");
     let mut ctx = WebContext::new(Some(data_dir));
+    #[cfg(target_os = "macos")]
+    let mut panel = Panel { frame: Some(PanelFrame::new(&event_loop, &proxy)?), ..Panel::default() };
+    #[cfg(windows)]
     let mut panel = Panel::default();
 
     let open_item = MenuItem::new(t("tray.open"), true, None);
@@ -350,9 +395,7 @@ pub fn run(at_login: bool) -> Result<()> {
 
     event_loop.run(move |event, target, flow| {
         if panel.close_at.is_some_and(|deadline| Instant::now() >= deadline) {
-            panel.close_at = None;
-            panel.page = None;
-            panel_window.set_region(None);
+            panel.release();
         }
         *flow = panel.close_at.map_or(ControlFlow::Wait, ControlFlow::WaitUntil);
         let event = match event {
@@ -387,22 +430,26 @@ pub fn run(at_login: bool) -> Result<()> {
                     i.fill();
                 }
             }
-            Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } if window_id == window.id() => {
+            Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } if panel.window().is_some_and(|window| window.id() == window_id) => {
                 // Closing the panel never stops the host: it keeps running in the tray.
-                panel.hide(&window);
+                panel.hide();
             }
             // Permissions may have changed in System Settings meanwhile.
-            Event::WindowEvent { event: WindowEvent::Focused(true), window_id, .. } if window_id == window.id() => panel.render(&app),
-            Event::UserEvent(UiEvent::ScreenChanged) if window.is_visible() => native::fit_panel(&window),
+            Event::WindowEvent { event: WindowEvent::Focused(true), window_id, .. } if panel.window().is_some_and(|window| window.id() == window_id) => panel.render(&app),
+            Event::UserEvent(UiEvent::ScreenChanged) => {
+                if let Some(window) = panel.window().filter(|window| window.is_visible()) {
+                    native::fit_panel(window);
+                }
+            }
             #[cfg(windows)]
             Event::UserEvent(UiEvent::Refresh) => panel.render(&app),
             Event::Reopen { .. } | Event::UserEvent(UiEvent::TrayOpen) => {
-                panel.show(&window, &mut ctx, &proxy);
+                panel.show(target, &mut ctx, &proxy);
                 panel.render(&app);
             }
             Event::UserEvent(UiEvent::Menu(id)) => {
                 if id == open_id {
-                    panel.show(&window, &mut ctx, &proxy);
+                    panel.show(target, &mut ctx, &proxy);
                     panel.render(&app);
                 } else if id == quit_id {
                     app.backend.quit();
@@ -420,7 +467,7 @@ pub fn run(at_login: bool) -> Result<()> {
                     }
                     // Someone at another device is waiting for an answer here.
                     if s.asks.len() > app.status.as_ref().map_or(0, |was| was.asks.len()) {
-                        panel.show(&window, &mut ctx, &proxy);
+                        panel.show(target, &mut ctx, &proxy);
                     }
                 }
                 app.status = st;
@@ -469,11 +516,15 @@ pub fn run(at_login: bool) -> Result<()> {
                         }
                     }
                     PageMessage::Drag => {
-                        let _ = window.drag_window();
+                        if let Some(window) = panel.window() { let _ = window.drag_window(); }
                     }
-                    PageMessage::DragRegion { rect } => panel_window.set_region(rect),
-                    PageMessage::Close => panel.hide(&window),
-                    PageMessage::Minimize => native::minimize_panel(&window),
+                    PageMessage::DragRegion { rect } => {
+                        if let Some(frame) = &panel.frame { frame.native.set_region(rect); }
+                    }
+                    PageMessage::Close => panel.hide(),
+                    PageMessage::Minimize => {
+                        if let Some(window) = panel.window() { native::minimize_panel(window); }
+                    }
                     // Only the folder the host named; the page cannot choose another.
                     PageMessage::OpenFolder => {
                         if let Some((_, Some(folder))) = indicator.as_ref().and_then(|i| i.note.clone()) {

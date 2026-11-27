@@ -185,6 +185,8 @@ pub(crate) fn local_browser(open: crate::platform::OpenPty, state: Arc<BrowserSt
     let user = BrowserUser {
         open, browse: Arc::new(files::browse::call), transfers: files::transfer::files(),
         #[cfg(windows)]
+        send_guard: None,
+        #[cfg(windows)]
         _lease: None,
     };
     let access = state.clone();
@@ -206,6 +208,8 @@ pub struct BrowserUser {
     pub open: crate::platform::OpenPty,
     pub browse: BrowseFiles,
     pub transfers: FileTransfers,
+    #[cfg(windows)]
+    pub(crate) send_guard: Option<peer::net::SendGuard>,
     #[cfg(windows)]
     pub(crate) _lease: Option<Arc<dyn Send + Sync>>,
 }

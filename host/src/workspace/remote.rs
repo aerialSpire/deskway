@@ -3,7 +3,7 @@
 //! order: a `run` that waits does not hold up a file read behind it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -47,15 +47,33 @@ struct Link {
     next: AtomicU64,
     waiting: Mutex<Option<HashMap<u64, Sender<Answer>>>>,
     sending: Mutex<()>,
-    state: Mutex<WorkspaceState>,
+    state: Mutex<LinkWorkspace>,
     terminals: Mutex<HashMap<u64, crate::platform::pty::PtyEvents>>,
+}
+
+struct LinkWorkspace {
+    current: WorkspaceState,
+    allowed: Arc<AtomicBool>,
+}
+
+impl LinkWorkspace {
+    fn update(&mut self, next: WorkspaceState) {
+        if self.current != next {
+            // Old data sessions retain this token, including packets already queued at a relay.
+            self.allowed.store(false, Ordering::Release);
+            self.allowed = Arc::new(AtomicBool::new(next.refusal(false).is_none()));
+            self.current = next;
+        }
+    }
 }
 
 impl Link {
     fn new(pipe: Arc<Pipe>) -> Self {
         Self {
             pipe, next: AtomicU64::new(0), waiting: Mutex::new(Some(HashMap::new())),
-            sending: Mutex::default(), state: Mutex::new(WorkspaceState::NO_USER), terminals: Mutex::default(),
+            sending: Mutex::default(),
+            state: Mutex::new(LinkWorkspace { current: WorkspaceState::NO_USER, allowed: Arc::new(AtomicBool::new(false)) }),
+            terminals: Mutex::default(),
         }
     }
 
@@ -139,13 +157,14 @@ impl Remote {
                     }
                 }
                 Ok(Reply::Workspace(state)) => {
-                    *link.state.lock().unwrap() = state;
+                    link.state.lock().unwrap().update(state);
                     self.state_changed(state);
                 }
                 Ok(Reply::Pty { resource, event }) => link.terminal_notice(resource, event),
                 Err(e) => break Err(e),
             }
         };
+        link.state.lock().unwrap().update(WorkspaceState::NO_USER);
         *self.worker.lock().unwrap() = None;
         link.terminals.lock().unwrap().clear();
         let pending = {

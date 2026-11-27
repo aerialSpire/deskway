@@ -146,6 +146,13 @@ export const area = {
       await layout('no device yet');
       await p.shot(`panel-${lang}-empty`, 380, 700);
 
+      // A recreated page can be handed a pairing window that the host has already opened.
+      await clearSent();
+      await render(base({ pair_qr: QR }));
+      h.check(`panel ${lang}: existing pairing shows its QR code without requesting a new one`, await p.eval(`!document.querySelector('#add-overlay').hidden && !!document.querySelector('#qr-img svg')`) && !(await sent()).some(m => m.cmd === 'pair'));
+      await p.eval(`document.querySelector('#add-close').click()`);
+      h.check(`panel ${lang}: closing the QR dialog hides it while the host processes the request`, await p.eval(`document.querySelector('#add-overlay').hidden`) && (await sent()).some(m => m.cmd === 'pair-stop'));
+
       // Adding: the QR code in a dialog, closed by the device appearing, which is then named.
       await clearSent();
       await render(base());

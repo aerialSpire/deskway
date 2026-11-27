@@ -112,12 +112,15 @@ impl Remote {
         let bound = self.clone();
         Browser {
             state: Arc::new(move || state.worker.lock().unwrap().as_ref()
-                .map_or(WorkspaceState::NO_USER, |link| *link.state.lock().unwrap())),
+                .map_or(WorkspaceState::NO_USER, |link| link.state.lock().unwrap().current)),
             bind: Arc::new(move |user| {
                 let link = bound.worker.lock().unwrap().clone()?;
-                let current = *link.state.lock().unwrap();
-                if current.user != Some(user) || current.refusal(false).is_some() { return None; }
-                link.browser_user()
+                let allowed = {
+                    let state = link.state.lock().unwrap();
+                    if state.current.user != Some(user) || !state.allowed.load(Ordering::Acquire) { return None; }
+                    state.allowed.clone()
+                };
+                link.browser_user(allowed)
             }),
         }
     }
@@ -140,7 +143,7 @@ impl Link {
         if !(listener.output)(event) { terminals.remove(&resource); }
     }
 
-    fn browser_user(self: Arc<Self>) -> Option<BrowserUser> {
+    fn browser_user(self: Arc<Self>, allowed: Arc<AtomicBool>) -> Option<BrowserUser> {
         let id = self.browser_request::<Result<u64, Error>>(Operation::OpenLease, None).ok()?.ok()?;
         let lease = Arc::new(ResourceLink { link: self.clone(), id });
         let (browse, resolve, upload, download) = (self.clone(), self.clone(), self.clone(), self.clone());
@@ -172,6 +175,7 @@ impl Link {
                     Ok(Box::new(Source { resource: ResourceLink { link: download.clone(), id }, size }))
                 }),
             },
+            send_guard: Some(Arc::new(move || allowed.load(Ordering::Acquire))),
             _lease: Some(lease),
         })
     }
@@ -556,6 +560,8 @@ mod tests {
         assert_eq!(pty.write(b"pty bytes").unwrap(), 9);
         assert!(matches!(events.recv_timeout(Duration::from_secs(5)).unwrap(), PtyEvent::Bytes(bytes) if bytes == b"pty bytes"));
         pty.consumed();
+        let send = user.send_guard.as_ref().unwrap();
+        assert!(send());
 
         let dir = std::env::temp_dir().join(format!("deskway-test-ipc-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
         fs::create_dir(&dir).unwrap();
@@ -582,9 +588,15 @@ mod tests {
         assert!(matches!(events.recv_timeout(Duration::from_secs(5)).unwrap(), PtyEvent::Bytes(bytes) if bytes == b"background"));
         pty.consumed();
         assert!((browser.state)().locked, "the lock notice comes before the kept output");
+        assert!(!send(), "a queued network packet loses permission when the lock arrives");
         assert_eq!(output.write(&chunks[1], &|| true), Err(Error::Cancelled));
         assert_eq!(pty.write(b"unavailable").unwrap_err().kind(), io::ErrorKind::WouldBlock);
         state.lock().unwrap().locked = false;
+        client.send_json(&Reply::Workspace(WorkspaceState::READY)).unwrap();
+        notices.recv_timeout(Duration::from_secs(5)).unwrap(); // lock
+        notices.recv_timeout(Duration::from_secs(5)).unwrap(); // unlock
+        assert!(!send(), "unlock cannot revive packets from the ended session");
+        assert!((browser.bind)(0).unwrap().send_guard.unwrap()());
         assert_eq!(output.prepare(&|| true), Ok(CHUNK as u64));
         for bytes in &chunks[1..] {
             output.write(bytes, &|| true).unwrap();

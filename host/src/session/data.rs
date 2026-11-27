@@ -49,6 +49,11 @@ impl Data {
 }
 
 impl Role for Data {
+    #[cfg(windows)]
+    fn send_guard(&self) -> Option<peer::net::SendGuard> {
+        self._browser.as_ref().and_then(|browser| browser.send_guard.clone())
+    }
+
     fn releaser(&self) -> Box<dyn Fn() + Send> {
         Box::new(|| {})
     }

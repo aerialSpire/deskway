@@ -111,6 +111,11 @@ pub struct Params {
 /// and the session's own state at hand (`Cx`); the role says and hears everything on its data
 /// channels, and asks the driver to end the session through `Cx::signal`.
 pub trait Role: Send + 'static {
+    #[cfg(windows)]
+    fn send_guard(&self) -> Option<peer::net::SendGuard> {
+        None
+    }
+
     /// The bitrate to start bandwidth estimation at, for a role that sends media; `None`: none.
     fn bandwidth(&self) -> Option<u32> {
         None
@@ -491,6 +496,12 @@ fn start<R: Role>(p: Params, role: R, tx: &Sender<SessionEvent>) -> Result<(Sess
         rtc.bwe().set_bitrate(Bitrate::bps(0), Bitrate::bps(b as u64));
     }
     let net = Net::start(&mut rtc, stun, turn, tx.clone())?;
+    #[cfg(windows)]
+    let net = {
+        let mut net = net;
+        net.set_send_guard(role.send_guard());
+        net
+    };
 
     let release = role.releaser();
     let peer = Peer { session: session.clone(), out: out.clone(), updates, established: false, machine: Machine::new(Instant::now()), control: None, release, started: Instant::now() };
