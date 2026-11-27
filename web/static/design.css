@@ -224,8 +224,10 @@ button { cursor: pointer; }
 .menu-item[aria-checked="true"] svg { color: var(--accent); }
 
 /* ---- A bar's menus (the language, the account): text buttons in the ink ---- */
-.bar-btn { padding: 0 var(--s3); color: var(--ink); }
+.bar-btn { min-width: 0; max-width: 100%; padding: 0 var(--s3); color: var(--ink); }
 .bar-btn[aria-expanded="true"] { background: var(--hover); }
+.bar-btn > .bar-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name-btn > svg { flex: none; }
 .lang-btn > svg:first-child { color: var(--quiet); }
 /* In a narrow window or on a phone the language is its globe alone, as square as the buttons
    beside it (compact in a window's bar, beside its close). */

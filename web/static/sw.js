@@ -15,7 +15,18 @@ self.addEventListener('fetch', (e) => {
     const cache = await caches.open(CACHE);
     try {
       const res = await fetch(e.request);
-      if (res.ok) await cache.put(e.request, res.clone());
+      if (res.ok) {
+        if (url.pathname.endsWith('/js/dialogs.js')) {
+          // Keep the static import available before updating the offline copy of dialogs.js.
+          const qr = new URL('../vendor/qrcode.mjs', url);
+          try {
+            if (!await cache.match(qr)) await cache.add(qr);
+          } catch {
+            return res;
+          }
+        }
+        await cache.put(e.request, res.clone());
+      }
       return res;
     } catch (err) {
       const kept = await cache.match(e.request, { ignoreSearch: true }) || (e.request.mode === 'navigate' ? await cache.match('./') : null);
