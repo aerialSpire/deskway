@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc::RecvTimeoutError, Arc, Mutex};
+use std::sync::{mpsc::RecvTimeoutError, Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -17,7 +17,9 @@ use wire::browse::{Browse, BrowseError};
 use wire::file_transfer::{Error, CHUNK};
 use wire::terminal::FRAME;
 
-use super::{Link, Remote, RequestOp};
+use super::{Link, Remote, Reply, RequestOp};
+use crate::platform::pty::{PtyEvent, PtyEvents, OUTPUT_FRAMES};
+use crate::service::ipc::Pipe;
 use crate::platform::{Pty, WorkspaceState};
 use crate::platform::workspace::{WorkspaceActivity, WorkspaceUse};
 use crate::workspace::{Answer, Browser, BrowserUser, Code, Conflict, Download, FileTransfers, Upload, WorkError};
@@ -32,6 +34,8 @@ pub(super) enum Operation {
     OpenUpload { path: Vec<u16>, size: u64 },
     OpenDownload { path: Vec<u16> },
     OpenPty { rows: u16, cols: u16 },
+    ListenPty { resource: u64 },
+    PtyConsumed { resource: u64 },
     OpenLease,
     Step { resource: u64, step: Step },
     Close { resource: u64 },
@@ -49,16 +53,22 @@ pub(super) enum Step {
     Read(usize),
     Rewind,
     Finish,
-    PtyRead { len: usize, detached: bool },
     PtyWrite(String),
     Resize(u16, u16),
     Redraw(u16, u16),
-    Exit,
     Terminate,
 }
 
 #[derive(Serialize, Deserialize)]
-enum PtyError {
+pub(super) enum Notice {
+    Output(String),
+    Exit(i32),
+    Error(PtyError),
+    Writable,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(super) enum PtyError {
     Wait,
     Denied,
     Io,
@@ -114,6 +124,22 @@ impl Remote {
 }
 
 impl Link {
+    pub(super) fn terminal_notice(&self, resource: u64, event: Notice) {
+        let mut terminals = self.terminals.lock().unwrap();
+        let Some(listener) = terminals.get_mut(&resource) else { return; };
+        let event = match event {
+            Notice::Output(text) => match STANDARD.decode(text) {
+                Ok(bytes) if !bytes.is_empty() && bytes.len() <= FRAME => PtyEvent::Bytes(bytes),
+                _ => PtyEvent::Error(io::ErrorKind::InvalidData.into()),
+            },
+            Notice::Exit(code) => PtyEvent::Exit(code),
+            Notice::Error(error) => PtyEvent::Error(error.into()),
+            Notice::Writable => { (listener.writable)(); return; }
+        };
+        // The worker cannot send more than the listener's bounded window without credit.
+        if !(listener.output)(event) { terminals.remove(&resource); }
+    }
+
     fn browser_user(self: Arc<Self>) -> Option<BrowserUser> {
         let id = self.browser_request::<Result<u64, Error>>(Operation::OpenLease, None).ok()?.ok()?;
         let lease = Arc::new(ResourceLink { link: self.clone(), id });
@@ -174,11 +200,6 @@ impl ResourceLink {
         self.link.files(Operation::Step { resource: self.id, step }, seated)
     }
 
-    fn read_output(&self, buf: &mut [u8], detached: bool) -> io::Result<usize> {
-        let data: String = self.pty(Step::PtyRead { len: buf.len(), detached })?;
-        STANDARD.decode_slice(&data, buf).map_err(io::Error::other)
-    }
-
     fn pty<T: DeserializeOwned>(&self, step: Step) -> io::Result<T> {
         let result: Result<T, PtyError> = self.link.browser_request(Operation::Step { resource: self.id, step }, None)
             .map_err(|_| io::ErrorKind::BrokenPipe)?;
@@ -188,6 +209,7 @@ impl ResourceLink {
 
 impl Drop for ResourceLink {
     fn drop(&mut self) {
+        self.link.terminals.lock().unwrap().remove(&self.id);
         let _ = self.link.send(RequestOp::Browser(Operation::Close { resource: self.id }), None);
     }
 }
@@ -241,12 +263,6 @@ impl Download for Source {
     }
 }
 
-impl Read for ResourceLink {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.read_output(buf, false)
-    }
-}
-
 impl Write for ResourceLink {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.pty(Step::PtyWrite(STANDARD.encode(&bytes[..bytes.len().min(FRAME)])))
@@ -256,10 +272,17 @@ impl Write for ResourceLink {
 }
 
 impl Pty for ResourceLink {
-    fn drain(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.read_output(buf, true) }
+    fn listen(&mut self, events: PtyEvents) -> io::Result<()> {
+        self.link.terminals.lock().unwrap().insert(self.id, events);
+        self.link.browser_request::<Result<(), PtyError>>(Operation::ListenPty { resource: self.id }, None)
+            .map_err(|_| io::ErrorKind::BrokenPipe)?.map_err(io::Error::from)
+    }
+
+    fn consumed(&mut self) {
+        let _ = self.link.send(RequestOp::Browser(Operation::PtyConsumed { resource: self.id }), None);
+    }
     fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()> { self.pty(Step::Resize(rows, cols)) }
     fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()> { self.pty(Step::Redraw(rows, cols)) }
-    fn exit(&mut self) -> io::Result<Option<i32>> { self.pty(Step::Exit) }
     fn terminate(&mut self) -> io::Result<bool> { self.pty(Step::Terminate) }
 }
 
@@ -272,7 +295,38 @@ enum Resource {
 
 struct OpenResource {
     resource: Arc<Mutex<Resource>>,
+    output: Option<Arc<OutputCredit>>,
     _used: WorkspaceUse,
+}
+
+impl Drop for OpenResource {
+    fn drop(&mut self) {
+        if let Some(output) = &self.output { output.close(); }
+    }
+}
+
+struct OutputCredit {
+    remaining: Mutex<Option<usize>>,
+    space: Condvar,
+}
+
+impl OutputCredit {
+    fn take(&self) -> bool {
+        let mut remaining = self.space.wait_while(self.remaining.lock().unwrap(), |n| *n == Some(0)).unwrap();
+        if let Some(n) = remaining.as_mut() { *n -= 1; true } else { false }
+    }
+
+    fn consumed(&self) {
+        if let Some(n) = self.remaining.lock().unwrap().as_mut() {
+            *n = (*n + 1).min(OUTPUT_FRAMES);
+            self.space.notify_one();
+        }
+    }
+
+    fn close(&self) {
+        *self.remaining.lock().unwrap() = None;
+        self.space.notify_one();
+    }
 }
 
 pub(super) struct Worker {
@@ -281,13 +335,14 @@ pub(super) struct Worker {
     alive: AtomicBool,
     resources: Mutex<HashMap<u64, OpenResource>>,
     activity: Arc<WorkspaceActivity>,
+    announce: Arc<dyn Fn(WorkspaceState) + Send + Sync>,
 }
 
 impl Worker {
-    pub fn new(browser: Browser, activity: Arc<WorkspaceActivity>) -> Self {
+    pub fn new(browser: Browser, activity: Arc<WorkspaceActivity>, announce: Arc<dyn Fn(WorkspaceState) + Send + Sync>) -> Self {
         Self {
             browser, next: AtomicU64::new(0),
-            alive: AtomicBool::new(true), resources: Mutex::default(), activity,
+            alive: AtomicBool::new(true), resources: Mutex::default(), activity, announce,
         }
     }
 
@@ -300,11 +355,52 @@ impl Worker {
         let mut resources = self.resources.lock().unwrap();
         if !self.alive.load(Ordering::Acquire) { return Err(Error::Cancelled); }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        resources.insert(id, OpenResource { resource: Arc::new(Mutex::new(resource)), _used: self.activity.begin() });
+        let output = matches!(resource, Resource::Pty(_)).then(|| Arc::new(OutputCredit {
+            remaining: Mutex::new(Some(OUTPUT_FRAMES)), space: Condvar::new(),
+        }));
+        resources.insert(id, OpenResource { resource: Arc::new(Mutex::new(resource)), output, _used: self.activity.begin() });
         Ok(id)
     }
 
-    pub fn call(&self, op: Operation) -> Answer {
+    pub(super) fn consumed(&self, id: u64) {
+        if let Some(output) = self.resources.lock().unwrap().get(&id).and_then(|open| open.output.as_ref()) {
+            output.consumed();
+        }
+    }
+
+    fn listen(&self, id: u64, pipe: &Arc<Pipe>) -> Answer {
+        let (resource, output) = self.resources.lock().unwrap().get(&id)
+            .and_then(|open| Some((open.resource.clone(), open.output.clone()?))).ok_or_else(invalid)?;
+        let mut resource = resource.lock().unwrap();
+        let Resource::Pty(pty) = &mut *resource else { return Err(invalid()); };
+        let writable = pipe.clone();
+        let pipe = pipe.clone();
+        let access = self.browser.state.clone();
+        let announce = self.announce.clone();
+        value(pty.listen(PtyEvents {
+            output: Box::new(move |event| {
+                if !output.take() { return false; }
+                let event = match event {
+                    PtyEvent::Bytes(bytes) => {
+                        // A kept terminal may drain while locked. Publish any live refusal
+                        // before delivering bytes that could be queued to an attachment.
+                        let current = access();
+                        if current.refusal(false).is_some() { announce(current); }
+                        Notice::Output(STANDARD.encode(bytes))
+                    }
+                    PtyEvent::Exit(code) => Notice::Exit(code),
+                    PtyEvent::Error(error) => Notice::Error(error.into()),
+                };
+                pipe.send_json(&Reply::Pty { resource: id, event }).is_ok()
+            }),
+            writable: Arc::new(move || {
+                let _ = writable.send_json(&Reply::Pty { resource: id, event: Notice::Writable });
+            }),
+        }).map_err(PtyError::from))
+    }
+
+    pub fn call(&self, op: Operation, pipe: &Arc<Pipe>) -> Answer {
+        if let Operation::ListenPty { resource } = op { return self.listen(resource, pipe); }
         let user = (self.browser.state)().user;
         let allowed = || {
             let current = (self.browser.state)();
@@ -341,7 +437,7 @@ impl Worker {
                     let size = file.size();
                     self.insert(Resource::Download(file)).map(|id| (id, size))
                 })),
-            Operation::Step { .. } | Operation::Close { .. } => unreachable!(),
+            Operation::Step { .. } | Operation::Close { .. } | Operation::ListenPty { .. } | Operation::PtyConsumed { .. } => unreachable!(),
         }
     }
 }
@@ -353,14 +449,6 @@ fn invalid() -> WorkError {
 impl Resource {
     fn step(&mut self, step: Step, allowed: &dyn Fn() -> bool) -> Answer {
         match (self, step) {
-            (Self::Pty(pty), Step::Exit) => value(pty.exit().map_err(PtyError::from)),
-            (Self::Pty(pty), Step::PtyRead { len, detached }) if len <= FRAME => {
-                let mut bytes = vec![0; len];
-                let read = if detached { pty.drain(&mut bytes) }
-                    else if allowed() { pty.read(&mut bytes) }
-                    else { Err(io::ErrorKind::WouldBlock.into()) };
-                value(read.map(|n| STANDARD.encode(&bytes[..n])).map_err(PtyError::from))
-            }
             (Self::Pty(pty), step) => {
                 if !allowed() {
                     return match step {
@@ -407,7 +495,7 @@ impl Resource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::ipc::{self, Pipe};
+    use crate::service::ipc;
     use crate::wake::Waker;
     use std::fs;
 
@@ -422,15 +510,20 @@ mod tests {
         };
         let state = Arc::new(Mutex::new(WorkspaceState::READY));
         let current = state.clone();
+        let echoed = Arc::new(Mutex::new(None));
+        let echo = echoed.clone();
         let browser = crate::workspace::local_browser(
-            Arc::new(|_, _| Ok(Box::new(EchoPty(Vec::new())))),
+            Arc::new(move |_, _| Ok(Box::new(EchoPty(echo.clone())))),
             Arc::new(move || *current.lock().unwrap()),
         );
         client.send_json(&super::super::Reply::Workspace(WorkspaceState::READY)).unwrap();
         let activity = Arc::new(WorkspaceActivity::default());
         let (used, usage) = std::sync::mpsc::channel();
         assert!(!activity.watch(move |active| { let _ = used.send(active); }));
-        let worker = Arc::new(Worker::new(browser, activity));
+        let announce = client.clone();
+        let worker = Arc::new(Worker::new(browser, activity, Arc::new(move |state| {
+            announce.send_json(&Reply::Workspace(state)).unwrap();
+        })));
         let served = {
             let pipe = client.clone();
             let worker = worker.clone();
@@ -458,10 +551,11 @@ mod tests {
         assert!(worker.resources.lock().unwrap().is_empty());
         let user = (browser.bind)(0).unwrap();
         let mut pty = (user.open)(24, 80).unwrap();
+        let (listener, events) = crate::platform::pty::test_events();
+        pty.listen(listener).unwrap();
         assert_eq!(pty.write(b"pty bytes").unwrap(), 9);
-        let mut bytes = [0; 9];
-        pty.read_exact(&mut bytes).unwrap();
-        assert_eq!(&bytes, b"pty bytes");
+        assert!(matches!(events.recv_timeout(Duration::from_secs(5)).unwrap(), PtyEvent::Bytes(bytes) if bytes == b"pty bytes"));
+        pty.consumed();
 
         let dir = std::env::temp_dir().join(format!("deskway-test-ipc-{}", wire::crypto::hex(&wire::crypto::random::<8>())));
         fs::create_dir(&dir).unwrap();
@@ -482,13 +576,12 @@ mod tests {
         let alias = String::from_utf8(codec.decode(&entries[0].name).unwrap()).unwrap().to_ascii_uppercase();
         let (_, reply) = (user.browse)(Browse::Delete { path: tokens, entry: codec.encode(alias) }, &|| true);
         assert_eq!(reply, Browse::Error { why: BrowseError::InUse });
-        pty.write_all(b"background").unwrap();
         state.lock().unwrap().locked = true;
         assert_eq!((browser.state)(), WorkspaceState::READY, "the network side has not received the lock");
-        let mut bytes = [0; 10];
-        assert_eq!(pty.read(&mut bytes).unwrap_err().kind(), io::ErrorKind::WouldBlock);
-        assert_eq!(pty.drain(&mut bytes).unwrap(), bytes.len());
-        assert_eq!(&bytes, b"background");
+        assert!((echoed.lock().unwrap().as_mut().unwrap().output)(PtyEvent::Bytes(b"background".to_vec())));
+        assert!(matches!(events.recv_timeout(Duration::from_secs(5)).unwrap(), PtyEvent::Bytes(bytes) if bytes == b"background"));
+        pty.consumed();
+        assert!((browser.state)().locked, "the lock notice comes before the kept output");
         assert_eq!(output.write(&chunks[1], &|| true), Err(Error::Cancelled));
         assert_eq!(pty.write(b"unavailable").unwrap_err().kind(), io::ErrorKind::WouldBlock);
         state.lock().unwrap().locked = false;
@@ -526,26 +619,25 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    struct EchoPty(Vec<u8>);
-
-    impl Read for EchoPty {
-        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            let count = bytes.len().min(self.0.len());
-            bytes[..count].copy_from_slice(&self.0[..count]);
-            self.0.drain(..count);
-            Ok(count)
-        }
-    }
+    struct EchoPty(Arc<Mutex<Option<PtyEvents>>>);
 
     impl Write for EchoPty {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { self.0.write(bytes) }
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if !(self.0.lock().unwrap().as_mut().unwrap().output)(PtyEvent::Bytes(bytes.to_vec())) {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            Ok(bytes.len())
+        }
         fn flush(&mut self) -> io::Result<()> { Ok(()) }
     }
 
     impl Pty for EchoPty {
+        fn listen(&mut self, events: PtyEvents) -> io::Result<()> {
+            *self.0.lock().unwrap() = Some(events);
+            Ok(())
+        }
         fn resize(&mut self, _: u16, _: u16) -> io::Result<()> { Ok(()) }
         fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()> { self.resize(rows, cols) }
-        fn exit(&mut self) -> io::Result<Option<i32>> { Ok(None) }
         fn terminate(&mut self) -> io::Result<bool> { Ok(true) }
     }
 }

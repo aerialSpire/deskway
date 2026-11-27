@@ -37,7 +37,7 @@ impl Data {
     pub(crate) fn new(lease: Lease, browser: BrowserUser, page: Arc<Mutex<Page>>, own: Sender<SessionEvent>) -> Self {
         Self {
             lease: lease.clone(),
-            terminal: Terminal::new(lease.clone()),
+            terminal: Terminal::new(lease.clone(), own.clone()),
             terminal_id: None,
             files: Some(Files {
                 call: browser.browse.clone(), lease: lease.clone(), own: own.clone(), channel: None, work: Work::Idle,
@@ -66,6 +66,9 @@ impl Role for Data {
                 "control" if cx.control().is_none() => return true,
                 wire::terminal::CHANNEL if self.terminal_id.is_none() => {
                     self.terminal_id = Some(id);
+                    if let Some(mut channel) = cx.rtc.channel(id) {
+                        self.terminal.configure(&mut channel);
+                    }
                     return false;
                 }
                 wire::file_transfer::CHANNEL => {
@@ -270,7 +273,7 @@ mod tests {
         let lease = registry.admit(id.into(), "browser".into(), "device".into());
         let data = Data {
             lease: lease.clone(),
-            terminal: Terminal::new(lease.clone()),
+            terminal: Terminal::new(lease.clone(), mpsc::channel().0),
             terminal_id: None,
             files: Some(Files { call: Arc::new(call), lease, own, channel: None, work: Work::Idle }),
             transfers: None,
