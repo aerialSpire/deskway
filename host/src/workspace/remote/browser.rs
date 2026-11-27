@@ -428,7 +428,7 @@ mod tests {
         );
         client.send_json(&super::super::Reply::Workspace(WorkspaceState::READY)).unwrap();
         let activity = Arc::new(WorkspaceActivity::default());
-        let (used, usage) = channel();
+        let (used, usage) = std::sync::mpsc::channel();
         assert!(!activity.watch(move |active| { let _ = used.send(active); }));
         let worker = Arc::new(Worker::new(browser, activity));
         let served = {
