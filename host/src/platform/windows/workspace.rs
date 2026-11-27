@@ -226,8 +226,14 @@ pub struct WorkspaceWatch {
 impl WorkspaceWatch {
     /// WTS covers lock and sign-in transitions. The input desktop is also sampled for secure
     /// prompts, which do not generate a WTS lock event.
-    pub fn start(state: Arc<BrowserState>, changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
-        Self::watch(move |_| state(), None, changed)
+    pub fn start(state: Arc<BrowserState>, mut changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
+        let mut previous = None;
+        Self::watch(move |_| state(), None, move |next| {
+            if Some(next) != previous {
+                previous = Some(next);
+                changed(next);
+            }
+        })
     }
 
     pub fn for_worker(activity: Arc<WorkspaceActivity>, changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
@@ -257,7 +263,6 @@ impl WorkspaceWatch {
                 let _ = PostThreadMessageW(thread, WM_WORKSPACE_USE, WPARAM(usize::from(in_use)), LPARAM(0));
             }));
             let mut in_use = false;
-            let mut previous = None;
             CHANGED.with(|slot| *slot.borrow_mut() = Some(Box::new(move |event| {
                 let session = match event {
                     WatchEvent::Timer if !in_use => return,
@@ -282,10 +287,7 @@ impl WorkspaceWatch {
                     Some(WTS_SESSION_LOGOFF) => next = WorkspaceState::NO_USER,
                     _ => {}
                 }
-                if Some(next) != previous {
-                    previous = Some(next);
-                    changed(next);
-                }
+                changed(next);
             })));
             check(WatchEvent::Activity(initially_in_use));
             let _ = ready.send(thread);

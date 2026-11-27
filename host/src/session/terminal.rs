@@ -2,7 +2,8 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::time::{Duration, Instant};
+use std::sync::mpsc::Sender;
+use std::time::Instant;
 
 use anyhow::Context;
 use str0m::channel::{Channel, ChannelData, ChannelId};
@@ -15,11 +16,10 @@ use replay::History;
 
 pub mod registry;
 mod replay;
-use super::{credit::Credit, Cx};
+use super::{credit::Credit, Cx, SessionEvent};
 
 const HIGH: usize = 64 * 1024;
 const LOW: usize = 16 * 1024;
-const POLL: Duration = Duration::from_millis(10);
 
 #[derive(Default)]
 struct OutputCredit {
@@ -113,7 +113,6 @@ impl Stream {
     }
 
     fn pump(&mut self, shell: &mut Shell, buffered: usize, mut send: impl FnMut(bool, &[u8]) -> anyhow::Result<bool>) -> anyhow::Result<(bool, Option<i32>)> {
-        let code = shell.pty.exit().context("check PTY exit status")?;
         let capacity = self.credit.capacity(buffered);
         if let Some(replay) = &mut self.replay {
             if replay.sent < replay.len {
@@ -131,31 +130,23 @@ impl Stream {
             if self.credit.window.outstanding() != 0 {
                 return Ok((false, None));
             }
-            if code.is_none() {
-                if let Err(e) = shell.pty.redraw(self.size.0, self.size.1) {
-                    eprintln!("{}: {e}", t("terminal.redraw_failed"));
-                }
+            if let Err(e) = shell.pty.redraw(self.size.0, self.size.1) {
+                eprintln!("{}: {e}", t("terminal.redraw_failed"));
             }
             self.replay = None;
         }
-        // At most one read and write per pass, even with a busy PTY.
-        if self.output.is_empty() && capacity > 0 {
-            self.output.resize(capacity, 0);
-            let len = shell.read(&mut self.output).context("read PTY")?;
-            self.output.truncate(len);
-        }
-        let sent = !self.output.is_empty() && self.output.len() <= capacity && send(true, &self.output)?;
-        if sent {
-            self.credit.window.take(self.output.len(), OUTPUT_WINDOW);
-            self.output.clear();
-        }
-        if !shell.eof && code.is_none() {
+        // At most one slice of output and one write per pass, even with a busy PTY.
+        let (sent, exit) = shell.output(capacity, |data| send(true, data))?;
+        self.credit.window.take(sent, OUTPUT_WINDOW);
+        let writing = if exit.is_none() {
+            let before = self.input.queued.len();
             self.input.write(&mut *shell.pty).context("write PTY")?;
-        }
+            self.input.queued.len() < before && !self.input.queued.is_empty()
+        } else { false };
         let acked = self.input.acknowledge(|bytes| {
             send(false, &serde_json::to_vec(&Msg::Ack { bytes })?)
         })?;
-        Ok((sent || acked, code.filter(|_| shell.eof && self.output.is_empty())))
+        Ok((sent > 0 || writing || acked, exit))
     }
 }
 
@@ -165,14 +156,15 @@ fn retry(e: &io::Error) -> bool {
 
 pub struct Terminal {
     lease: Lease,
+    own: Sender<SessionEvent>,
     stream: Option<Stream>,
     reply: Option<Msg>,
     done: bool,
 }
 
 impl Terminal {
-    pub fn new(lease: Lease) -> Self {
-        Self { lease, stream: None, reply: None, done: false }
+    pub fn new(lease: Lease, own: Sender<SessionEvent>) -> Self {
+        Self { lease, own, stream: None, reply: None, done: false }
     }
 
     fn finish(&mut self, reply: Option<Msg>) {
@@ -187,7 +179,7 @@ impl Terminal {
     }
 
     fn open(&mut self, rows: u16, cols: u16) {
-        match self.lease.attach(rows, cols) {
+        match self.lease.attach(rows, cols, self.own.clone()) {
             Ok(Some((replay, dropped))) => {
                 self.reply = Some(Msg::Opened {
                     replay: replay.as_ref().map(|replay| replay.len),
@@ -257,7 +249,7 @@ impl Terminal {
     fn pump(&mut self, ch: &mut Channel<'_>) -> anyhow::Result<Option<Instant>> {
         if let Some(reply) = &self.reply {
             if !ch.write(false, &serde_json::to_vec(reply)?)? {
-                return Ok(Some(Instant::now() + POLL));
+                return Ok(None);
             }
             self.reply = None;
             if self.stream.is_none() {
@@ -280,7 +272,7 @@ impl Terminal {
             self.lease.close(Closed::Exit(code));
             self.finish(Some(Msg::Exit { code }));
         }
-        Ok(Some(if progress || exit.is_some() { Instant::now() } else { Instant::now() + POLL }))
+        Ok((progress || exit.is_some()).then(Instant::now))
     }
 
     pub(super) fn channel_closed(&mut self) {
@@ -290,6 +282,10 @@ impl Terminal {
 
     pub(super) fn ended(&self, reason: Reason) {
         self.lease.end(reason.as_str());
+    }
+
+    pub(super) fn configure(&self, ch: &mut Channel<'_>) {
+        ch.set_buffered_amount_low_threshold(LOW - 1);
     }
 
     pub(super) fn poll(&mut self, cx: &mut Cx, id: ChannelId) -> Option<Instant> {

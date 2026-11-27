@@ -60,6 +60,8 @@ pub enum SessionEvent {
     Browse(Vec<u8>),
     /// A file transfer worker has output for the session.
     TransferReady,
+    /// The terminal has output, exited, or can accept more input.
+    TerminalReady,
     /// A tunnel's connection gave bytes, or closed (`peer::pipe`).
     Pipe(PipeEvent),
 }
@@ -109,6 +111,11 @@ pub struct Params {
 /// and the session's own state at hand (`Cx`); the role says and hears everything on its data
 /// channels, and asks the driver to end the session through `Cx::signal`.
 pub trait Role: Send + 'static {
+    #[cfg(windows)]
+    fn send_guard(&self) -> Option<peer::net::SendGuard> {
+        None
+    }
+
     /// The bitrate to start bandwidth estimation at, for a role that sends media; `None`: none.
     fn bandwidth(&self) -> Option<u32> {
         None
@@ -425,7 +432,7 @@ impl<R: Role> Session<R> {
             SessionEvent::ClipShare(on) => self.role.clip_share(cx!(self, rtc), on),
             SessionEvent::Mcp(text) => self.role.mcp_reply(cx!(self, rtc), text),
             SessionEvent::Browse(text) => self.role.file_reply(text),
-            SessionEvent::TransferReady => {}
+            SessionEvent::TransferReady | SessionEvent::TerminalReady => {}
             SessionEvent::Pipe(e) => self.role.pipe(cx!(self, rtc), e),
             SessionEvent::RemoteCandidate(s) => {
                 // Browsers may send mDNS candidates, which are skipped: the other end still
@@ -489,6 +496,12 @@ fn start<R: Role>(p: Params, role: R, tx: &Sender<SessionEvent>) -> Result<(Sess
         rtc.bwe().set_bitrate(Bitrate::bps(0), Bitrate::bps(b as u64));
     }
     let net = Net::start(&mut rtc, stun, turn, tx.clone())?;
+    #[cfg(windows)]
+    let net = {
+        let mut net = net;
+        net.set_send_guard(role.send_guard());
+        net
+    };
 
     let release = role.releaser();
     let peer = Peer { session: session.clone(), out: out.clone(), updates, established: false, machine: Machine::new(Instant::now()), control: None, release, started: Instant::now() };

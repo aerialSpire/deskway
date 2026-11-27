@@ -1,11 +1,12 @@
 //! The capabilities, seats and AI tools offered by this host.
-use std::io::{self, Read, Write};
+use std::io;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use wire::types::{Reason, View};
 
 use super::Platform;
+use super::Pty;
 use crate::wake::Wake;
 use crate::session::{self, SessionEvent};
 use crate::tools::{Group, Tool, TOOLS};
@@ -34,18 +35,6 @@ pub struct DesktopFeatures {
     pub caps: fn(bool) -> Vec<String>,
     pub spawn: fn(session::Params, DeskParams) -> Sender<SessionEvent>,
     pub ai_awake: fn(bool),
-}
-
-/// A live PTY with nonblocking I/O and cleanup on drop.
-pub trait Pty: Read + Write + Send {
-    /// Read for a detached shell, without granting a browser access.
-    fn drain(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.read(buf) }
-    fn resize(&mut self, rows: u16, cols: u16) -> io::Result<()>;
-    /// Apply the size and notify the foreground program even if the size is unchanged.
-    fn redraw(&mut self, rows: u16, cols: u16) -> io::Result<()>;
-    fn exit(&mut self) -> io::Result<Option<i32>>;
-    /// End the shell and its jobs. Returns false if the shell was already exiting.
-    fn terminate(&mut self) -> io::Result<bool>;
 }
 
 pub type OpenPty = Arc<dyn Fn(u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync>;

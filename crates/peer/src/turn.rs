@@ -17,7 +17,7 @@ use native_tls::{TlsConnector, TlsStream};
 use serde_json::Value;
 use sha1::Sha1;
 
-use crate::{net::resolve_ipv4, NetEvent, Stop};
+use crate::{net::{resolve_ipv4, SendGuard}, NetEvent, Stop};
 
 const MAGIC: [u8; 4] = [0x21, 0x12, 0xA4, 0x42];
 
@@ -228,6 +228,7 @@ enum Writer {
 struct QueuedPacket {
     bytes: Vec<u8>,
     queued: Arc<AtomicUsize>,
+    allowed: Option<SendGuard>,
 }
 
 impl Drop for QueuedPacket {
@@ -238,16 +239,22 @@ impl Drop for QueuedPacket {
 
 impl Writer {
     fn send(&self, m: Vec<u8>) {
+        self.send_guarded(m, None);
+    }
+
+    fn send_guarded(&self, m: Vec<u8>, allowed: Option<SendGuard>) {
         match self {
             Writer::Udp(s) => {
-                let _ = s.send(&m);
+                if allowed.is_none_or(|allowed| allowed()) {
+                    let _ = s.send(&m);
+                }
             }
             Writer::Tcp { queue, queued } => {
                 if queued.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |bytes| {
                     let total = bytes + m.len();
                     (total <= TCP_QUEUE_MAX).then_some(total)
                 }).is_ok() {
-                    let _ = queue.send(QueuedPacket { bytes: m, queued: queued.clone() });
+                    let _ = queue.send(QueuedPacket { bytes: m, queued: queued.clone(), allowed });
                 }
             }
         }
@@ -358,7 +365,7 @@ fn open_tcp(mut writer: impl Write + Send + 'static, reader: impl Read + Send + 
     let queued = Arc::new(AtomicUsize::new(0));
     std::thread::Builder::new().name("turn-write".into()).spawn(move || {
         while let Ok(packet) = rx.recv() {
-            if writer.write_all(&packet.bytes).is_err() {
+            if packet.allowed.as_ref().is_none_or(|allowed| allowed()) && writer.write_all(&packet.bytes).is_err() {
                 break;
             }
         }
@@ -440,7 +447,7 @@ impl Relay {
     }
 
     /// Sends one packet to a peer through the relay.
-    pub fn send(&self, peer: SocketAddr, data: &[u8]) {
+    pub(crate) fn send(&self, peer: SocketAddr, data: &[u8], allowed: Option<SendGuard>) {
         let Some(xor) = xor_addr(peer) else { return };
         let due = {
             let mut p = self.permissions.lock().unwrap();
@@ -454,7 +461,7 @@ impl Relay {
             let auth = self.auth.lock().unwrap().clone();
             self.writer.send(build(CREATE_PERMISSION, &transaction_id(), &[(A_PEER, &xor)], Some(&auth)));
         }
-        self.writer.send(build(SEND_INDICATION, &transaction_id(), &[(A_PEER, &xor), (A_DATA, data)], None));
+        self.writer.send_guarded(build(SEND_INDICATION, &transaction_id(), &[(A_PEER, &xor), (A_DATA, data)], None), allowed);
     }
 }
 
@@ -522,6 +529,35 @@ fn run_reader<E: From<NetEvent>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tcp_relay_drops_queued_packets_after_access_is_revoked() {
+        struct SlowWriter {
+            sent: Sender<u8>,
+            resume: std::sync::mpsc::Receiver<()>,
+        }
+        impl Write for SlowWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.sent.send(bytes[0]).unwrap();
+                if bytes[0] == 1 { self.resume.recv().unwrap(); }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let (sent, frames) = channel();
+        let (resume, paused) = channel();
+        let (writer, _) = open_tcp(SlowWriter { sent, resume: paused }, std::io::empty()).unwrap();
+        let timeout = Duration::from_secs(5);
+        writer.send(vec![1]);
+        assert_eq!(frames.recv_timeout(timeout), Ok(1));
+        let allowed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let access = allowed.clone();
+        writer.send_guarded(vec![2], Some(Arc::new(move || access.load(Ordering::Acquire))));
+        allowed.store(false, Ordering::Release);
+        writer.send(vec![3]);
+        resume.send(()).unwrap();
+        assert_eq!(frames.recv_timeout(timeout), Ok(3));
+    }
 
     /// A TCP relay the network does not keep up with: what waits is counted here (the system's
     /// buffer is small), never beyond the last bound, and clears on drain or write failure.
