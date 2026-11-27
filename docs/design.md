@@ -40,17 +40,26 @@ Each component is defined once, and both apps use the same classes.
 
 | Component | Classes and rules |
 |---|---|
-| Button | `.btn` is a secondary (outlined) button by default. `.primary` is filled with the accent colour, `.text` has no border or fill, and `.danger` uses the danger colour for its text, or as its fill when combined with `.primary`. The height is `--h-control`, or `--h-compact` with `.compact`. `.icon` is a square button holding only an icon, framed only while hovered or open (for example a computer's ⋯). A view or dialog has at most one primary button, placed rightmost among its actions. |
+| Button | `.btn` is a secondary (outlined) button by default. `.primary` is filled with the accent colour, `.text` has no border or fill, and `.danger` uses the danger colour for its text, or as its fill when combined with `.primary`. The height is `--h-control`, or `--h-compact` with `.compact`. `.icon` is a square button holding only an icon, framed only while hovered or open (for example a window's close button). `.more` is the borderless, unfilled ⋯ menu button. Its dots align with the content's right edge and use `--quiet` at rest, `--ink` on hover and `--accent` while pressed or open. A transparent 40 × 44 px hit area takes no layout space, and the keyboard focus outline remains. A view or dialog has at most one primary button, placed rightmost among its actions. |
 | Input | `.input` uses `--h-control` and `--r-control`. Native `<select>` is not used: a choice among a few options is a menu (`.dropdown`) whose entries are `menuitemradio`, with the current choice checked. |
 | Form fields | `.fields` is a column of labelled inputs. `.check` is a checkbox with its label, and `.error` (`role="alert"`) is the line below the fields that says what went wrong. |
 | Switch | `.switch[aria-checked]`. |
 | Dialog | `.overlay` (the scrim) contains `.dialog`, which has a title (`h2`), a body (`p`) and right-aligned `.dialog-actions` with the primary action rightmost. Every confirmation that does not concern a single row is a dialog. All dialogs, including forms in a dialog, are made in one place (`js/dialogs.js`). |
+| QR code | `.qr` centers a square frame around the inline SVG. The browser and Host panel share the frame. |
 | Inline confirm | `.confirm` is used only to confirm, in place, the removal of one row of a list. |
 | Notice | `.notice` is one line of state on a page: a `.dot`, the text and an optional `.btn.compact`. Over the remote picture the same component is `.notice.dark`. |
 | Menu | `.dropdown` contains the button that opens it and a `.menu` with `.menu-head`, `.menu-item` (`.danger` for removal) and `.menu-sep`. The menu drops down from its button, aligned to the button's right edge. Items are sized to their text (at least 40 high, wrapping as needed) and have no decorative icons. All menus are made in one place (`js/views/menu.js`), and a menu stays open when the page is redrawn. An item's own actions are always in a menu under its ⋯, never laid out as buttons next to its name. |
-| Status | `.status` with a `.dot` (`.ok`, `.warn`, or neither for off). |
+| Status | `.status` with a `.dot` (`.ok`, `.warn`, or neither for off). On computers, the installed host version uses the right edge of the same line. The latency indicator fills four bars below 30 ms, three below 80 ms, two below 150 ms, and one in warning colour from 150 ms. |
+| Usage gauge | `.gauge` puts the label and percentage above a thin bar. It uses accent below 80%, warning from 80%, and danger from 95%. |
 | Tag | `.tag` (`.accent`, `.ok`, or plain). |
 | Spinner, loading | `.spinner` is the spinner. `.loading` is a spinner together with a description of what is being waited for. |
+
+On the computer list, the name, tags and menu share the first row of the card body. The
+status line and the three-column CPU, memory and system disk gauges use the full card width.
+On a computer's page, the same status line sits under the title. A heading-free vitals card
+between the computer actions and AI activity uses the AI activity frame, with wider gauges and
+hardware or capacity details in an auto-fitting grid. Latency and gauges appear as measurements
+arrive and disappear when the computer goes offline.
 
 ## Page structure
 
@@ -58,9 +67,10 @@ Every page has the same shape: a top bar, then the page title, then the content,
 top on the page ground. Content is not wrapped in a card; a card is used only for one item of a
 list, such as a computer.
 
-The browser's top bar (`.topbar`) shows `Deskway` on the left and, on the right, the language
-menu and, once signed in, the account. The title (`.heading h1`, `--fs-display`) is in the same
-place on every page. Forms are at most 360 wide and pages at most 1280.
+The browser's top bar (`.topbar`) shows `Deskway` on the left. On the right, **Scan to open**
+comes first, followed by the language and account menus where shown. The button opens a dialog
+with the site's root address as a QR code and as copyable text. The title (`.heading h1`,
+`--fs-display`) is in the same place on every page. Forms are at most 360 wide and pages at most 1280.
 
 On the browser's sub-pages (a computer, **My devices**), the title begins with a back control: a
 `‹` drawn in the title's own typeface (`.title-back`, sized in `em`, on the baseline). Its
@@ -69,8 +79,8 @@ navigates back; the title itself remains plain text. Anything that belongs to th
 the same row (a count after it, a ⋯ at the far end). A line below the title, such as a status,
 starts where the title row starts and wraps without shifting anything on the row.
 
-The client behaves like an app rather than a web page: nothing on its pages can be selected,
-highlighted on tap, dragged or given the browser's callout menu. Only input fields accept text.
+The client suppresses tap highlights. Text selection, dragging and the browser's callout menu
+are available only in editable fields and `.copyable-code`.
 
 The host panel shows the computer's name and status at the top left and the language menu and
 the window's close button at the top right. Below them come the settings, then the devices, and

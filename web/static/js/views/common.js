@@ -3,10 +3,11 @@
 // six digits two devices compare.
 import { h, svg, spinner, ICONS } from '../dom.js';
 import { dropdown } from './menu.js';
-import { gotIt } from '../dialogs.js';
+import { gotIt, scanOpenDialog } from '../dialogs.js';
 import { LANGS, currentLang, setLanguage, t, agoText } from '../i18n.js';
 import { CAPS, MIN_VERSION, PROTOCOL_VERSION } from '../proto.js';
 import { state, setView } from '../state.js';
+import { latency } from './vitals.js';
 
 const computerUpdate = (d) => d.version && d.version < PROTOCOL_VERSION
   ? t(d.version < MIN_VERSION ? 'update.computerTitle' : 'update.available') : '';
@@ -47,14 +48,24 @@ const holderText = (c) => t(c.connecting ? 'status.connecting' : 'status.control
 export const statusLine = (d) => {
   const { text, dot } = presenceOf(d);
   const update = computerUpdate(d);
+  const roundTrip = latency(d);
   return h('div', { class: 'computer-status' },
-    h('div', { class: 'status' }, h('span', { class: `dot ${dot}`, 'aria-hidden': 'true' }), h('span', {}, text)),
+    h('div', { class: 'status' },
+      h('span', { class: `dot ${dot}`, 'aria-hidden': 'true' }),
+      h('span', { class: 'presence' }, roundTrip ? `${text} ·` : text),
+      roundTrip,
+      d.app ? h('span', { class: 'ver' }, `v${d.app}`) : null),
     update ? h('div', { class: 'computer-update' }, update) : null);
 };
 
-// The top bar of every page: Deskway at the left; at the right what this page has (the language
-// on top-level pages, the account once signed in).
-export const topbar = (...end) => h('header', { class: 'topbar' }, h('div', { class: 'brand' }, 'Deskway'), h('div', { class: 'topbar-end' }, ...end));
+// The top bar of every page: Deskway at the left; Scan to open, then the page's menus at the right.
+export const topbar = (...end) => h('header', { class: 'topbar' },
+  h('div', { class: 'brand' }, 'Deskway'),
+  h('div', { class: 'topbar-end' },
+    h('button', {
+      class: 'btn icon', type: 'button', 'aria-label': t('scanOpen.title'), 'aria-haspopup': 'dialog', onclick: scanOpenDialog,
+    }, svg(ICONS.qr)),
+    ...end));
 
 // The page's title, at the same place on every page. `back`: a page under My computers starts its
 // title with the way back, a mark in the title's own type; only the mark goes back (to My computers,
@@ -85,8 +96,6 @@ export const settingRow = (label, sub, control) => h('div', { class: 'setting-ro
 
 // Six digits, as "123 456"; `label` is what a screen reader says instead.
 export const codeBox = (code, label) => h('div', { class: 'code', 'aria-label': label }, `${code.slice(0, 3)} ${code.slice(3)}`);
-
-export const copyableCode = (text) => h('code', { class: 'copyable-code' }, text);
 
 export function thumbFor(d) {
   const src = state.thumbs[d.id];

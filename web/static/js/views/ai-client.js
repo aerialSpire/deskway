@@ -7,12 +7,12 @@
 // page is open, not in a dialog (approvals.js).
 //
 // Public surface: openAiClient(), renderAiClient().
-import { $app, h } from '../dom.js';
+import { $app, h, copyableCode } from '../dom.js';
 import { t } from '../i18n.js';
 import { api, signedOut } from '../net.js';
 import { keyCode } from '../auth-messages.js';
 import { state, setView, render } from '../state.js';
-import { topbar, heading, updateNote, aiSupported, codeBox, copyableCode } from './common.js';
+import { topbar, heading, updateNote, aiSupported, codeBox } from './common.js';
 import { accountMenu } from './account.js';
 import { deviceOf, answerDevice } from './approvals.js';
 

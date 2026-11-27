@@ -1,4 +1,4 @@
-// My computers: the account's computers, each with a live thumbnail.
+// My computers: the account's computers, with their previews and vitals.
 import { $app, h, loading } from '../dom.js';
 import { buzz } from '../env.js';
 import { t } from '../i18n.js';
@@ -6,6 +6,7 @@ import { state, setView, render } from '../state.js';
 import { statusOf, statusLine, staleNote, thumbFor, topbar, heading, languagePicker, updateNote, hereTag } from './common.js';
 import { accountMenu } from './account.js';
 import { computerMenu } from './computer.js';
+import { vitalsBars } from './vitals.js';
 
 export function renderList() {
   const online = state.devices.filter((d) => d.online).length;
@@ -29,12 +30,13 @@ function card(d) {
   const el = h('div', { class: 'card' },
     h('div', { class: `thumb ${d.online ? '' : 'offline'}` }, thumbFor(d)),
     h('div', { class: 'card-body' },
-      h('div', { class: 'card-text' },
+      h('div', { class: 'card-head' },
         h('div', { class: 'card-name' },
           h('button', { class: 'card-open', 'aria-label': t('list.card', { name: d.name, status: statusOf(d).text }), onclick: () => setView('detail', d.id) }, d.name),
           hereTag(d)),
-        statusLine(d)),
-      menu.el));
+        menu.el),
+      statusLine(d),
+      vitalsBars(d)));
   holdToOpen(el, menu);
   return el;
 }

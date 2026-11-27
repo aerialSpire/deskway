@@ -33,6 +33,7 @@ mod transfer;
 mod ui;
 #[cfg(desktop_host)]
 mod video;
+mod vitals;
 mod wake;
 mod workspace;
 

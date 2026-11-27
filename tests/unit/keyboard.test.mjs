@@ -1,16 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CAPS } from '../../web/static/js/proto.js';
-
-class Element extends EventTarget {
-  classList = { add() {}, remove() {} };
-  style = {};
-  append() {}
-  setAttribute() {}
-  setSelectionRange() {}
-  focus() {}
-  blur() {}
-}
+import { Element, dispatch } from './dom.mjs';
 
 globalThis.document = { getElementById: () => null, createElement: () => new Element(), addEventListener() {} };
 globalThis.matchMedia = () => ({ matches: false });
@@ -19,10 +10,6 @@ const { Desktop } = await import('../../web/static/js/session/desktop.js');
 const { Keyboard } = await import('../../web/static/js/session/keyboard.js');
 const { OnscreenKeyboard } = await import('../../web/static/js/session/onscreen-keyboard.js');
 const { Session } = await import('../../web/static/js/session/session.js');
-
-function dispatch(target, type, fields) {
-  target.dispatchEvent(Object.assign(new Event(type, { cancelable: true }), fields));
-}
 
 function desktop(caps) {
   const sent = [];

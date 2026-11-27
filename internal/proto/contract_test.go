@@ -56,6 +56,12 @@ func jsonFields(v any) map[string]bool {
 	out := map[string]bool{}
 	rt := reflect.TypeOf(v)
 	for i := 0; i < rt.NumField(); i++ {
+		if f := rt.Field(i); f.Anonymous && f.Tag.Get("json") == "" {
+			for name, optional := range jsonFields(reflect.Zero(f.Type).Interface()) {
+				out[name] = optional
+			}
+			continue
+		}
 		tag := rt.Field(i).Tag.Get("json")
 		name, opts, _ := strings.Cut(tag, ",")
 		if name == "" || name == "-" {
@@ -161,6 +167,10 @@ func TestSharedTypesMatchDefinition(t *testing.T) {
 	d := load(t)
 	for name, v := range map[string]any{
 		"Device":       proto.Device{},
+		"Machine":      proto.Machine{},
+		"Usage":        proto.Usage{},
+		"DiskUsage":    proto.DiskUsage{},
+		"Vitals":       proto.Vitals{},
 		"Holder":       proto.Holder{},
 		"KeptTerminal": proto.KeptTerminal{},
 		"Controller":   proto.Controller{},

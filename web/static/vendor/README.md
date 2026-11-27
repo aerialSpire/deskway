@@ -1,4 +1,6 @@
-# xterm.js
+# Vendored browser assets
+
+## xterm.js
 
 The terminal loads these published ES modules and stylesheet directly from Deskway's static
 files. The two packages use the MIT license.
@@ -17,3 +19,12 @@ SHA-512 in base64 against `dist.integrity` (for example, with `openssl dgst -sha
 and `openssl base64 -A`). Use `tar -xOf` to copy the five archive members above as published.
 Update the versions, sizes and SHA-256 values in this table. Import both modules directly and
 run the browser terminal trial.
+
+## qrcode-generator
+
+The Scan to open dialog uses the published MIT-licensed ES module directly.
+
+| Package and source | Source path | Local file | Bytes | SHA-256 |
+|---|---|---|---:|---|
+| [qrcode-generator 2.0.4](https://registry.npmjs.org/qrcode-generator/-/qrcode-generator-2.0.4.tgz) | `package/dist/qrcode.mjs` | `qrcode.mjs` | 51907 | `ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0` |
+| [qrcode-generator 2.0.4 upstream license](https://github.com/kazuhikoarase/qrcode-generator/blob/83b7e8fe3fddd3b0368dbafd6ce56995bd25e3c8/LICENSE) | `LICENSE` | `qrcode.LICENSE` | 1071 | `3a850fa5f08101db6f40676c2786e10bd2cd5fff7b12ffdf1e0c434d4e49d90c` |

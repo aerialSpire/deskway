@@ -119,10 +119,21 @@ button { cursor: pointer; }
 .btn.danger.primary { background: var(--danger); color: var(--on-accent); }
 .btn.compact { min-height: var(--h-compact); padding: 0 var(--s3); font-size: var(--fs-small); }
 .btn.block { width: 100%; }
-/* An icon alone (a computer's ⋯, a window's close): square, quiet, no frame until hovered. */
+/* An icon alone (a window's close): square, quiet, no frame until hovered. */
 .btn.icon { flex: none; width: var(--h-control); padding: 0; border-color: transparent; background: transparent; color: var(--quiet); }
 .btn.icon.compact { width: var(--h-compact); padding: 0; }
 .btn.icon:hover, .btn.icon[aria-expanded="true"] { background: var(--hover); }
+/* The more menu's dots sit at the content edge. The target extends vertically. */
+.btn.more {
+  position: relative; min-width: var(--s6); min-height: 0; height: var(--s5);
+  justify-content: flex-end; padding: 0; border: 0;
+  background: transparent; color: var(--quiet);
+}
+.btn.more::after {
+  content: ""; position: absolute; inset: calc(-1 * var(--s3)) 0;
+}
+.btn.more:hover { color: var(--ink); }
+.btn.more:active, .btn.more[aria-expanded="true"] { color: var(--accent); }
 .btn:disabled { opacity: .55; cursor: default; filter: none; }
 
 /* ---- Inputs ---- */
@@ -154,6 +165,31 @@ button { cursor: pointer; }
 .dot.warn { background: var(--warn); }
 .dot.accent { background: var(--accent); }
 .status { display: flex; align-items: center; gap: var(--s2); color: var(--quiet); }
+/* Signaling latency and usage gauges, with a visible value at every level. */
+.lat { display: inline-flex; align-items: center; gap: var(--s1); flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lat.warn { color: var(--warn); }
+.signal { display: inline-flex; align-items: flex-end; gap: 1px; height: 9px; }
+.signal i { width: 2px; border-radius: var(--r-control); background: var(--line-strong); }
+.signal i:nth-child(1) { height: 3px; }
+.signal i:nth-child(2) { height: 5px; }
+.signal i:nth-child(3) { height: 7px; }
+.signal i:nth-child(4) { height: 9px; }
+.signal i.on { background: var(--ok); }
+.lat.warn .signal i.on { background: var(--warn); }
+
+.gauge {
+  min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "label value" "track track"; row-gap: var(--s1);
+  color: var(--quiet); font-size: var(--fs-caption); line-height: var(--lh-tight);
+}
+.g-label { grid-area: label; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-value { grid-area: value; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.g-track { grid-area: track; height: 4px; border-radius: var(--r-control); background: var(--line-strong); overflow: hidden; }
+.g-fill { display: block; height: 100%; border-radius: var(--r-control); background: var(--accent); }
+.gauge.warn .g-fill { background: var(--warn); }
+.gauge.high .g-fill { background: var(--danger); }
+.gauge.warn .g-value { color: var(--warn); }
+.gauge.high .g-value { color: var(--danger); }
 
 /* ---- Tags ---- */
 .tag {
@@ -197,6 +233,10 @@ button { cursor: pointer; }
   letter-spacing: .08em; font-variant-numeric: tabular-nums; color: var(--ink);
 }
 
+/* ---- QR code ---- */
+.qr { margin: var(--s4) auto 0; width: min(100%, 180px); aspect-ratio: 1; padding: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); }
+.qr svg { width: 100%; height: 100%; display: block; }
+
 /* ---- Inline confirm: removing one row of a list, in place ---- */
 .confirm { margin: var(--s1) 0 var(--s2); padding: var(--s3) var(--s4); border: 1px solid var(--danger-line); border-radius: var(--r-box); background: var(--danger-soft); }
 .confirm .title { font-size: var(--fs-small); font-weight: 400; line-height: var(--lh-tight); }
@@ -223,8 +263,10 @@ button { cursor: pointer; }
 .menu-item[aria-checked="true"] svg { color: var(--accent); }
 
 /* ---- A bar's menus (the language, the account): text buttons in the ink ---- */
-.bar-btn { padding: 0 var(--s3); color: var(--ink); }
+.bar-btn { min-width: 0; max-width: 100%; padding: 0 var(--s3); color: var(--ink); }
 .bar-btn[aria-expanded="true"] { background: var(--hover); }
+.bar-btn > .bar-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.name-btn > svg { flex: none; }
 .lang-btn > svg:first-child { color: var(--quiet); }
 /* In a narrow window or on a phone the language is its globe alone, as square as the buttons
    beside it (compact in a window's bar, beside its close). */

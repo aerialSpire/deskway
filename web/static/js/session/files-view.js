@@ -1,15 +1,14 @@
 // A paged directory in the data-only session.
-import { h, ICONS, svg } from '../dom.js';
+import { h } from '../dom.js';
 import { dialog, formDialog, shownError } from '../dialogs.js';
 import { t } from '../i18n.js';
 import { CAPS, BrowseMsg as Msg, BROWSE_MAX_BYTES, validate } from '../proto.js';
-import { dropdown } from '../views/menu.js';
+import { dropdown, moreButton } from '../views/menu.js';
 import { crumbs, decodeName, displayName, entryActions, permissions, safeText } from './file-listing.js';
 
 const bytes = new Intl.NumberFormat(undefined, { style: 'unit', unit: 'byte', unitDisplay: 'short' });
 const modified = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const button = (label, action) => h('button', { class: 'btn compact', type: 'button', onclick: action }, label);
-const moreButton = (label) => h('button', { class: 'btn icon more', type: 'button', 'aria-label': label }, svg(ICONS.more));
 
 export class FilesView {
   constructor(s, transfers) {

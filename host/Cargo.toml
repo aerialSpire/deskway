@@ -26,6 +26,7 @@ p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 sha2 = "0.10"
 rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
 getrandom = "0.2"
+sysinfo = { version = "0.40.4", default-features = false, features = ["disk", "system"] }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 jpeg-encoder = "0.6"
