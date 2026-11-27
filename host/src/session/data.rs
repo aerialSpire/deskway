@@ -15,7 +15,7 @@ use wire::types::Reason;
 use super::terminal::{registry::Lease, Terminal};
 use super::{file_transfer::{Page, Transfers}, Cx, Role, SessionEvent};
 use crate::i18n::t;
-use crate::workspace::{BrowseFiles, FileTransfers};
+use crate::workspace::{BrowseFiles, BrowserUser};
 
 /// A single enabled application media section, covered by the same proof as a picture offer.
 pub fn data_only(sdp: &str) -> bool {
@@ -30,18 +30,20 @@ pub struct Data {
     terminal_id: Option<ChannelId>,
     files: Option<Files>,
     transfers: Option<Transfers>,
+    _browser: Option<BrowserUser>,
 }
 
 impl Data {
-    pub(crate) fn new(lease: Lease, files: Option<BrowseFiles>, transfers: Option<(FileTransfers, Arc<Mutex<Page>>)>, own: Sender<SessionEvent>) -> Self {
+    pub(crate) fn new(lease: Lease, browser: BrowserUser, page: Arc<Mutex<Page>>, own: Sender<SessionEvent>) -> Self {
         Self {
             lease: lease.clone(),
             terminal: Terminal::new(lease.clone()),
             terminal_id: None,
-            files: files.map(|call| Files {
-                call, lease: lease.clone(), own: own.clone(), channel: None, work: Work::Idle,
+            files: Some(Files {
+                call: browser.browse.clone(), lease: lease.clone(), own: own.clone(), channel: None, work: Work::Idle,
             }),
-            transfers: transfers.map(|(files, page)| Transfers::new(files, page, lease, own)),
+            transfers: Some(Transfers::new(browser.transfers.clone(), page, lease, own)),
+            _browser: Some(browser),
         }
     }
 }
@@ -265,7 +267,15 @@ mod tests {
     fn admitted(registry: &Registry, id: &str, call: impl Fn(Browse, &dyn Fn() -> bool) -> (PathBuf, Browse) + Send + Sync + 'static) -> (Data, mpsc::Receiver<SessionEvent>) {
         let (own, replies) = mpsc::channel();
         let lease = registry.admit(id.into(), "browser".into(), "device".into());
-        (Data::new(lease, Some(Arc::new(call)), None, own), replies)
+        let data = Data {
+            lease: lease.clone(),
+            terminal: Terminal::new(lease.clone()),
+            terminal_id: None,
+            files: Some(Files { call: Arc::new(call), lease, own, channel: None, work: Work::Idle }),
+            transfers: None,
+            _browser: None,
+        };
+        (data, replies)
     }
 
     fn listing(_: Browse, _: &dyn Fn() -> bool) -> (PathBuf, Browse) {

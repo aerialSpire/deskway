@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::workspace::{Answer, Code, DesktopOp, Op, WorkError, Workspace};
 use crate::service::ipc::Pipe;
 use crate::platform::WorkspaceState;
+use crate::platform::workspace::{WorkspaceActivity, WorkspaceWatch};
 use crate::signal::Control;
 
 mod browser;
@@ -174,24 +175,30 @@ impl Workspace for Remote {
 }
 
 /// The worker's side: answers every request, each on a thread of its own, until the pipe closes.
-pub fn serve(pipe: Arc<Pipe>, ws: Arc<dyn Workspace>, user: bool) -> Result<()> {
+pub fn serve(pipe: Arc<Pipe>, ws: Arc<dyn Workspace>, activity: Option<Arc<WorkspaceActivity>>) -> Result<()> {
     let notices = pipe.clone();
-    let browser = user.then(|| crate::platform::workspace::browser(None, None));
-    let watch = browser.as_ref().and_then(|browser| crate::platform::workspace::WorkspaceWatch::start(browser.state.clone(), move |state| {
+    let watch = activity.as_ref().and_then(|activity| WorkspaceWatch::for_worker(activity.clone(), move |state| {
         let _ = notices.send_json(&Reply::Workspace(state));
     }).ok());
-    let browser = browser.filter(|_| watch.is_some()).map(|browser| Arc::new(browser::Worker::new(browser)));
-    serve_requests(pipe, ws, browser)
+    let browser = activity.as_ref().filter(|_| watch.is_some()).map(|activity| {
+        Arc::new(browser::Worker::new(crate::platform::workspace::browser(None, None), activity.clone()))
+    });
+    serve_requests(pipe, ws, browser, activity)
 }
 
-fn serve_requests(pipe: Arc<Pipe>, ws: Arc<dyn Workspace>, browser: Option<Arc<browser::Worker>>) -> Result<()> {
+fn serve_requests(
+    pipe: Arc<Pipe>, ws: Arc<dyn Workspace>, browser: Option<Arc<browser::Worker>>,
+    activity: Option<Arc<WorkspaceActivity>>,
+) -> Result<()> {
     let result = loop {
         let Request { id, op } = match pipe.recv_json() {
             Ok(request) => request,
             Err(error) => break Err(error),
         };
         let (pipe, ws, browser) = (pipe.clone(), ws.clone(), browser.clone());
+        let activity = activity.clone();
         std::thread::spawn(move || {
+            let _used = activity.as_ref().map(WorkspaceActivity::begin);
             let answer = match op {
                 RequestOp::Work(op) => ws.call(op),
                 RequestOp::Desktop(op) => ws.desktop(op),
@@ -271,7 +278,7 @@ mod tests {
         };
         let client = Arc::new(Pipe::connect(&name).unwrap());
         accepting.join().unwrap().unwrap();
-        std::thread::spawn(move || serve(client, Arc::new(Echo), false));
+        std::thread::spawn(move || serve(client, Arc::new(Echo), None));
 
         let remote = Arc::new(Remote::new(false));
         assert!(!remote.available());

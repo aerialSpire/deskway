@@ -182,7 +182,11 @@ pub(crate) use files::transfer::sweep_home;
 
 #[cfg(browser_workspace)]
 pub(crate) fn local_browser(open: crate::platform::OpenPty, state: Arc<BrowserState>) -> Browser {
-    let user = BrowserUser { open, browse: Arc::new(files::browse::call), transfers: files::transfer::files() };
+    let user = BrowserUser {
+        open, browse: Arc::new(files::browse::call), transfers: files::transfer::files(),
+        #[cfg(windows)]
+        _lease: None,
+    };
     let access = state.clone();
     Browser { state, bind: Arc::new(move |id| {
         let now = access();
@@ -202,6 +206,8 @@ pub struct BrowserUser {
     pub open: crate::platform::OpenPty,
     pub browse: BrowseFiles,
     pub transfers: FileTransfers,
+    #[cfg(windows)]
+    pub(crate) _lease: Option<Arc<dyn Send + Sync>>,
 }
 
 /// Carries out requests with the workspace user's rights.
