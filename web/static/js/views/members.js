@@ -5,7 +5,7 @@ import { api, signedOut } from '../net.js';
 import { state, setView } from '../state.js';
 import { dialog, formDialog, gotIt, shownError } from '../dialogs.js';
 import { topbar, heading, updateNote } from './common.js';
-import { dropdown, menuSeparator } from './menu.js';
+import { dropdown, menuSeparator, moreButton } from './menu.js';
 import { accountMenu } from './account.js';
 
 let seq = 0;
@@ -50,8 +50,7 @@ function row(m) {
     t('members.computers', { n: m.computers }),
     linkStatus(m),
   ].filter(Boolean).join(' · ');
-  const button = h('button', { class: 'btn icon more', 'aria-label': t('members.menu', { name: m.display }) }, svg(ICONS.more));
-  const menu = dropdown(`member:${m.id}`, button, (item) => [
+  const menu = dropdown(`member:${m.id}`, moreButton(t('members.menu', { name: m.display })), (item) => [
     item(t('members.newLink'), () => updateLink(m, 'POST')),
     m.link_kind && item(t('members.revokeLink'), () => updateLink(m, 'DELETE')),
     menuSeparator(),
