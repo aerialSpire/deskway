@@ -653,7 +653,7 @@
   "setup.submit": "Save and sign in",
   "guide.title": "Trust the Deskway certificate",
   "guide.download": "Download certificate",
-  "guide.ios.install": "Open Settings, tap Profile Downloaded, then tap Install.",
+  "guide.ios.install": "Open Settings, tap Profile Downloaded, and review the profile details. The profile must contain exactly one item, the certificate “{name}”. If it does, tap Install. Otherwise, cancel.",
   "guide.ios.trust": "In Settings › General › About › Certificate Trust Settings, turn on full trust for the Deskway certificate.",
   "guide.android.install": "Open Settings and search for “Install a certificate”. Choose CA certificate and select the downloaded file.",
   "guide.other.install": "Open the downloaded file and install it as a trusted root certificate. On macOS, use Keychain Access to set it to Always Trust.",

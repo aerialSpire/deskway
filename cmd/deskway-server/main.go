@@ -79,12 +79,18 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	var https, guide net.Listener
 	if *local {
 		if *domain != "" || *tlsCert != "" || *tlsKey != "" || *publicIP != "" || *stun != "" || *remoteMCP {
 			log.Fatal("-local cannot be combined with -domain, -tls-cert, -tls-key, -public-ip, -stun, or -remote-mcp")
 		}
 		if *guideAddr == "" {
 			log.Fatal("-local requires -guide-listen")
+		}
+		var err error
+		https, guide, err = server.ListenLocal(*listen, *guideAddr)
+		if err != nil {
+			log.Fatal(err)
 		}
 	} else if *guideAddr != "" || *localName != "" {
 		log.Fatal("-guide-listen and -local-name require -local")
@@ -104,22 +110,13 @@ func main() {
 	}
 
 	var (
-		tlsConfig    *tls.Config
-		https, guide net.Listener
-		guideServer  *http.Server
-		ca           *server.LocalCA
-		hostname     string
+		tlsConfig   *tls.Config
+		guideServer *http.Server
+		ca          *server.LocalCA
+		hostname    string
 	)
 	switch {
 	case *local:
-		https, err = server.ListenLocal(*listen)
-		if err != nil {
-			log.Fatalf("-listen: %v", err)
-		}
-		guide, err = server.ListenLocal(*guideAddr)
-		if err != nil {
-			log.Fatalf("-guide-listen: %v", err)
-		}
 		hostname, err = server.LocalHostname()
 		if err != nil {
 			log.Fatal(err)

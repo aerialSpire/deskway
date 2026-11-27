@@ -58,9 +58,9 @@ func (ca *LocalCA) GuideHandler(web fs.FS, httpsPort uint16) (http.Handler, erro
 	model := struct {
 		Design, Language, Script template.URL
 		Catalogs                 map[string]map[string]string
-		Title, Fingerprint       string
+		Title, Fingerprint, Name string
 		Port                     uint16
-	}{design, language, script, catalogs, catalogs["en"]["guide.title"], ca.Fingerprint(), httpsPort}
+	}{design, language, script, catalogs, catalogs["en"]["guide.title"], ca.Fingerprint(), ca.root.Subject.CommonName, httpsPort}
 	// The template has no request data, so render it once. Only its bootstrap script may run.
 	var html bytes.Buffer
 	if err := page.Execute(&html, model); err != nil {
@@ -106,7 +106,7 @@ func serveCAFile(w http.ResponseWriter, name, mime string, data []byte) {
 
 func (ca *LocalCA) mobileconfig() []byte {
 	var name bytes.Buffer
-	_ = xml.EscapeText(&name, []byte(ca.name))
+	_ = xml.EscapeText(&name, []byte(ca.root.Subject.CommonName))
 	fp := ca.Fingerprint()
 	digest, _ := hex.DecodeString(fp)
 	// Use two stable UUIDs so re-downloading the same CA identifies the same profile and payload.

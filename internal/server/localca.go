@@ -25,6 +25,8 @@ import (
 	"unicode/utf8"
 )
 
+const localCertBackdate = time.Hour
+
 var localDNS = []string{"local", "localhost"}
 
 var localIPs = []netip.Prefix{
@@ -43,7 +45,6 @@ type LocalCA struct {
 	root         *x509.Certificate
 	intermediate *x509.Certificate
 	key          *ecdsa.PrivateKey
-	name         string
 	dnsName      string
 	now          func() time.Time
 
@@ -118,6 +119,10 @@ func OpenLocalCA(dataDir, name, hostname string) (*LocalCA, error) {
 		}) {
 		return nil, errors.New("local intermediate must be a distinct P-256 CA with a matching key, pathLen 0 and Deskway's critical name constraints")
 	}
+	if len(intermediate.ExtKeyUsage) != 1 || intermediate.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth ||
+		len(intermediate.UnknownExtKeyUsage) != 0 {
+		return nil, errors.New("local intermediate must have only the serverAuth extended key usage")
+	}
 	roots := x509.NewCertPool()
 	roots.AddCert(root)
 	if _, err := intermediate.Verify(x509.VerifyOptions{Roots: roots}); err != nil {
@@ -127,7 +132,6 @@ func OpenLocalCA(dataDir, name, hostname string) (*LocalCA, error) {
 		root:         root,
 		intermediate: intermediate,
 		key:          key,
-		name:         "Deskway " + name,
 		dnsName:      hostname + ".local",
 		now:          time.Now,
 		leaves:       make(map[localSAN]*tls.Certificate),
@@ -206,11 +210,12 @@ func createLocalChain(name string, intermediateKey *ecdsa.PublicKey) ([]byte, []
 	if err != nil {
 		return nil, nil, err
 	}
-	now := time.Now().UTC()
+	// The whole chain must be valid for clients with a slow clock, even on first startup.
+	notBefore := time.Now().UTC().Add(-localCertBackdate)
 	root := &x509.Certificate{
 		Subject:               pkix.Name{CommonName: name},
-		NotBefore:             now,
-		NotAfter:              now.AddDate(10, 0, 0),
+		NotBefore:             notBefore,
+		NotAfter:              notBefore.AddDate(10, 0, 0),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
@@ -229,6 +234,7 @@ func createLocalChain(name string, intermediateKey *ecdsa.PublicKey) ([]byte, []
 		NotBefore:                   root.NotBefore,
 		NotAfter:                    root.NotAfter,
 		KeyUsage:                    x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		ExtKeyUsage:                 []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid:       true,
 		IsCA:                        true,
 		MaxPathLenZero:              true,
@@ -298,9 +304,10 @@ func (ca *LocalCA) issueLeaf(san localSAN, now time.Time) (*tls.Certificate, err
 	if err != nil {
 		return nil, err
 	}
+	notBefore := now.Add(-localCertBackdate)
 	crt := &x509.Certificate{
-		NotBefore:   now,
-		NotAfter:    now.AddDate(0, 0, 397),
+		NotBefore:   notBefore,
+		NotAfter:    notBefore.AddDate(0, 0, 397),
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -321,8 +328,7 @@ func (ca *LocalCA) issueLeaf(san localSAN, now time.Time) (*tls.Certificate, err
 	return &tls.Certificate{Certificate: [][]byte{der, ca.intermediate.Raw}, PrivateKey: key, Leaf: parsed}, nil
 }
 
-// ListenLocal restricts both ends of the listener to the addresses the local CA permits.
-func ListenLocal(addr string) (net.Listener, error) {
+func resolveLocalAddr(addr string) (*net.TCPAddr, error) {
 	tcp, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -331,11 +337,46 @@ func ListenLocal(addr string) (net.Listener, error) {
 	if tcp.IP != nil && !ip.IsUnspecified() && (ip.IsLoopback() || !localIP(ip)) {
 		return nil, fmt.Errorf("%s must use an unspecified address (e.g. :%d) or a private non-loopback address in local mode", addr, tcp.Port)
 	}
-	listener, err := net.ListenTCP("tcp", tcp)
+	return tcp, nil
+}
+
+func resolveLocalListeners(listen, guideListen string) (*net.TCPAddr, *net.TCPAddr, error) {
+	https, err := resolveLocalAddr(listen)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("-listen: %w", err)
 	}
-	return localListener{listener}, nil
+	guide, err := resolveLocalAddr(guideListen)
+	if err != nil {
+		return nil, nil, fmt.Errorf("-guide-listen: %w", err)
+	}
+	httpsIP, guideIP := tcpIP(https), tcpIP(guide)
+	httpsWildcard := https.IP == nil || httpsIP.IsUnspecified()
+	guideWildcard := guide.IP == nil || guideIP.IsUnspecified()
+	if httpsWildcard != guideWildcard || !httpsWildcard && httpsIP != guideIP {
+		return nil, nil, errors.New("in local mode, -listen and -guide-listen must both use unspecified addresses or the same private non-loopback IP")
+	}
+	if https.Port != 0 && https.Port == guide.Port {
+		return nil, nil, errors.New("in local mode, -listen and -guide-listen must use different ports")
+	}
+	return https, guide, nil
+}
+
+// ListenLocal opens the HTTPS and guide listeners and restricts both ends to local addresses.
+func ListenLocal(listen, guideListen string) (net.Listener, net.Listener, error) {
+	httpsAddr, guideAddr, err := resolveLocalListeners(listen, guideListen)
+	if err != nil {
+		return nil, nil, err
+	}
+	https, err := net.ListenTCP("tcp", httpsAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("-listen: %w", err)
+	}
+	guide, err := net.ListenTCP("tcp", guideAddr)
+	if err != nil {
+		https.Close()
+		return nil, nil, fmt.Errorf("-guide-listen: %w", err)
+	}
+	return localListener{https}, localListener{guide}, nil
 }
 
 type localListener struct{ net.Listener }

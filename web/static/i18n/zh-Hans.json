@@ -653,7 +653,7 @@
   "setup.submit": "保存并登录",
   "guide.title": "信任 Deskway 证书",
   "guide.download": "下载证书",
-  "guide.ios.install": "打开「设置」，轻点「已下载描述文件」，然后轻点「安装」。",
+  "guide.ios.install": "打开「设置」，轻点「已下载描述文件」，查看描述文件的详细信息。描述文件中必须只有一项，即名为「{name}」的证书。如果符合此条件，轻点「安装」。否则请取消。",
   "guide.ios.trust": "前往「设置」›「通用」›「关于本机」›「证书信任设置」，为 Deskway 证书开启完全信任。",
   "guide.android.install": "打开「设置」，搜索「安装证书」。选择「CA 证书」，再选择下载的文件。",
   "guide.other.install": "打开下载的文件，将其安装为受信任的根证书。在 macOS 上，使用「钥匙串访问」将其设为「始终信任」。",

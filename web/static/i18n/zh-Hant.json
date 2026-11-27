@@ -653,7 +653,7 @@
   "setup.submit": "儲存並登入",
   "guide.title": "信任 Deskway 憑證",
   "guide.download": "下載憑證",
-  "guide.ios.install": "打開「設定」，點一下「已下載描述檔」，再點一下「安裝」。",
+  "guide.ios.install": "打開「設定」，點一下「已下載描述檔」，查看描述檔的詳細資料。描述檔中必須只有一項，也就是名為「{name}」的憑證。符合此條件時，點一下「安裝」。否則請取消。",
   "guide.ios.trust": "前往「設定」›「一般」›「關於本機」›「憑證信任設定」，為 Deskway 憑證開啟完整信任。",
   "guide.android.install": "打開「設定」並搜尋「安裝憑證」。選擇「CA 憑證」，再選取下載的檔案。",
   "guide.other.install": "打開下載的檔案，將它安裝為受信任的根憑證。在 macOS 上，使用「鑰匙圈存取」將它設為「永遠信任」。",

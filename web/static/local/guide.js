@@ -9,7 +9,10 @@ export function showGuide(language, catalogs) {
   const ios = /iPhone|iPad|iPod/.test(agent) || /Macintosh/.test(agent) && navigator.maxTouchPoints > 1;
   const platform = ios ? 'ios' : /Android/.test(agent) ? 'android' : 'other';
   document.getElementById('download').href = ios ? '/local/ca.mobileconfig' : '/local/ca.crt';
-  document.getElementById('install').textContent = text(`guide.${platform}.install`);
+  const install = text(`guide.${platform}.install`);
+  document.getElementById('install').textContent = ios
+    ? install.replace('{name}', () => document.body.dataset.certificateName)
+    : install;
   document.getElementById('trust').hidden = !ios;
 
   const https = new URL(`https://${location.hostname}/`);

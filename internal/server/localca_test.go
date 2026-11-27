@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/asn1"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -120,6 +123,69 @@ func TestLocalCARejectsInvalidFiles(t *testing.T) {
 	}
 }
 
+func TestLocalCALoadChecksIntermediateUsage(t *testing.T) {
+	dir := t.TempDir()
+	ca, err := OpenLocalCA(dir, "Hub", "hub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootTemplate := *ca.root
+	rootTemplate.PublicKey = &rootKey.PublicKey
+	rootTemplate.SubjectKeyId = nil
+	rootDER, err := x509.CreateCertificate(rand.Reader, &rootTemplate, &rootTemplate, &rootKey.PublicKey, rootKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := x509.ParseCertificate(rootDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCert := func(t *testing.T, file string, der []byte) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "local-ca", file), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCert(t, "ca.crt", rootDER)
+	serverAuth := x509.ExtKeyUsageServerAuth
+	for _, tt := range []struct {
+		name    string
+		known   []x509.ExtKeyUsage
+		unknown []asn1.ObjectIdentifier
+		valid   bool
+	}{
+		{"server auth only", []x509.ExtKeyUsage{serverAuth}, nil, true},
+		{"missing", nil, nil, false},
+		{"any", []x509.ExtKeyUsage{serverAuth, x509.ExtKeyUsageAny}, nil, false},
+		{"client auth only", []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, nil, false},
+		{"extra known", []x509.ExtKeyUsage{serverAuth, x509.ExtKeyUsageCodeSigning}, nil, false},
+		{"extra unknown", []x509.ExtKeyUsage{serverAuth}, []asn1.ObjectIdentifier{{1, 2, 3, 4}}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			intermediate := *ca.intermediate
+			intermediate.ExtKeyUsage = tt.known
+			intermediate.UnknownExtKeyUsage = tt.unknown
+			der, err := x509.CreateCertificate(rand.Reader, &intermediate, root, &ca.key.PublicKey, rootKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeCert(t, "intermediate.crt", der)
+			_, err = OpenLocalCA(dir, "Hub", "hub")
+			if tt.valid {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "only the serverAuth extended key usage") {
+				t.Fatalf("expected serverAuth-only error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestLocalCARejectsKeyWithGroupOrOtherAccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permissions required")
@@ -135,6 +201,54 @@ func TestLocalCARejectsKeyWithGroupOrOtherAccess(t *testing.T) {
 		if _, err := OpenLocalCA(dir, "Hub", "hub"); err == nil || !strings.Contains(err.Error(), "owner-only permissions") {
 			t.Fatalf("OpenLocalCA with key mode %o returned %v", mode, err)
 		}
+	}
+}
+
+func TestLocalIntermediateRestrictsLeafUsage(t *testing.T) {
+	ca := testLocalCA(t)
+	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
+	roots.AddCert(ca.root)
+	intermediates.AddCert(ca.intermediate)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		use  x509.ExtKeyUsage
+	}{
+		{"TLS server", x509.ExtKeyUsageServerAuth},
+		{"code signing", x509.ExtKeyUsageCodeSigning},
+		{"S/MIME", x509.ExtKeyUsageEmailProtection},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			template := &x509.Certificate{
+				NotBefore:   ca.intermediate.NotBefore,
+				NotAfter:    ca.intermediate.NotBefore.AddDate(0, 0, 1),
+				KeyUsage:    x509.KeyUsageDigitalSignature,
+				ExtKeyUsage: []x509.ExtKeyUsage{tt.use},
+				DNSNames:    []string{"sean-asus.local"},
+			}
+			der, err := x509.CreateCertificate(rand.Reader, template, ca.intermediate, &key.PublicKey, ca.key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leaf, err := x509.ParseCertificate(der)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, KeyUsages: []x509.ExtKeyUsage{tt.use}})
+			if tt.use == x509.ExtKeyUsageServerAuth {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				var invalid x509.CertificateInvalidError
+				if !errors.As(err, &invalid) || invalid.Reason != x509.IncompatibleUsage {
+					t.Fatalf("expected usage rejection, got %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -244,22 +358,79 @@ func TestLocalLeafNames(t *testing.T) {
 	}
 }
 
+func TestLocalLeafClockSkew(t *testing.T) {
+	ca := testLocalCA(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	ca.now = func() time.Time { return now }
+	pair, err := ca.getCertificate(localHello("sean-asus.local", "192.168.1.2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTime := now.Add(-time.Hour)
+	if !pair.Leaf.NotBefore.Equal(clientTime) {
+		t.Fatalf("leaf starts at %v, want %v", pair.Leaf.NotBefore, clientTime)
+	}
+	roots, intermediates := x509.NewCertPool(), x509.NewCertPool()
+	roots.AddCert(ca.root)
+	intermediates.AddCert(ca.intermediate)
+	if _, err := pair.Leaf.Verify(x509.VerifyOptions{
+		Roots: roots, Intermediates: intermediates, DNSName: "sean-asus.local", CurrentTime: clientTime,
+	}); err != nil {
+		t.Fatalf("client with a slow clock rejected the new chain: %v", err)
+	}
+}
+
 func TestListenLocal(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:8080", "[::1]:0", "[::ffff:127.0.0.1]:0", "8.8.8.8:0", "[2001:4860::1]:0"} {
-		listener, err := ListenLocal(addr)
+		https, guide, err := ListenLocal(addr, ":0")
 		if err == nil {
-			listener.Close()
+			https.Close()
+			guide.Close()
 			t.Fatalf("ListenLocal accepted %s", addr)
 		}
 		if !strings.Contains(err.Error(), "private non-loopback address in local mode") {
 			t.Fatalf("ListenLocal(%s): %v", addr, err)
 		}
 	}
-	listener, err := ListenLocal(":0")
+	https, guide, err := ListenLocal(":0", ":0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	listener.Close()
+	defer https.Close()
+	defer guide.Close()
+	if https.Addr().(*net.TCPAddr).Port == guide.Addr().(*net.TCPAddr).Port {
+		t.Fatal("expected different ephemeral ports")
+	}
+}
+
+func TestLocalListenerCompatibility(t *testing.T) {
+	const wantIPError = "must both use unspecified addresses or the same private non-loopback IP"
+	for _, tt := range []struct {
+		listen, guide, wantError string
+	}{
+		{":18499", "0.0.0.0:18498", ""},
+		{"[::]:18499", ":18498", ""},
+		{"192.168.1.2:18499", "192.168.1.2:18498", ""},
+		{"192.168.1.2:18499", "[::ffff:192.168.1.2]:18498", ""},
+		{"[fe80::1%3]:18499", "[fe80::1%3]:18498", ""},
+		{"[fe80::1%3]:18499", "[fe80::1%4]:18498", wantIPError},
+		{":18499", "192.168.1.2:18498", wantIPError},
+		{"192.168.1.2:18499", "[::]:18498", wantIPError},
+		{"192.168.1.2:18499", "192.168.1.3:18498", wantIPError},
+		{":18499", ":18499", "must use different ports"},
+		{"192.168.1.2:18499", "192.168.1.2:18499", "must use different ports"},
+	} {
+		t.Run(tt.listen+"/"+tt.guide, func(t *testing.T) {
+			_, _, err := resolveLocalListeners(tt.listen, tt.guide)
+			if tt.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "-listen and -guide-listen") || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected %q for both flags, got %v", tt.wantError, err)
+			}
+		})
+	}
 }
 
 func TestLocalLeafCacheUnknownNames(t *testing.T) {
