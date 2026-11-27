@@ -1,6 +1,6 @@
 
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use windows::core::{w, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HLOCAL, HWND, LPARAM, LRESULT, LocalFree, WPARAM};
@@ -74,6 +74,10 @@ fn console_user(id: u32) -> Option<String> {
 }
 
 pub fn current() -> WorkspaceState {
+    console_state(true)
+}
+
+fn console_state(check_desktop: bool) -> WorkspaceState {
     let Some(id) = session_id() else { return WorkspaceState::NO_USER; };
     if !ordinary() {
         return WorkspaceState::NO_USER;
@@ -94,7 +98,7 @@ pub fn current() -> WorkspaceState {
     classify(id, console, LOGON.get().copied(), info.as_ref().map(|info| {
         let logon = (info.UserName[0] != 0 && info.LogonTime > 0).then_some(info.LogonTime as u64);
         let unlocked = console == id && info.SessionFlags == WTS_SESSIONSTATE_UNLOCK as i32
-            && super::desktop::input() == Desk::Default;
+            && (!check_desktop || super::desktop::input() == Desk::Default);
         (logon, unlocked)
     }))
 }
@@ -137,30 +141,106 @@ pub fn browser(test_lock: Option<PathBuf>, command: Option<String>) -> Browser {
 }
 
 thread_local! {
-    static CHANGED: std::cell::RefCell<Option<Box<dyn FnMut(Option<u32>)>>> = const { std::cell::RefCell::new(None) };
+    static CHANGED: std::cell::RefCell<Option<Box<dyn FnMut(WatchEvent)>>> = const { std::cell::RefCell::new(None) };
+}
+
+const WM_WORKSPACE_USE: u32 = WM_APP;
+const DESKTOP_TIMER: usize = 1;
+
+enum WatchEvent {
+    Timer,
+    Session(Option<u32>),
+    Activity(bool),
+}
+
+fn check(event: WatchEvent) {
+    CHANGED.with(|slot| {
+        if let Some(changed) = slot.borrow_mut().as_mut() { changed(event); }
+    });
+}
+
+/// The user worker is in use while answering a request or holding an open browser resource.
+#[derive(Default)]
+pub struct WorkspaceActivity {
+    state: Mutex<UseState>,
+}
+
+#[derive(Default)]
+struct UseState {
+    count: usize,
+    changed: Option<Box<dyn Fn(bool) + Send>>,
+}
+
+impl UseState {
+    fn set_count(&mut self, count: usize) {
+        let was_in_use = self.count != 0;
+        self.count = count;
+        let in_use = count != 0;
+        if was_in_use != in_use {
+            if let Some(changed) = &self.changed { changed(in_use); }
+        }
+    }
+}
+
+impl WorkspaceActivity {
+    pub fn begin(self: &Arc<Self>) -> WorkspaceUse {
+        let mut state = self.state.lock().unwrap();
+        let count = state.count + 1;
+        state.set_count(count);
+        WorkspaceUse(self.clone())
+    }
+
+    pub(crate) fn watch(&self, changed: impl Fn(bool) + Send + 'static) -> bool {
+        let mut state = self.state.lock().unwrap();
+        state.changed = Some(Box::new(changed));
+        state.count != 0
+    }
+}
+
+pub struct WorkspaceUse(Arc<WorkspaceActivity>);
+
+impl Drop for WorkspaceUse {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().unwrap();
+        let count = state.count - 1;
+        state.set_count(count);
+    }
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if msg == WM_TIMER || msg == WM_WTSSESSION_CHANGE {
-        let event = (msg == WM_WTSSESSION_CHANGE && session_id() == Some(lparam.0 as u32))
-            .then_some(wparam.0 as u32);
-        CHANGED.with(|changed| {
-            if let Some(changed) = changed.borrow_mut().as_mut() {
-                changed(event);
-            }
-        });
-        return LRESULT(0);
+    match msg {
+        WM_TIMER if wparam.0 == DESKTOP_TIMER => check(WatchEvent::Timer),
+        WM_WTSSESSION_CHANGE => {
+            check(WatchEvent::Session((session_id() == Some(lparam.0 as u32)).then_some(wparam.0 as u32)));
+        }
+        _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
-    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    LRESULT(0)
 }
 
-pub struct WorkspaceWatch(u32);
+pub struct WorkspaceWatch {
+    thread: u32,
+    activity: Option<Arc<WorkspaceActivity>>,
+}
 
 impl WorkspaceWatch {
     /// WTS covers lock and sign-in transitions. The input desktop is also sampled for secure
     /// prompts, which do not generate a WTS lock event.
-    pub fn start(state: Arc<BrowserState>, mut changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
+    pub fn start(state: Arc<BrowserState>, changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
+        Self::watch(move |_| state(), None, changed)
+    }
+
+    pub fn for_worker(activity: Arc<WorkspaceActivity>, changed: impl FnMut(WorkspaceState) + Send + 'static) -> std::io::Result<Self> {
+        Self::watch(console_state, Some(activity), changed)
+    }
+
+    fn watch(
+        state: impl Fn(bool) -> WorkspaceState + Send + 'static,
+        activity: Option<Arc<WorkspaceActivity>>,
+        mut changed: impl FnMut(WorkspaceState) + Send + 'static,
+    ) -> std::io::Result<Self> {
         let (ready, thread) = std::sync::mpsc::channel();
+        let watched = activity.clone();
         std::thread::Builder::new().name("workspace-watch".into()).spawn(move || unsafe {
             let instance = GetModuleHandleW(None).unwrap_or_default();
             let class = WNDCLASSW {
@@ -171,30 +251,79 @@ impl WorkspaceWatch {
             let Ok(hwnd) = CreateWindowExW(WINDOW_EX_STYLE(0), w!("DeskwayWorkspaceWatch"), w!(""),
                 WS_OVERLAPPED, 0, 0, 0, 0, None, None, Some(instance.into()), None) else { return; };
             let registered = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION).is_ok();
-            SetTimer(Some(hwnd), 1, 100, None);
-            let mut previous = state();
-            changed(previous);
+            let thread = GetCurrentThreadId();
+            // Without WTS notifications, poll continuously for lock and sign-in changes.
+            let initially_in_use = !registered || watched.is_none_or(|activity| activity.watch(move |in_use| {
+                let _ = PostThreadMessageW(thread, WM_WORKSPACE_USE, WPARAM(usize::from(in_use)), LPARAM(0));
+            }));
+            let mut in_use = false;
+            let mut previous = None;
             CHANGED.with(|slot| *slot.borrow_mut() = Some(Box::new(move |event| {
-                let mut next = state();
-                match event {
+                let session = match event {
+                    WatchEvent::Timer if !in_use => return,
+                    WatchEvent::Timer => None,
+                    WatchEvent::Session(event) => event,
+                    WatchEvent::Activity(active) => {
+                        if in_use != active {
+                            in_use = active;
+                            if active {
+                                SetTimer(Some(hwnd), DESKTOP_TIMER, 100, None);
+                            } else {
+                                let _ = KillTimer(Some(hwnd), DESKTOP_TIMER);
+                            }
+                        }
+                        None
+                    }
+                };
+                // Idle availability follows WTS. A secure prompt can close without a WTS event.
+                let mut next = state(in_use);
+                match session {
                     Some(WTS_SESSION_LOCK) => next.locked = true,
                     Some(WTS_SESSION_LOGOFF) => next = WorkspaceState::NO_USER,
                     _ => {}
                 }
-                if next != previous {
-                    previous = next;
+                if Some(next) != previous {
+                    previous = Some(next);
                     changed(next);
                 }
             })));
-            let _ = ready.send(GetCurrentThreadId());
+            check(WatchEvent::Activity(initially_in_use));
+            let _ = ready.send(thread);
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
-                DispatchMessageW(&msg);
+                if msg.message == WM_WORKSPACE_USE {
+                    check(WatchEvent::Activity(msg.wParam.0 != 0));
+                } else {
+                    DispatchMessageW(&msg);
+                }
             }
             if registered { let _ = WTSUnRegisterSessionNotification(hwnd); }
             let _ = DestroyWindow(hwnd);
         })?;
-        thread.recv().map(Self).map_err(std::io::Error::other)
+        thread.recv().map(|thread| Self { thread, activity }).map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn desktop_timer_is_wanted_while_workspace_is_in_use() {
+    let activity = Arc::new(WorkspaceActivity::default());
+    let (tx, changes) = std::sync::mpsc::channel();
+    assert!(!activity.watch(move |wanted| tx.send(wanted).unwrap()));
+    let mut uses = [None, None, None];
+    for (slot, active, wanted) in [
+        (0, true, Some(true)),
+        (1, true, None),
+        (0, false, None),
+        (2, true, None),
+        (1, false, None),
+        (2, false, Some(false)),
+        (0, true, Some(true)),
+        (0, false, Some(false)),
+    ] {
+        uses[slot] = active.then(|| activity.begin());
+        assert_eq!(changes.try_recv().ok(), wanted, "slot={slot}, active={active}");
+        assert!(changes.try_recv().is_err());
     }
 }
 
@@ -218,6 +347,9 @@ fn a_detached_console_preserves_only_a_live_sign_in() {
 
 impl Drop for WorkspaceWatch {
     fn drop(&mut self) {
-        let _ = unsafe { PostThreadMessageW(self.0, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        if let Some(activity) = &self.activity {
+            activity.state.lock().unwrap().changed = None;
+        }
+        let _ = unsafe { PostThreadMessageW(self.thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
     }
 }

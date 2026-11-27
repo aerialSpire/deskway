@@ -185,7 +185,11 @@ host processes queued workspace transitions before judging offers. A lock revoke
 data seat and releases it without auto-lock. The workspace checks the live console state before
 attached output, input and filesystem calls.
 
-- Windows uses WTS session notifications and samples the input desktop for secure prompts.
+- Windows uses WTS session notifications for console lock and sign-in changes. The user worker
+  checks for secure prompts when activity begins and every 100 ms while it is answering a
+  request, has an attached Terminal or Files session, or holds an open browser PTY, upload, or
+  download. When activity ends, availability follows WTS alone. If WTS registration fails,
+  the worker polls continuously. Browser workspace operations check the live desktop state at access.
   A temporarily detached console has no active console session ID. The worker checks its own
   WTS logon identity and reports it locked during detachment. Logoff or a switch to another
   console session ends the old workspace, including its shell, replay and transfer record.

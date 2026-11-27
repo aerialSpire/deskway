@@ -608,7 +608,7 @@ impl Host {
                 let lease = self.terminal.as_ref().expect("a terminal was admitted")
                     .admit_user(session.clone(), name.clone(), verified.controller.clone(), user);
                 let page = self.transfers.admit(&verified.controller, &verified.page, &session, verified.resume_until());
-                session::spawn(params, |own| session::data::Data::new(lease, Some(browser.browse), Some((browser.transfers, page)), own))
+                session::spawn(params, |own| session::data::Data::new(lease, browser, page, own))
             }
             None => {
                 let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };
@@ -1306,6 +1306,8 @@ mod tests {
                         path: Arc::new(|_, _, _, _| unreachable!()), upload: Arc::new(|_, _, _| unreachable!()),
                         download: Arc::new(|_, _| unreachable!()),
                     },
+                    #[cfg(windows)]
+                    _lease: None,
                 })),
             }), notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
