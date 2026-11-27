@@ -23,9 +23,10 @@ use crate::config::Config;
 use crate::platform::Remote;
 use crate::settings::{PanelRequest, Settings};
 use crate::signal::{self, Control, Status};
+use crate::wake::Wake;
 
 /// The host's queue, so the service can end it when it stops.
-static HOST: std::sync::OnceLock<std::sync::mpsc::Sender<Control>> = std::sync::OnceLock::new();
+static HOST: OnceLock<Wake<Control>> = OnceLock::new();
 
 pub const NET_SERVICE: &str = "DeskwayNet";
 pub const AGENT_SERVICE: &str = "Deskway";
@@ -58,7 +59,7 @@ pub fn run(dev: bool, view_only: bool) -> Result<()> {
     let cfg = signed_in();
     crate::i18n::from_config();
     PANELS.status(Status::offline(&cfg));
-    let (control_tx, control_rx) = channel::<Control>();
+    let (control_tx, control_rx) = signal::control_channel();
     let _ = HOST.set(control_tx.clone());
 
     let (events, platform_events) = channel();

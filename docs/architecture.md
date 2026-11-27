@@ -125,6 +125,7 @@ power.rs           keep-awake policy
 signal.rs          server connection, host status, the two seats (signal/seats.rs: the desk
                    seat for a person, the AI seat for an AI client, side by side; each a
                    signal/registry.rs)
+wake.rs            channel senders that wake the receiving thread's poller
 service/           Windows services, agent, IPC; the machine-wide folder; worker.rs, the user
                    and admin workers (their keys, their pipes, reconnecting)
 ui/                tray, panel and indicator (mod.rs, indicator.rs), the panel's backend:
@@ -701,6 +702,10 @@ The source of truth is the viewer's constraints.
   signs in with is its `name`, which is unique and can be changed (`POST /api/me/name`, after
   entering the password). Everything else refers to the id: the owners of computers and browsers,
   the super password, sessions, and the `user` that a host is given and reports.
+- The host's signaling thread waits for socket readability, a notification from its local
+  queues, or the next ping, silence or browser-transfer deadline. It drains buffered WebSocket
+  and TLS data before waiting. It sends a ping every 15 seconds and reconnects after 45 seconds
+  without a server frame.
 - Connect signatures use a nonce issued by the host, not the clock.
 - Connecting waits only for what it must. The server sends browsers and AI clients the main
   server's ICE entries on every socket and renews them before the TURN credentials expire.

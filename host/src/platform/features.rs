@@ -6,6 +6,7 @@ use std::sync::Arc;
 use wire::types::{Reason, View};
 
 use super::Platform;
+use crate::wake::Wake;
 use crate::session::{self, SessionEvent};
 use crate::tools::{Group, Tool, TOOLS};
 
@@ -23,7 +24,7 @@ pub struct DeskParams {
     pub clip_share: bool,
     /// Where the browser's request to switch it goes: the host saves it and answers with
     /// `SessionEvent::ClipShare`.
-    pub share: Sender<bool>,
+    pub share: Wake<bool>,
 }
 
 #[derive(Clone, Copy)]

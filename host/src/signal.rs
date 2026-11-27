@@ -9,11 +9,12 @@
 
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use polling::{Event, Events, Poller};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tungstenite::client::IntoClientRequest;
@@ -33,6 +34,7 @@ use peer::state::End;
 use crate::session::{self, SessionEvent, SessionUpdate};
 use crate::session::terminal::registry::Registry as Terminals;
 use crate::settings::{PanelRequest, Settings};
+use crate::wake::{Wake, Waker};
 
 mod alive;
 mod registry;
@@ -158,7 +160,7 @@ pub enum Control {
 /// host's `Facts`.)
 struct Router {
     desk: Mutex<Option<Sender<SessionEvent>>>,
-    host: Sender<PlatformEvent>,
+    host: Wake<PlatformEvent>,
     /// Answers under an id go to whoever asked (`Replies`), before anything else.
     replies: Arc<Replies>,
 }
@@ -210,8 +212,8 @@ impl Router {
     }
 
     /// Routes until the platform's last sender is gone.
-    fn spawn(events: Receiver<PlatformEvent>) -> (Arc<Router>, Receiver<PlatformEvent>) {
-        let (host, host_rx) = channel();
+    fn spawn(events: Receiver<PlatformEvent>, wake: &Waker) -> (Arc<Router>, Receiver<PlatformEvent>) {
+        let (host, host_rx) = wake.channel();
         let router = Arc::new(Router { desk: Mutex::new(None), host, replies: Arc::default() });
         let r = router.clone();
         std::thread::Builder::new()
@@ -264,7 +266,7 @@ struct Host {
     auto_lock: bool,
     clip_share: bool,
     /// The session's browser asks to switch the shared clipboard.
-    share_tx: Sender<bool>,
+    share_tx: Wake<bool>,
     online: bool,
     waiting: bool,
     /// Why the last attempt to reach the server failed, in words for the panel.
@@ -275,8 +277,8 @@ struct Host {
     browser: Option<crate::workspace::Browser>,
     workspace_state: WorkspaceState,
     transfers: session::file_transfer::Registry,
-    out_tx: Sender<String>,
-    updates_tx: Sender<SessionUpdate>,
+    out_tx: Wake<String>,
+    updates_tx: Wake<SessionUpdate>,
     /// The sessions on the two seats (their handles feed the session threads).
     sessions: Seats<Sender<SessionEvent>>,
     /// The connect nonces issued, per session: one set for every session, whoever controls.
@@ -828,7 +830,7 @@ impl Host {
     }
 
     /// Events from the platform for the host itself. Thumbnails go out on `ws` when connected.
-    fn on_platform(&mut self, e: PlatformEvent, ws: Option<&mut WebSocket<MaybeTlsStream<TcpStream>>>) -> Result<()> {
+    fn on_platform(&mut self, e: PlatformEvent, ws: Option<&mut Socket>) -> Result<()> {
         match e {
             PlatformEvent::Thumbnail { display, jpeg } => {
                 if let Some(ws) = ws {
@@ -960,25 +962,68 @@ impl Host {
     }
 }
 
-fn connect(cfg: &Config) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+fn tcp(ws: &Socket) -> &TcpStream {
+    match ws.get_ref() {
+        MaybeTlsStream::Plain(s) => s,
+        MaybeTlsStream::NativeTls(s) => s.get_ref(),
+        _ => unreachable!("signaling uses plain TCP or native TLS"),
+    }
+}
+
+fn connect(cfg: &Config) -> Result<Socket> {
     let base = cfg.server.replacen("http", "ws", 1);
     let mut req = format!("{base}/ws/host?id={}", cfg.id).into_client_request()?;
     req.headers_mut().insert("Authorization", format!("Bearer {}", cfg.token).parse().context("token header")?);
     let (ws, _) = tungstenite::connect(req)?;
-    let tcp = match ws.get_ref() {
-        MaybeTlsStream::Plain(s) => s,
-        MaybeTlsStream::NativeTls(s) => s.get_ref(),
-        _ => return Ok(ws),
-    };
-    // A short read timeout lets one thread both read and drain the outgoing queue. A write
-    // that cannot go out for long means the network is gone, not busy.
-    tcp.set_read_timeout(Some(Duration::from_millis(20)))?;
-    tcp.set_write_timeout(Some(alive::WRITE_TIMEOUT))?;
-    tcp.set_nodelay(true)?;
+    tcp(&ws).set_write_timeout(Some(alive::WRITE_TIMEOUT))?;
+    // A blocking TLS write can also need to read, so bound that wait too.
+    tcp(&ws).set_read_timeout(Some(alive::WRITE_TIMEOUT))?;
+    tcp(&ws).set_nodelay(true)?;
     Ok(ws)
 }
 
+struct Connection<'a> {
+    ws: &'a mut Socket,
+    poller: Arc<Poller>,
+}
+
+const READABLE: Event = Event::readable(0);
+
+impl<'a> Connection<'a> {
+    fn register(ws: &'a mut Socket, wake: &Waker) -> Result<Self> {
+        let poller = Arc::new(Poller::new()?);
+        // SAFETY: the connection borrows the socket until Drop deregisters it.
+        unsafe { poller.add(tcp(ws), READABLE)? };
+        let connection = Self { ws, poller };
+        wake.attach(&connection.poller);
+        Ok(connection)
+    }
+}
+
+impl Drop for Connection<'_> {
+    fn drop(&mut self) {
+        if let Err(e) = self.poller.delete(tcp(self.ws)) {
+            eprintln!("cannot deregister signaling socket: {e}");
+        }
+    }
+}
+
+/// The control receiver and the shared wake handle for this host's queues.
+pub struct Controls {
+    rx: Receiver<Control>,
+    wake: Waker,
+}
+
+pub fn control_channel() -> (Wake<Control>, Controls) {
+    let wake = Waker::default();
+    let (tx, rx) = wake.channel();
+    (tx, Controls { rx, wake })
+}
+
 struct Queues {
+    wake: Waker,
     out: Receiver<String>,
     updates: Receiver<SessionUpdate>,
     platform: Option<Receiver<PlatformEvent>>,
@@ -1013,21 +1058,30 @@ impl Queues {
     }
 }
 
-fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Queues) -> Result<()> {
+fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
+    let connection = Connection::register(ws, &q.wake)?;
+    let ws = &mut *connection.ws;
+    let poller = &connection.poller;
+    let mut events = Events::new();
     ws.send(WsMessage::text(serde_json::to_string(&host.hello())?))?;
     host.send_status();
     let mut alive = alive::Alive::new(Instant::now());
     loop {
-        match ws.read() {
+        tcp(ws).set_nonblocking(true)?;
+        let read = match ws.read() {
             Ok(m) => {
                 alive.heard(Instant::now());
                 if let WsMessage::Text(t) = m {
                     q.on_message(host, t.as_str());
                 }
+                true
             }
-            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(tungstenite::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => false,
             Err(e) => return Err(e.into()),
-        }
+        };
+        // Blocking sends and flushes use WRITE_TIMEOUT, including tungstenite's automatic
+        // replies. This keeps the write deadline without juggling partial WebSocket or TLS writes.
+        tcp(ws).set_nonblocking(false)?;
         match alive.due(Instant::now()) {
             alive::Due::Nothing => {}
             alive::Due::Ping => ws.send(WsMessage::Ping(Default::default()))?,
@@ -1040,12 +1094,21 @@ fn serve(ws: &mut WebSocket<MaybeTlsStream<TcpStream>>, host: &mut Host, q: &Que
         while let Ok(m) = q.out.try_recv() {
             ws.send(WsMessage::text(m))?;
         }
-        ws.flush().or_else(|e| match e {
-            tungstenite::Error::Io(ref io) if io.kind() == ErrorKind::WouldBlock => Ok(()),
-            e => Err(e),
-        })?;
+        ws.flush()?;
         if host.quit && !host.has_sessions() {
             return Ok(());
+        }
+
+        // Keep the same processing order for each message. Read again before sleeping because
+        // tungstenite and native TLS can hold data after the underlying socket stops being readable.
+        if !read {
+            if !events.is_empty() {
+                poller.modify(tcp(ws), READABLE)?;
+                events.clear();
+            }
+            let deadline = alive.next_deadline();
+            let deadline = host.transfers.next_deadline().map_or(deadline, |t| t.min(deadline));
+            poller.wait(&mut events, Some(deadline.saturating_duration_since(Instant::now())))?;
         }
     }
 }
@@ -1057,13 +1120,14 @@ impl Host {
 
     /// The host as it starts: offline, nobody in control, with the trust store of `cfg`'s
     /// folder (None refuses every offer).
-    fn new(p: Params, trust: Option<Trust>, control: Receiver<Control>) -> (Host, Queues) {
+    fn new(p: Params, trust: Option<Trust>, controls: Controls) -> (Host, Queues) {
         let Params { cfg, view_only, desktop, browser, notify, settings, workspace, admin } = p;
-        let (out_tx, out) = channel();
-        let (updates_tx, updates) = channel();
-        let (share_tx, share) = channel();
+        let Controls { rx: control, wake } = controls;
+        let (out_tx, out) = wake.channel();
+        let (updates_tx, updates) = wake.channel();
+        let (share_tx, share) = wake.channel();
         let (desktop, platform_events) = desktop.map(|d| {
-            let (router, events) = Router::spawn(d.events);
+            let (router, events) = Router::spawn(d.events, &wake);
             d.platform.auto_lock(cfg.auto_lock);
             (Desktop { features: d.features, platform: d.platform, router, can_host: d.can_host }, events)
         }).unzip();
@@ -1105,12 +1169,12 @@ impl Host {
             trust,
             settings,
         };
-        (host, Queues { out, updates, platform: platform_events, control, share })
+        (host, Queues { wake, out, updates, platform: platform_events, control, share })
     }
 }
 
 /// Runs the host until it is told to quit or `control` closes.
-pub fn run(p: Params, control: Receiver<Control>) {
+pub fn run(p: Params, control: Controls) {
     let trust = crate::config::dir().and_then(|d| Trust::open(d, &p.cfg.id, &p.cfg.server)).map_err(|e| eprintln!("trust store unavailable, refusing all sessions: {e:#}")).ok();
     let (mut host, q) = Host::new(p, trust, control);
     let cfg = host.cfg.clone();
@@ -1185,6 +1249,12 @@ fn refusal(e: &anyhow::Error) -> Reason {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::mpsc::channel;
+    use std::thread;
+
+    use tungstenite::protocol::frame::{coding::{Data, OpCode}, Frame};
     use crate::platform::{Bytes, Call, Desk, Forward};
     use serde_json::json;
 
@@ -1200,7 +1270,7 @@ mod tests {
     struct Test {
         host: Host,
         q: Queues,
-        control: Sender<Control>,
+        control: Wake<Control>,
         shown: Arc<Mutex<Vec<Status>>>,
         dir: std::path::PathBuf,
         calls: Arc<Calls>,
@@ -1219,7 +1289,7 @@ mod tests {
             let cfg = Config::load_from(&dir).unwrap();
             let calls = Arc::new(Calls::default());
             let platform: Arc<dyn Platform> = calls.clone();
-            let (control, control_rx) = channel();
+            let (control, control_rx) = control_channel();
             let (settings, _) = Settings::start(dir.clone(), &cfg, features.desktop.map(|_| platform.clone()), control.clone());
             let (_events_tx, events) = channel();
             let shown = Arc::new(Mutex::new(Vec::new()));
@@ -1240,6 +1310,25 @@ mod tests {
             }), notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
             Test { host, q, control, shown, dir, calls }
+        }
+
+        /// Start signaling against a plain WebSocket server on loopback.
+        fn serve(mut self) -> (WebSocket<TcpStream>, Wake<Control>, Receiver<Result<()>>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            self.host.cfg.server = format!("http://{}", listener.local_addr().unwrap());
+            let control = self.control.clone();
+            let (done, host) = channel();
+            thread::spawn(move || {
+                let result = connect(&self.host.cfg).and_then(|mut ws| serve(&mut ws, &mut self.host, &self.q));
+                let _ = done.send(result);
+            });
+            let (socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut server = tungstenite::accept(socket).unwrap();
+            for kind in ["hello", "status"] {
+                assert_eq!(read_signal(&mut server)["type"], kind);
+            }
+            (server, control, host)
         }
 
         /// What went to the server since the last call.
@@ -1323,6 +1412,68 @@ mod tests {
             self.host.sessions.of_mut(seat).established(id);
             rx
         }
+    }
+
+    fn read_signal(server: &mut WebSocket<TcpStream>) -> Value {
+        serde_json::from_str(server.read().unwrap().into_text().unwrap().as_str()).unwrap()
+    }
+
+    #[test]
+    fn queued_messages_wake_an_idle_connection_and_are_written_in_full() {
+        for (name, size, max_ms) in [("wake", 32, Some(75)), ("large-write", 200 * 1024, None)] {
+            let test = Test::new(name, true, false);
+            let out = test.host.out_tx.clone();
+            let (mut server, control, host) = test.serve();
+            let text = "x".repeat(size);
+            let queued = text.clone();
+            let sender = thread::spawn(move || {
+                // Let signaling settle into its wait while the server stays silent.
+                thread::sleep(Duration::from_millis(50));
+                let start = Instant::now();
+                out.send(queued).unwrap();
+                start
+            });
+            let received = server.read().unwrap();
+            let finished = Instant::now();
+            assert_eq!(received, WsMessage::text(text));
+            let elapsed = finished.duration_since(sender.join().unwrap());
+            if let Some(ms) = max_ms {
+                assert!(elapsed < Duration::from_millis(ms), "{size} bytes took {elapsed:?}");
+            }
+            control.send(Control::Quit).unwrap();
+            host.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        }
+    }
+
+    #[test]
+    fn all_websocket_frames_in_one_tcp_write_are_handled() {
+        let mut test = Test::new("buffered", true, false);
+        let session = test.holding(PHONE);
+        let updates = test.host.updates_tx.clone();
+        let (mut server, control, host) = test.serve();
+        let mut batch = Vec::new();
+        // Candidates go straight to the session. They cannot wake signaling as a queued reply would.
+        let candidates = ["one", "two", "three", "four"];
+        for candidate in candidates {
+            let text = serde_json::to_vec(&Wire::Candidate {
+                session: "s1".into(),
+                candidate: types::IceCandidate {
+                    candidate: candidate.into(),
+                    sdp_mid: None,
+                    sdp_m_line_index: None,
+                    username_fragment: None,
+                },
+            }).unwrap();
+            Frame::message(text, OpCode::Data(Data::Text), true).format(&mut batch).unwrap();
+        }
+        assert_eq!(server.get_mut().write(&batch).unwrap(), batch.len());
+        for candidate in candidates {
+            let event = session.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(matches!(event, SessionEvent::RemoteCandidate(got) if got == candidate));
+        }
+        control.send(Control::Quit).unwrap();
+        updates.send(SessionUpdate::Ended("s1".into())).unwrap();
+        host.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
     }
 
     const CLAUDE: &str = "Q0xBVURF";
@@ -1637,7 +1788,7 @@ mod tests {
     #[test]
     fn platform_events_go_to_the_session_the_host_or_both() {
         let (events_tx, events) = channel();
-        let (router, host) = Router::spawn(events);
+        let (router, host) = Router::spawn(events, &Waker::default());
         // No session yet: its events are dropped, the host's still arrive.
         events_tx.send(PlatformEvent::Frame(Bytes(vec![1]))).unwrap();
         events_tx.send(PlatformEvent::DisplaysChanged(Vec::new())).unwrap();

@@ -259,6 +259,7 @@ fn error(why: BrowseError) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::session::terminal::registry::Registry;
+    use crate::wake::Waker;
     use std::path::PathBuf;
     use std::sync::{mpsc, Mutex};
 
@@ -287,7 +288,7 @@ mod tests {
             SHELLS.fetch_add(1, Ordering::Relaxed);
             Err(std::io::ErrorKind::Unsupported.into())
         };
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let registry = Registry::new(open, updates);
         let (mut data, replies) = admitted(&registry, "session", listing);
         let files = data.files.as_mut().unwrap();
@@ -303,7 +304,7 @@ mod tests {
     fn a_queued_change_cannot_start_after_the_seat_ends() {
         static WORKERS: AtomicUsize = AtomicUsize::new(0);
         for replaces in [false, true] {
-            let (updates, _) = mpsc::channel();
+            let (updates, _) = Waker::default().channel();
             let registry = Registry::new(|_, _| unreachable!(), updates);
             let (mut data, replies) = admitted(&registry, "old", listing);
             let mut files = data.files.take().unwrap();
@@ -326,7 +327,7 @@ mod tests {
         let block = BLOCK.lock().unwrap();
         let (entered, started) = mpsc::channel();
         *ENTERED.lock().unwrap() = Some(entered);
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let registry = Registry::new(|_, _| unreachable!(), updates);
         let mut running = Vec::new();
         for i in 0..MAX_FILE_WORKERS {

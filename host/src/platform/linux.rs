@@ -5,8 +5,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -16,6 +15,7 @@ use crate::config::{self, Config};
 use crate::i18n::{t, tf};
 use crate::settings::Settings;
 use crate::signal::{self, Control};
+use crate::wake::Wake;
 use crate::workspace::Local;
 
 mod programs;
@@ -85,7 +85,7 @@ fn stop() -> Result<bool> {
 }
 
 pub fn run() -> Result<()> {
-    let (control, requests) = mpsc::channel();
+    let (control, requests) = signal::control_channel();
     // Whoever finds this process through the lock file may signal it at once.
     receive_signals(control.clone())?;
     let mut lock = lock()?;
@@ -120,7 +120,7 @@ fn host_signals() -> libc::sigset_t {
 }
 
 /// Block these signals before starting any host threads, then receive them synchronously.
-fn receive_signals(control: Sender<Control>) -> io::Result<()> {
+fn receive_signals(control: Wake<Control>) -> io::Result<()> {
     let signals = host_signals();
     // Spawned threads inherit this mask. The wait below is the only consumer of these signals.
     let error = unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &signals, std::ptr::null_mut()) };

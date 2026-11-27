@@ -12,6 +12,7 @@ use str0m::channel::{ChannelData, ChannelId};
 use str0m::media::{MediaTime, Mid, Pt};
 use str0m::{Event, Rtc};
 
+use crate::wake::Wake;
 use crate::session::{self, send, send_message, Cx, Role};
 use crate::clipboard::{self, Act, Out};
 use crate::platform::{Bytes, DeskParams as Params, Platform, PlatformEvent};
@@ -62,7 +63,7 @@ impl Drop for Cleanup {
 pub struct Desk {
     id: String,
     offer: String,
-    share: Sender<bool>,
+    share: Wake<bool>,
     platform: Arc<dyn Platform>,
     view_only: bool,
     lossy: Option<ChannelId>,
