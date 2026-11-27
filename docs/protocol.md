@@ -497,8 +497,9 @@ design is described in [architecture.md](architecture.md), "AI control".
   media or with `force` is refused as `forbidden`. A person's session on the desk seat is not
   affected, and an AI session is not given a resume token.
 - **Reasons.** `ai_off` means AI is not allowed on this computer or has been stopped at the
-  computer (`computer_info` and the device list say which). `idle` means there was no
-  `tools/call` for 10 minutes; the proxy connects again on the next call.
+  computer (`computer_info` and the device list say which). `idle` means no tool call was
+  awaiting its reply and no `tools/call`, tool reply or tunnel traffic had passed for
+  10 minutes. The proxy connects again on the next call.
 - **Status.** The host's `status` keeps `holder` for the desk seat and adds `ai` (the AI seat's
   holder) and `ai_state` (`off | on | stopped`). The server ends every session that neither field
   names. The device list keeps `controller` for the desk seat and adds `ai` (`AiView`: the
@@ -508,7 +509,8 @@ design is described in [architecture.md](architecture.md), "AI control".
   `initialize` and the tool list for the MCP client, from `proto/tools.json`. Tool errors carry
   a code the AI client can act on (for example `ai_off`, `busy`, `secure_desktop`,
   `no_user_session`, `view_only`, `invalid_args`, `unsupported`, `too_large`, `elevation_off`),
-  together with what happened and what to do next (`mcp::gate::ToolError`).
+  together with what happened and what to do next (`mcp::gate::ToolError`). When a link
+  ends, the error for a sent, unanswered call says that the call may have taken effect.
 - **Sign-in.** A new client signs in with `POST /api/login/ai {user}`, which works only while the
   account accepts AI sign-ins (`POST /api/ai/window`). An approved client sends `{ts, sig}` over
   `deskway-ai-login-v1` instead. `GET /api/ai/clients` lists the programs the server distributes,

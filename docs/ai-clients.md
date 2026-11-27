@@ -163,10 +163,11 @@ request the unsupported `2025-03-26` revision during initialization. Clients can
 offered revision if they support it. The gateway supports one approved identity per process.
 Use separate `DESKWAY_CLI_HOME` directories and processes for separate identities.
 
-The computer gives up its AI seat after 10 minutes without a tool call, when
-the last client of the shared proxy disconnects, or immediately when you call `release`. The
-gateway offers the same tool annotations as `deskway mcp`. Use stdio for `copy_to`, `copy_from`,
-and `tunnel`, which use paths or ports on the machine running Deskway.
+The computer keeps its AI seat while a tool call is awaiting its reply. It gives up the seat
+after 10 minutes without a tool call, tool reply or tunnel traffic. The shared proxy also
+gives it up when its last client disconnects or when you call `release`. The gateway offers
+the same tool annotations as `deskway mcp`. Use stdio for `copy_to`, `copy_from`, and
+`tunnel`, which use paths or ports on the machine running Deskway.
 
 CLI usage and diagnostics, along with the gateway's JSON-RPC error messages and tool errors,
 are in English.
@@ -234,7 +235,15 @@ and `copy_from` with a Linux host.
 | Accessibility tree | `ui_tree`, `ui_act` |
 | Network | `tunnel` (reach a port on the computer's loopback from the AI's machine) |
 
-A `proc_read` offset past the end of the output returns empty text and the current end offset.
+`proc_list` shows only retained programs started by AI clients. Each record has `started_by`
+(the starter's name) and `mine` (whether you are using the same AI client device that started it).
+Running programs also show `running_for` in seconds. Every AI client can read or stop any of
+these programs.
+
+Programs keep running when the seat is given up. A disconnect before a reply can leave a
+sent call's outcome unknown. After reconnecting, check `proc_list` for programs you started
+before repeating work. Use `proc_read` for output and the exit code. An offset past the end
+returns empty text and the current end offset.
 
 ## Troubleshooting
 

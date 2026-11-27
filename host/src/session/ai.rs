@@ -1,16 +1,18 @@
 //! The AI role: an AI client's deskway command on the AI seat (docs/architecture.md, "AI control"). No
 //! media: a "control" channel (`Control`: hello and end, as on the desk seat's control channel)
 //! and an "ai" channel with the client's MCP requests in frames (`wire::mcp`). The requests are
-//! answered off this thread (`crate::mcp`); this role only carries them, and ends the session
-//! when the client has called nothing for `idle` (`idle`, the one place that decides it). A
+//! answered off this thread (`crate::mcp`); `before_wait` alone decides when the seat is idle:
+//! no tool call is open, and no call, reply or tunnel bytes have passed for `idle`. A
 //! channel named `tunnel:<port>` is a connection to that port of this computer's loopback, for
 //! a port the client's `tunnel` call allowed (`tools::tunnel`); its bytes count as use.
 
+use std::collections::HashSet;
 use std::net::TcpStream;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use str0m::channel::{ChannelData, ChannelId};
 use str0m::Event;
 
@@ -24,9 +26,46 @@ use wire::control::Control;
 use wire::mcp::{frames, Joiner};
 use wire::types::Reason;
 
-/// How long an AI session may go without a tool call before its seat is given up. The client's
-/// deskway connects again on its next call, without asking anyone.
+/// How long an unused AI seat is kept. The client's deskway connects again on its next call.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
+
+struct Use {
+    open: HashSet<Value>,
+    last: Instant,
+}
+
+impl Use {
+    fn new(now: Instant) -> Self {
+        Self { open: HashSet::new(), last: now }
+    }
+
+    fn request(&mut self, text: &str, now: Instant) {
+        #[derive(serde::Deserialize)]
+        struct Request {
+            method: String,
+            id: Value,
+        }
+        let Ok(request) = serde_json::from_str::<Request>(text) else { return };
+        if request.method == "tools/call" {
+            self.open.insert(request.id);
+            self.last = now;
+        }
+    }
+
+    fn reply(&mut self, id: &Value, now: Instant) {
+        if self.open.remove(id) {
+            self.last = now;
+        }
+    }
+
+    fn tunnel(&mut self, now: Instant) {
+        self.last = now;
+    }
+
+    fn due(&self, idle: Duration) -> Option<Instant> {
+        self.open.is_empty().then(|| self.last + idle)
+    }
+}
 
 pub struct Ai {
     id: String,
@@ -35,7 +74,7 @@ pub struct Ai {
     joiner: Joiner,
     /// Where requests go to be answered (`crate::mcp::spawn`).
     requests: Sender<String>,
-    last_call: Instant,
+    usage: Use,
     idle: Duration,
     /// The ports the client may reach, and its connections to them.
     allowed: Allowed,
@@ -48,7 +87,7 @@ pub struct Ai {
 
 impl Ai {
     pub fn new(session: String, platform: Option<Arc<dyn Platform>>, requests: Sender<String>, idle: Duration, allowed: Allowed, own: Sender<SessionEvent>) -> Ai {
-        Ai { id: session, platform, ai: None, joiner: Joiner::default(), requests, last_call: Instant::now(), idle, allowed, pipes: Pipes::default(), own, outbox: Outbox::default() }
+        Ai { id: session, platform, ai: None, joiner: Joiner::default(), requests, usage: Use::new(Instant::now()), idle, allowed, pipes: Pipes::default(), own, outbox: Outbox::default() }
     }
 
     /// A tunnel's channel: joined to a new connection to its port, if the client may reach it.
@@ -106,7 +145,7 @@ impl Role for Ai {
             };
         }
         if self.pipes.from_channel(d.id, &d.data) {
-            self.last_call = Instant::now();
+            self.usage.tunnel(Instant::now());
             return false;
         }
         if self.ai != Some(d.id) || !cx.active() {
@@ -114,9 +153,7 @@ impl Role for Ai {
         }
         match self.joiner.push(&d.data) {
             Ok(Some(text)) => {
-                if text.contains("\"tools/call\"") {
-                    self.last_call = Instant::now();
-                }
+                self.usage.request(&text, Instant::now());
                 let _ = self.requests.send(text);
             }
             Ok(None) => {}
@@ -130,11 +167,18 @@ impl Role for Ai {
         for f in frames(&text) {
             self.outbox.send(cx.rtc, ch, f);
         }
+        #[derive(serde::Deserialize)]
+        struct Reply {
+            id: Value,
+        }
+        if let Ok(reply) = serde_json::from_str::<Reply>(&text) {
+            self.usage.reply(&reply.id, Instant::now());
+        }
     }
 
     fn pipe(&mut self, cx: &mut Cx, e: PipeEvent) {
         if matches!(e, PipeEvent::Data(..)) {
-            self.last_call = Instant::now();
+            self.usage.tunnel(Instant::now());
         }
         self.pipes.to_channel(cx.rtc, e);
     }
@@ -151,9 +195,9 @@ impl Role for Ai {
     }
 
     fn before_wait(&mut self, cx: &mut Cx, _queued: usize) -> Option<Instant> {
-        let due = self.last_call + self.idle;
+        let due = self.usage.due(self.idle)?;
         if cx.active() && Instant::now() >= due {
-            cx.log(format_args!("no tool call for {} s: the AI seat is given up", self.idle.as_secs()));
+            cx.log(format_args!("AI seat unused for {} s: given up", self.idle.as_secs()));
             cx.signal(Signal::LocalEnd(End::plain(Reason::Idle)));
             return None;
         }
@@ -174,6 +218,41 @@ pub fn hello() -> Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_seat_waits_for_all_tool_replies_and_counts_tunnel_bytes() {
+        enum Event {
+            Request(&'static str),
+            Reply(Value),
+            Tunnel,
+        }
+        use Event::*;
+
+        let start = Instant::now();
+        let mut usage = Use::new(start);
+        assert_eq!(usage.due(IDLE), Some(start + IDLE));
+        for (seconds, event, last) in [
+            (1, Request(r#"{"id":0,"method":"ping","params":["tools/call"]}"#), Some(0)),
+            (2, Request(r#"{"method":"tools/call"}"#), Some(0)),
+            (3, Request(r#"{"id":1,"method":"tools/call"}"#), None),
+            (4, Request(r#"{"id":"2","method":"tools/call"}"#), None),
+            (5, Reply(0.into()), None),
+            (605, Reply("2".into()), None),
+            (606, Tunnel, None),
+            (607, Reply(1.into()), Some(607)),
+            (608, Reply(0.into()), Some(607)),
+            (609, Tunnel, Some(609)),
+        ] {
+            let now = start + Duration::from_secs(seconds);
+            match event {
+                Request(text) => usage.request(text, now),
+                Reply(id) => usage.reply(&id, now),
+                Tunnel => usage.tunnel(now),
+            }
+            assert_eq!(usage.due(IDLE), last.map(|s| start + Duration::from_secs(s) + IDLE), "at {seconds} s");
+        }
+    }
+
     /// (E3) An AI client that calls nothing for `idle` gives the seat up, told `idle`; one
     /// within it keeps it.
     #[test]

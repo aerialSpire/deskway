@@ -473,7 +473,8 @@ described in [architecture.md](architecture.md), "AI control".
 - **Programs outlive the AI session.** A program an AI client starts is an ordinary program of the
   workspace user. Ending the session, idling out or pressing Stop leaves these programs
   running. On Windows, programs can leave the service's job (`CREATE_BREAKAWAY_FROM_JOB`),
-  letting them run past a worker restart. Use `proc_kill` to end a running program.
+  letting them run past a worker restart. Any admitted AI client can list retained programs
+  with `proc_list`, read their output with `proc_read`, or end them with `proc_kill`.
 
 The following risks remain and are accepted:
 

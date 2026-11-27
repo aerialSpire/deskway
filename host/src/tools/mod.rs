@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use crate::display::DisplayInfo;
+use crate::auth::ClientIdentity;
 use crate::mcp::gate::{Granted, ToolError};
 use crate::mcp::{Facts, SharedFacts};
 use crate::platform::{Platform, Replies};
@@ -35,6 +36,7 @@ pub struct Shot {
 pub struct Ctx {
     pub facts: SharedFacts,
     pub platform: Option<Arc<dyn Platform>>,
+    pub client: Arc<ClientIdentity>,
     /// The AI session: its input is the AI client's hand (`platform::local`).
     pub session: String,
     /// Answers the platform gives under an id (screenshots).
@@ -99,8 +101,8 @@ pub(crate) const TOOLS: &[(Group, &str, Tool)] = &[
     (Group::Desktop, "key", screen::key),
     #[cfg(desktop_host)]
     (Group::Desktop, "type", screen::type_text),
-    (Group::Work, "run", work::work),
-    (Group::Work, "proc_start", work::work),
+    (Group::Work, "run", work::start),
+    (Group::Work, "proc_start", work::start),
     (Group::Work, "proc_write", work::work),
     (Group::Work, "proc_read", work::work),
     (Group::Work, "proc_kill", work::work),

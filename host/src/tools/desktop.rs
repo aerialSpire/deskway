@@ -8,6 +8,6 @@ use super::{Ctx, Output};
 
 pub fn work(g: &Granted, args: &Value, ctx: &Ctx) -> Result<Output, ToolError> {
     let user = ctx.user_workspace()?;
-    let op: DesktopOp = super::work::request(&g.tool().name, args)?;
+    let op: DesktopOp = super::work::request(&g.tool().name, args.clone())?;
     user.desktop(op).map(Output::Data).map_err(super::work::failed)
 }

@@ -8,6 +8,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::auth::ClientIdentity;
+
 #[cfg(desktop_host)]
 pub mod apps;
 #[cfg(desktop_host)]
@@ -53,6 +55,7 @@ pub enum Op {
     /// Starts `command` through the system's shell and waits for it, at most `wait_ms`.
     Run {
         command: String,
+        starter: ClientIdentity,
         #[serde(default)]
         cwd: Option<String>,
         #[serde(default = "wait_default")]
@@ -63,6 +66,7 @@ pub enum Op {
     },
     /// Starts `command` (a shell, when there is none) in a terminal of its own.
     ProcStart {
+        starter: ClientIdentity,
         #[serde(default)]
         command: Option<String>,
         #[serde(default)]

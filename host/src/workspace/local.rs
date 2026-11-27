@@ -19,8 +19,8 @@ impl Local {
 impl Workspace for Local {
     fn call(&self, op: Op) -> Answer {
         match op {
-            Op::Run { command, cwd, wait_ms, elevated } => self.procs.run(&command, cwd.as_deref(), wait_ms.min(WAIT_MOST), elevated),
-            Op::ProcStart { command, cwd, cols, rows, elevated } => self.procs.start(command.as_deref(), cwd.as_deref(), cols, rows, elevated),
+            Op::Run { command, cwd, wait_ms, elevated, starter } => self.procs.run(&command, cwd.as_deref(), wait_ms.min(WAIT_MOST), elevated, starter),
+            Op::ProcStart { command, cwd, cols, rows, elevated, starter } => self.procs.start(command.as_deref(), cwd.as_deref(), cols, rows, elevated, starter),
             Op::ProcWrite { id, text, keys } => self.procs.write(id, text.as_deref(), &keys),
             Op::ProcRead { id, from, wait_ms } => self.procs.read(id, from, wait_ms),
             Op::ProcKill { id } => self.procs.kill(id),

@@ -22,7 +22,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message as WsMessage, WebSocket};
 
 use crate::audit::Audit;
-use crate::auth::{AiState, Trust};
+use crate::auth::{AiState, ClientIdentity, Trust};
 use crate::config::Config;
 use crate::discovery::{Browse, Change};
 use crate::display::DisplayInfo;
@@ -624,7 +624,8 @@ impl Host {
                 session::spawn(params, |own| session::data::Data::new(lease, browser, page, own))
             }
             None => {
-                let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: name.clone(), device: verified.controller.clone(), session: session.clone() };
+                let client = Arc::new(ClientIdentity { device: verified.controller.clone(), name: name.clone() });
+                let gate = crate::mcp::gate::Gate { audit: self.audit.clone(), client: client.clone(), session: session.clone() };
                 let tunnels = crate::tools::tunnel::Allowed::default();
                 let platform = self.desktop.as_ref().map(|d| d.platform.clone());
                 if let Some(platform) = &platform {
@@ -632,7 +633,7 @@ impl Host {
                     platform.ai_session(Some(session.clone()));
                 }
                 let ctx = crate::tools::Ctx {
-                    facts: self.facts.clone(), session: session.clone(),
+                    facts: self.facts.clone(), client, session: session.clone(),
                     platform: platform.clone(),
                     replies: self.desktop.as_ref().map(|d| d.router.replies.clone()).unwrap_or_default(),
                     shot: Default::default(), workspace: self.workspace.clone(), tunnels: tunnels.clone(),

@@ -112,7 +112,7 @@ session/
   terminal/        registry.rs: the host's one browser PTY, attachment and idle timeout;
                    replay.rs: the bounded recent output and its safe start
   ai.rs            the AI role, an AI client's deskway: control and ai channels (MCP in
-                   frames, wire::mcp), no media; idle for 10 minutes gives the seat up
+                   frames, wire::mcp), no media. Decides when the AI seat is idle
 mcp/               an AI session's MCP requests, answered off the session thread: mod.rs
                    (JSON-RPC, Facts: what the AI side knows of this computer, kept by the
                    host), gate.rs (the one checkpoint: Granted, the rules, the audit records)
@@ -397,9 +397,11 @@ socket before restarting.
 An AI session has no media. The `control` channel carries hello and end, and the `ai` channel
 carries MCP JSON-RPC messages of at most 1 MiB each, sent in 64 KB fragments (`wire::mcp`, queued
 by `peer::outbox`). A `tunnel:<port>` channel carries one TCP connection to a loopback port of
-the computer that this session's `tunnel` call allowed (`peer::pipe`, `tools/tunnel.rs`). The
-host ends the session with `idle` after 10 minutes without a tool call (`session/ai.rs`), and the
-proxy reconnects on the next call.
+the computer that this session's `tunnel` call allowed (`peer::pipe`, `tools/tunnel.rs`).
+`session/ai.rs` keeps the seat while any tool call is awaiting its reply. It ends the session
+with `idle` after 10 minutes without a tool call, tool reply or tunnel traffic. The proxy
+reconnects on the next call. If a link ends before a sent call is answered, its error says the
+call may have taken effect.
 
 ### Two seats side by side
 
@@ -458,9 +460,10 @@ and at the end of each call.
 
 `workspace::Workspace` runs commands and works with files (`Op`). Desktop hosts also implement
 clipboard text, apps, windows and accessibility controls (`DesktopOp`). Both request types
-use tool names as tags. On Windows they cross the user worker's JSON pipe with the same
-request and reply shape. The service starts that worker as the person signed in at the
-console. On macOS and Linux the workspace runs in the host process as its user.
+use tool names as tags. On Windows they cross the workspace worker's JSON pipe, including
+the starter's identity for `run` and `proc_start` and in each `proc_list` record. The service
+starts the user worker as the person signed in at the console. On macOS and Linux the
+workspace runs in the host process as its user.
 
 On Windows, AI programs and the browser terminal use the first `pwsh.exe` on `PATH`, then
 `%ProgramFiles%\PowerShell\7\pwsh.exe`, then Windows PowerShell from the Windows system folder.
@@ -470,11 +473,19 @@ The defaults when `SHELL` is unset are `/bin/zsh` on macOS and `/bin/sh` on Linu
 systems, `proc_kill` ends a piped command's process group or a terminal's session, including
 its job-control groups.
 
-Programs belong to the computer and can outlive the AI session. The computer keeps their
-output in a bounded buffer, read by offset. The host has no shutdown sweep for programs it
-started; on Linux, stopping the systemd service ends them with it, as systemd stops the unit's
-whole control group. On Windows programs can leave the service's job, and a terminal program loses its
+Programs belong to the computer and can outlive the AI session. The computer keeps the last
+1 MiB of output per program, read by offset. Once a table exceeds 64 records, adding a program
+evicts the oldest ended records first. Restarting Deskway on the computer clears the records
+and buffered output. The host has no shutdown sweep for programs it started. On Linux,
+stopping the systemd service ends them with it because systemd stops the unit's whole control
+group. On Windows programs can leave the service's job, and a terminal program loses its
 console if the user worker restarts.
+
+`proc_list` shows the retained programs started by AI clients. The tool merges the user and
+admin lists on Windows. It reports the starter's name as `started_by` and compares the starter's
+device with the caller's device to set `mine`. The tool keeps device IDs private. A running
+program also shows its elapsed seconds in `running_for`. All admitted AI clients share access
+to these programs.
 
 ### Audit
 

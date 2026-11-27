@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::Facts;
 use crate::audit::{short, Audit, Record};
+use crate::auth::ClientIdentity;
 use crate::platform::Desk;
 use wire::tools::{Screen, Tool, ToolSpec};
 
@@ -48,8 +49,7 @@ impl Granted {
 /// One AI session's gate: who it is, for the audit log.
 pub struct Gate {
     pub audit: Arc<Audit>,
-    pub client: String,
-    pub device: String,
+    pub client: Arc<ClientIdentity>,
     pub session: String,
 }
 
@@ -86,7 +86,7 @@ impl Gate {
     }
 
     fn record(&self, tool: &str, what: &str, detail: String, ms: Option<u64>) {
-        self.audit.write(&Record { at: crate::auth::unix_now(), client: &self.client, device: &self.device, session: &self.session, tool, what, detail, ms });
+        self.audit.write(&Record { at: crate::auth::unix_now(), client: &self.client.name, device: &self.client.device, session: &self.session, tool, what, detail, ms });
     }
 }
 
@@ -197,7 +197,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("deskway-gate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let gate = Gate { audit: Arc::new(Audit::new(Some(dir.clone()))), client: "Claude".into(), device: "c1".into(), session: "s1".into() };
+        let client = Arc::new(ClientIdentity { device: "c1".into(), name: "Claude".into() });
+        let gate = Gate { audit: Arc::new(Audit::new(Some(dir.clone()))), client, session: "s1".into() };
         let facts = |user: bool, desk: Option<Desk>| Facts { user_session: user, desk, admin: Some(false), ..Facts::default() };
         let all = |_: &str| true;
         let none = |_: &str| false;
