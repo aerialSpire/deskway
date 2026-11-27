@@ -125,6 +125,7 @@ power.rs           keep-awake policy
 signal.rs          server connection, host status, the two seats (signal/seats.rs: the desk
                    seat for a person, the AI seat for an AI client, side by side; each a
                    signal/registry.rs)
+vitals.rs          startup hardware and a short-lived worker for requested CPU, RAM and disk samples
 wake.rs            channel senders that wake the receiving thread's poller
 service/           Windows services, agent, IPC; the machine-wide folder; worker.rs, the user
                    and admin workers (their keys, their pipes, reconnecting)
@@ -671,7 +672,7 @@ The source of truth is the viewer's constraints.
   | `release.go` | release stamp, checksum parsing and verified downloads shared by AI client distribution and server upgrades |
   | `selfupgrade.go` | atomic replacement of the server executable from a verified release archive |
   | `computers.go` | enroll, leave, rename, remove, the device list and who holds each computer as each browser sees it; at most `maxComputersPerUser` per account |
-  | `previews.go` | previews |
+  | `previews.go` | preview refresh requests, cached previews and live vitals |
   | `signaling.go` | the sockets, routed through `sessions.go` |
   | `turn.go` | the relay and the ICE servers, whose TURN credentials name the account |
   | `relays.go` | relay enrollment, admin routes, signed reports, and selection of online nodes |
@@ -712,7 +713,12 @@ The source of truth is the viewer's constraints.
 - The host's signaling thread waits for socket readability, a notification from its local
   queues, or the next ping, silence or browser-transfer deadline. It drains buffered WebSocket
   and TLS data before waiting. It sends a ping every 15 seconds and reconnects after 45 seconds
-  without a server frame.
+  without a server frame. The matching pong measures host-to-server latency on that socket.
+- The signaling process reads the machine's hardware once at startup. It measures load on a
+  short-lived worker when the server's preview request includes vitals. The worker takes two
+  CPU samples about 250 ms apart and wakes the requesting connection with the result. The
+  server owns the 30-second limit on requests per computer, keeps load and latency on the
+  live connection, and saves the last host program version with the computer's record.
 - Connect signatures use a nonce issued by the host, not the clock.
 - Connecting waits only for what it must. The server sends browsers and AI clients the main
   server's ICE entries on every socket and renews them before the TURN credentials expire.
@@ -821,7 +827,7 @@ js/windows.js        each computer in a window of its own, when the device chose
                      <id>; the windows find each other over a BroadcastChannel)
 js/views/            login, setup (one-time account links), list, detail,
                      devices, menu, account (with installing), members (**Members**), relays
-                     (**Relays**), computer, approvals, pairing, takeover (opening a browser
+                     (**Relays**), computer, vitals (gauges and latency), approvals, pairing, takeover (opening a browser
                      session and mapping end reasons to messages); common.js holds shared pieces
 js/session/          connection.js (the session's lifecycle: peer connection, negotiation,
                      state, deadlines, attaching again, the end), session.js (the session's

@@ -7,6 +7,7 @@ import { gotIt, scanOpenDialog } from '../dialogs.js';
 import { LANGS, currentLang, setLanguage, t, agoText } from '../i18n.js';
 import { CAPS, MIN_VERSION, PROTOCOL_VERSION } from '../proto.js';
 import { state, setView } from '../state.js';
+import { latency } from './vitals.js';
 
 const computerUpdate = (d) => d.version && d.version < PROTOCOL_VERSION
   ? t(d.version < MIN_VERSION ? 'update.computerTitle' : 'update.available') : '';
@@ -47,8 +48,13 @@ const holderText = (c) => t(c.connecting ? 'status.connecting' : 'status.control
 export const statusLine = (d) => {
   const { text, dot } = presenceOf(d);
   const update = computerUpdate(d);
+  const roundTrip = latency(d);
   return h('div', { class: 'computer-status' },
-    h('div', { class: 'status' }, h('span', { class: `dot ${dot}`, 'aria-hidden': 'true' }), h('span', {}, text)),
+    h('div', { class: 'status' },
+      h('span', { class: `dot ${dot}`, 'aria-hidden': 'true' }),
+      h('span', { class: 'presence' }, roundTrip ? `${text} ·` : text),
+      roundTrip,
+      d.app ? h('span', { class: 'ver' }, `v${d.app}`) : null),
     update ? h('div', { class: 'computer-update' }, update) : null);
 };
 

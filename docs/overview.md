@@ -29,6 +29,8 @@ being verified, so it can try them as soon as that answer is applied.
 - Select **Direct** or **Relay** in the session toolbar to open **Connection details**. The
   **Path** row shows whether the session is direct on the same network, direct over the internet,
   or relayed. Separate rows show available relay addresses and the browser's relay protocol.
+- My computers shows the installed host version, CPU, memory, system disk usage and latency to
+  the server. Open a computer to see its CPU model and the capacity of each disk.
 - With several displays, the browser shows a preview of each and lets you switch between them.
 - There are two picture settings. **Sharper** keeps text crisp, and **Smoother** runs at up to
   24 fps.

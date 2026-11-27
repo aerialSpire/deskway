@@ -4,6 +4,8 @@
 // the page being drawn again under it (the server telling of a change) does not.
 import { h, svg, ICONS } from '../dom.js';
 
+export const moreButton = (label) => h('button', { class: 'btn more', type: 'button', 'aria-label': label }, svg(ICONS.more));
+
 // The open menu: its key, its element, and how to close it.
 let current = null;
 

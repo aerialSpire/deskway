@@ -70,6 +70,17 @@ test('channels, messages, directions and fields', () => {
   }
 });
 
+test('device lists accept vitals and hosts without them', () => {
+  const check = (device) => proto.validate('signaling.browser', { type: 'devices', devices: [device] }, { strict: true });
+  const device = { ...object(def.types.Device.fields, false), version: proto.MIN_VERSION };
+  assert.equal(check(device), null);
+  const stats = object(def.types.Vitals.fields, false);
+  const current = { ...device, version: proto.PROTOCOL_VERSION, app: '0.1.3', machine: object(def.types.Machine.fields, true) };
+  assert.equal(check({ ...current, vitals: stats }), null);
+  assert.equal(check({ ...current, vitals: { ...stats, rtt: 0 } }), null);
+  assert.notEqual(check({ ...current, vitals: { ...stats, rtt: '12' } }), null);
+});
+
 test('type constants', () => {
   const constants = { 'signaling.browser': proto.Signal, control: proto.Control, move: proto.Move, file: proto.FileMsg, terminal: proto.TerminalMsg, browse: proto.BrowseMsg, 'file-transfer': proto.FileTransferMsg };
   for (const [name, c] of Object.entries(constants)) {

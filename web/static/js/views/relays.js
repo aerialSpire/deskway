@@ -5,7 +5,7 @@ import { probeRelay } from '../relay-check.js';
 import { state, setView } from '../state.js';
 import { dialog, gotIt, nameDialog } from '../dialogs.js';
 import { topbar, heading, updateNote, statusOf } from './common.js';
-import { dropdown, menuSeparator } from './menu.js';
+import { dropdown, menuSeparator, moreButton } from './menu.js';
 import { accountMenu } from './account.js';
 
 let seq = 0;
@@ -94,8 +94,7 @@ async function checkRelays(section, results, current) {
 }
 
 function row(relay) {
-  const more = h('button', { class: 'btn icon more', 'aria-label': t('relays.manage', { name: relay.name }) }, svg(ICONS.more));
-  const menu = dropdown(`relay:${relay.id}`, more, (item) => [
+  const menu = dropdown(`relay:${relay.id}`, moreButton(t('relays.manage', { name: relay.name })), (item) => [
     item(t('common.rename'), () => rename(relay)),
     menuSeparator(),
     item(t('common.remove'), () => remove(relay), { danger: true }),

@@ -1,5 +1,5 @@
 // A computer's page: its name with the way back and its ⋯, its status, and its picture (or its
-// displays, where they sit), followed by the available actions and AI activity.
+// displays, where they sit), followed by the available actions, vitals and AI activity.
 import { $app, h, loading } from '../dom.js';
 import { agoText, t } from '../i18n.js';
 import { state, device, setView } from '../state.js';
@@ -12,6 +12,7 @@ import { auditSection } from './audit.js';
 import { chosenDisplay, rememberDisplay, orderedDisplays } from '../session/displays.js';
 import { CAPS } from '../proto.js';
 import { keptTerminalNotice } from '../terminal-ui.js';
+import { vitalsBars } from './vitals.js';
 
 let keptAge;
 const terminalAge = (since) => agoText(since, { seen: false });
@@ -54,6 +55,7 @@ export function renderDetail() {
           ? h('button', { class: 'btn', type: 'button', disabled, onclick: open('files') }, t('files.label'))
           : null)
       : null,
+    vitalsBars(d, { detail: true }),
     auditSection(d)));
   if (keptText) {
     function updateAge() {

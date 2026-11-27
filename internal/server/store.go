@@ -51,6 +51,8 @@ type DeviceRecord struct {
 	Tools []string `json:"tools,omitempty"`
 	// Version is the last protocol version the computer reported; 0 means unknown.
 	Version int `json:"version,omitempty"`
+	// App is the last reported version of the host program.
+	App string `json:"app,omitempty"`
 }
 
 // BrowserRecord is one browser an account signs in from. Its key is the hash of the

@@ -30,7 +30,7 @@ img, svg { -webkit-user-drag: none; }
 /* One line (docs/design.md, Words): a name too long ends in …; the way back before it stays whole. */
 .heading .title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .heading .count { flex: none; color: var(--quiet); white-space: nowrap; }
-.heading-end { flex: none; margin-left: auto; margin-right: calc(-1 * var(--s3)); align-self: center; }
+.heading-end { flex: none; margin-left: auto; align-self: center; }
 .heading > .computer-status { margin-top: var(--s1); }
 /* The way back sits on the title's baseline. Its hit area extends into the left gutter. */
 .title-back { position: relative; display: inline-block; margin-right: var(--s2); padding: 0; border: 0; background: transparent; color: inherit; vertical-align: baseline; }
@@ -84,11 +84,19 @@ img, svg { -webkit-user-drag: none; }
 }
 .thumb.offline .thumb-inner { background: transparent; color: var(--quiet); }
 .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.card-body { display: flex; align-items: center; gap: var(--s1); padding: var(--s3) var(--s4) var(--s4); }
-.card-text { flex: 1; min-width: 0; }
+.card-body { padding: var(--s3) var(--s4) var(--s4); }
+.card-head { display: flex; align-items: center; gap: var(--s1); }
+.card-head > .card-name { flex: 1; }
+.vitals { margin-top: var(--s3); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s4); }
+.audit, .vitals-card { margin-top: var(--s5); padding: var(--s4) var(--s5); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-box); }
+.vitals.large { margin: 0; grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); gap: var(--s4) var(--s6); }
+.vitals.large .gauge { grid-template-areas: "label value" "track track" "sub sub"; align-content: start; row-gap: var(--s2); font-size: var(--fs-small); }
+.vitals.large .g-value { font-size: var(--fs-subtitle); }
+.vitals.large .g-track { height: 6px; }
+.g-sub { grid-area: sub; font-size: var(--fs-caption); overflow-wrap: anywhere; }
 /* AI activity, below a computer's screens (views/audit.js). The page's own scroll only: a call
    is one line on a wide screen and a card on a narrow one, and opens in place to its details. */
-.audit { margin-top: var(--s5); padding: var(--s4) var(--s5); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-box); display: flex; flex-direction: column; gap: var(--s3); scroll-margin-top: var(--s4); }
+.audit { display: flex; flex-direction: column; gap: var(--s3); scroll-margin-top: var(--s4); }
 .audit h2 { margin: 0; font-size: var(--fs-subtitle); font-weight: 600; }
 .audit-mark { height: 0; margin-bottom: calc(-1 * var(--s3)); }
 .audit-head { display: flex; flex-direction: column; gap: var(--s3); background: var(--surface); }
@@ -154,9 +162,10 @@ img, svg { -webkit-user-drag: none; }
 .card-open::after { content: ""; position: absolute; inset: 0; border-radius: var(--r-box); }
 .card-open:focus-visible { outline: none; }
 .card-open:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
-.card-body .dropdown { z-index: 1; margin: calc(-1 * var(--s2)) calc(-1 * var(--s3)) calc(-1 * var(--s2)) 0; }
+.card-body .dropdown { z-index: 1; margin: calc(-1 * var(--s2)) 0; }
 .card-body .computer-status { font-size: var(--fs-small); }
-.card-body .status { white-space: nowrap; overflow: hidden; }
+.computer-status .presence { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.computer-status .ver { margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
 .computer-update { color: var(--quiet); overflow-wrap: anywhere; }
 
 /* Loading (design.css .loading): shown until the first real answer, so nothing claims "none"
@@ -603,6 +612,8 @@ img, svg { -webkit-user-drag: none; }
   .card-body { padding: var(--s2) var(--s3) var(--s3); }
   .card-open { font-size: var(--fs-small); }
   .card-body .computer-status { font-size: var(--fs-caption); }
+  .card-body .status, .card-body .vitals { gap: var(--s1); }
+  .card-body .gauge { font-size: var(--fs-mini); }
   .preview { margin-top: var(--s5); padding: var(--s2); }
 }
 @media (orientation: landscape) and (max-height: 500px) {

@@ -1,17 +1,15 @@
 // A computer's own menu under its ⋯ (on its card in the list, beside its name on its page):
 // rename it, or take it off the account (also when it is offline for good). Holding its card
 // opens the same menu. My devices renames and removes with the same two actions.
-import { h, svg, ICONS } from '../dom.js';
 import { t } from '../i18n.js';
 import { api, signedOut } from '../net.js';
 import { state, setView, render } from '../state.js';
 import { dialog, gotIt, nameDialog } from '../dialogs.js';
-import { dropdown, menuSeparator } from './menu.js';
+import { dropdown, menuSeparator, moreButton } from './menu.js';
 
 // Returns the ⋯ to place and `open`.
 export function computerMenu(d) {
-  const button = h('button', { class: 'btn icon more', 'aria-label': t('computer.menu', { name: d.name }) }, svg(ICONS.more));
-  return dropdown(`computer:${d.id}`, button, (item) => [
+  return dropdown(`computer:${d.id}`, moreButton(t('computer.menu', { name: d.name })), (item) => [
     item(t('common.rename'), () => renameComputer(d)),
     menuSeparator(),
     item(t('computer.removeFromAccount'), () => confirmRemoveComputer(d), { danger: true }),

@@ -36,7 +36,7 @@ export const device = () => state.devices.find((d) => d.id === state.deviceId);
 // The list and a computer's page show computers and thumbnails as the server sends them.
 export const followsServer = () => state.view === 'list' || state.view === 'detail';
 
-// The server sends computers and thumbnails only while a page that shows them is open.
+// Ask for previews and vitals when a page that shows computers opens.
 export function updateWatch() {
   socket.sendNow({ type: Signal.WATCH, on: followsServer() });
 }
