@@ -393,8 +393,8 @@ impl Resource {
 mod tests {
     use super::*;
     use crate::service::ipc::{self, Pipe};
+    use crate::wake::Waker;
     use std::fs;
-    use std::sync::mpsc::channel;
 
     #[test]
     fn browser_requests_keep_resources_on_the_worker_and_enforce_its_lock() {
@@ -418,7 +418,7 @@ mod tests {
                 pipe, Arc::new(crate::workspace::Local::default()), Some(Arc::new(Worker::new(browser))),
             ))
         };
-        let (updates, notices) = channel();
+        let (updates, notices) = Waker::default().channel();
         let remote = Arc::new(Remote::user(updates));
         let attached = {
             let remote = remote.clone();

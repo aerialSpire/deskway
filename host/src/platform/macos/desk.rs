@@ -14,6 +14,7 @@ use objc2_core_graphics::CGSessionCopyCurrentDictionary;
 
 use crate::platform::{unix::programs, Desk, WorkspaceState};
 use crate::signal::Control;
+use crate::wake::Wake;
 use crate::workspace::{self, Browser};
 
 /// This session's desktop: `Default` when it is on the console and unlocked; `Winlogon` when
@@ -49,7 +50,7 @@ fn browser_state(desk: Desk) -> WorkspaceState {
     WorkspaceState { locked: desk != Desk::Default, ..WorkspaceState::READY }
 }
 
-pub(crate) fn workspace_browser(control: Sender<Control>) -> io::Result<(Browser, WorkspaceWatch)> {
+pub(crate) fn workspace_browser(control: Wake<Control>) -> io::Result<(Browser, WorkspaceWatch)> {
     let browser = workspace::local_browser(
         Arc::new(|rows, cols| programs::browser_pty(programs::shell("/bin/zsh", None, None), rows, cols, || !workspace_state().locked)),
         Arc::new(workspace_state),

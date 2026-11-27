@@ -1,9 +1,11 @@
 //! Owns the computer's one PTY. Only the desk seat's current session can attach to it.
 
 use std::io;
-use std::sync::{Arc, Condvar, Mutex, mpsc::Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::wake::Wake;
 
 use wire::terminal::FRAME;
 use wire::types::KeptTerminal;
@@ -25,11 +27,11 @@ pub struct Registry {
 
 impl Registry {
     #[cfg(test)]
-    pub fn new(open: impl Fn(u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync + 'static, updates: Sender<SessionUpdate>) -> Self {
+    pub fn new(open: impl Fn(u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync + 'static, updates: Wake<SessionUpdate>) -> Self {
         Self::guarded(Arc::new(move |_, rows, cols| open(rows, cols)), Arc::new(|| WorkspaceState::READY), updates)
     }
 
-    pub fn guarded(open: Arc<Open>, access: Arc<BrowserState>, updates: Sender<SessionUpdate>) -> Self {
+    pub fn guarded(open: Arc<Open>, access: Arc<BrowserState>, updates: Wake<SessionUpdate>) -> Self {
         let shared = Arc::new(Shared { open, access, updates, state: Mutex::default(), wake: Condvar::new() });
         let runner = shared.clone();
         let worker = thread::Builder::new().name("terminal".into()).spawn(move || runner.drain())
@@ -86,7 +88,7 @@ type Open = dyn Fn(u64, u16, u16) -> io::Result<Box<dyn Pty>> + Send + Sync;
 struct Shared {
     open: Arc<Open>,
     access: Arc<BrowserState>,
-    updates: Sender<SessionUpdate>,
+    updates: Wake<SessionUpdate>,
     state: Mutex<State>,
     wake: Condvar,
 }
@@ -375,6 +377,7 @@ impl Shell {
 mod tests {
     use super::*;
     use super::super::{Stream, Terminal};
+    use crate::wake::Waker;
     use std::collections::VecDeque;
     use std::io::{Read, Write};
     use wire::terminal::OUTPUT_WINDOW;
@@ -449,7 +452,7 @@ mod tests {
 
     #[test]
     fn publishing_holds_the_same_guard_as_revocation() {
-        let (updates, _) = std::sync::mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let registry = Registry::new(|_, _| unreachable!(), updates);
         let lease = registry.admit("first".into(), "browser".into(), "device".into());
         assert_eq!(lease.while_seated(|| registry.shared.state.try_lock().is_err()), Some(true));
@@ -460,7 +463,7 @@ mod tests {
 
     #[test]
     fn locking_revokes_the_attachment_and_user_change_closes_the_kept_shell() {
-        let (updates, _) = std::sync::mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         for next in [WorkspaceState::NO_USER, WorkspaceState { user: Some(2), locked: false }] {
             let state = Arc::new(Mutex::new(WorkspaceState::READY));
             let process = Arc::new(Mutex::new(Process::default()));
@@ -488,7 +491,7 @@ mod tests {
     fn revocation_before_queueing_live_output_or_replay_keeps_the_bytes() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
-        let (updates, _) = std::sync::mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let process = Arc::new(Mutex::new(Process { output: b"kept output".iter().copied().collect(), ..Process::default() }));
         let revoke = Arc::new(AtomicBool::new(false));
         let locked = Arc::new(AtomicBool::new(false));

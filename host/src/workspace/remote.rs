@@ -15,6 +15,7 @@ use crate::workspace::{Answer, Code, DesktopOp, Op, WorkError, Workspace};
 use crate::service::ipc::Pipe;
 use crate::platform::WorkspaceState;
 use crate::signal::Control;
+use crate::wake::Wake;
 
 mod browser;
 
@@ -93,7 +94,7 @@ impl Link {
 #[derive(Default)]
 pub struct Remote {
     worker: Mutex<Option<Arc<Link>>>,
-    workspace_updates: Option<Sender<Control>>,
+    workspace_updates: Option<Wake<Control>>,
     /// The administrator's worker: absent, it is no administrator, not nobody signed in.
     admin: bool,
 }
@@ -103,7 +104,7 @@ impl Remote {
         Remote { admin, ..Default::default() }
     }
 
-    pub fn user(updates: Sender<Control>) -> Remote {
+    pub fn user(updates: Wake<Control>) -> Remote {
         Remote { workspace_updates: Some(updates), ..Default::default() }
     }
 

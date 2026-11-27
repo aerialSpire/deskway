@@ -59,10 +59,14 @@ impl Registry {
         page
     }
 
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.0.as_ref()?.lock().unwrap().deadline()
+    }
+
     pub(crate) fn expire(&mut self, now: Instant) {
         if let Some(page) = &self.0 {
             let mut page = page.lock().unwrap();
-            if !page.attached && now >= page.expires {
+            if page.deadline().is_some_and(|deadline| now >= deadline) {
                 page.record = None;
             }
         }
@@ -91,6 +95,10 @@ impl Drop for Registry {
 }
 
 impl Page {
+    fn deadline(&self) -> Option<Instant> {
+        (!self.attached && self.record.is_some()).then_some(self.expires)
+    }
+
     fn owns(&self, device: &str, owner: &str) -> bool {
         self.device == device && self.owner == owner
     }
@@ -679,6 +687,7 @@ impl Pipe {
 mod tests {
     use super::*;
     use crate::session::terminal::registry::Registry as Terminals;
+    use crate::wake::Waker;
     use crate::workspace::Download;
 
     struct Source(u64, bool);
@@ -747,7 +756,7 @@ mod tests {
             let browser = crate::workspace::local_browser(Arc::new(|_, _| unreachable!()), access.clone());
             let files = (browser.bind)(0).unwrap().transfers;
             let mut file = (files.upload)(&dest, 0, &|| true).unwrap();
-            let (updates, _) = mpsc::channel();
+            let (updates, _) = Waker::default().channel();
             let registry = Terminals::guarded(Arc::new(|_, _, _| unreachable!()), access, updates);
             let mut replace = false;
             let mut staged = false;
@@ -798,7 +807,7 @@ mod tests {
 
     #[test]
     fn download_waits_for_credit_and_can_be_ended_while_waiting() {
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let registry = Terminals::new(|_, _| unreachable!(), updates);
         let lease = registry.admit("desk".into(), "browser".into(), "device".into());
         for (cancel, offset) in [(false, 0), (true, 0), (false, CHUNK as u64), (false, 3 * CHUNK as u64)] {
@@ -846,7 +855,7 @@ mod tests {
 
     #[test]
     fn a_download_waiting_for_credit_interrupts_at_the_wait_limit() {
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let registry = Terminals::new(|_, _| unreachable!(), updates);
         let lease = registry.admit("desk".into(), "browser".into(), "device".into());
         let (pipe, input, output) = pipe(lease, Duration::ZERO);
@@ -860,7 +869,7 @@ mod tests {
 
     #[test]
     fn an_unconfirmed_publish_repeats_its_failure_on_resume() {
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let terminals = Terminals::new(|_, _| unreachable!(), updates);
         let lease = terminals.admit("desk".into(), "browser".into(), "device".into());
         let (wake, _) = mpsc::channel();
@@ -888,7 +897,7 @@ mod tests {
 
     #[test]
     fn closing_the_channel_interrupts_the_worker_even_with_pending_input() {
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let registry = Terminals::new(|_, _| unreachable!(), updates);
         let lease = registry.admit("desk".into(), "browser".into(), "device".into());
         let (pipe, input, output) = pipe(lease.clone(), Duration::ZERO);
@@ -904,7 +913,7 @@ mod tests {
 
     #[test]
     fn a_download_resumed_at_the_end_uses_its_cached_finish() {
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let registry = Terminals::new(|_, _| unreachable!(), updates);
         let lease = registry.admit("desk".into(), "browser".into(), "device".into());
         let size = 1;
@@ -927,7 +936,7 @@ mod tests {
 
     #[test]
     fn a_record_belongs_to_the_admitted_device_and_page_until_expiry() {
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let terminals = Terminals::new(|_, _| unreachable!(), updates);
         let (wake, _) = mpsc::channel();
         let files = FileTransfers {
@@ -947,9 +956,11 @@ mod tests {
             let lease = terminals.admit("first".into(), "browser".into(), "one".into());
             let mut transfer = Transfers::new(files.clone(), page.clone(), lease, wake.clone());
             assert!(transfer.offer(1, vec![], "file".into(), Direction::Upload(2)));
+            assert_eq!(registry.next_deadline(), None);
             registry.expire(until);
             assert!(page.lock().unwrap().record.is_some(), "an attached owner may still return");
             transfer.ended(Reason::Failed);
+            assert_eq!(registry.next_deadline(), Some(until));
             registry.expire(until - Duration::from_secs(1));
             assert!(page.lock().unwrap().record.is_some());
             let next = if restart {
@@ -962,13 +973,14 @@ mod tests {
                 next.lock().unwrap().attached = false;
                 registry.expire(until);
                 assert!(next.lock().unwrap().record.is_none());
+                assert_eq!(registry.next_deadline(), None);
             }
         }
     }
 
     #[test]
     fn leaving_or_expiring_drops_the_record_and_cancel_completes_it() {
-        let (updates, _) = mpsc::channel();
+        let (updates, _) = Waker::default().channel();
         let terminals = Terminals::new(|_, _| unreachable!(), updates);
         let (wake, _) = mpsc::channel();
         let files = FileTransfers {

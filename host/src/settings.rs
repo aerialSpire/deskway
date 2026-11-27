@@ -8,7 +8,6 @@
 //! config file arrive here too.
 
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -18,6 +17,7 @@ use crate::config::Config;
 use crate::i18n::{self, t};
 use crate::platform::Platform;
 use crate::signal::Control;
+use crate::wake::Wake;
 
 /// A request from the panel.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -65,14 +65,14 @@ pub struct Settings {
     dir: PathBuf,
     applied: Mutex<Applied>,
     platform: Option<Arc<dyn Platform>>,
-    control: Sender<Control>,
+    control: Wake<Control>,
 }
 
 impl Settings {
     /// Starts from the saved settings and applies what `signal::run` does not start from
     /// itself: the platform's language (replayed to every Windows agent that connects later)
     /// and keep-awake. The error, if any, is keep-awake's: the settings are in place anyway.
-    pub fn start(dir: PathBuf, cfg: &Config, platform: Option<Arc<dyn Platform>>, control: Sender<Control>) -> (Settings, Result<()>) {
+    pub fn start(dir: PathBuf, cfg: &Config, platform: Option<Arc<dyn Platform>>, control: Wake<Control>) -> (Settings, Result<()>) {
         let applied = Applied::of(cfg);
         let awake = platform.as_ref().map_or(Ok(()), |p| {
             p.language(applied.lang.clone());
@@ -165,7 +165,8 @@ fn keep_awake(on: bool) -> Result<()> {
 mod tests {
     use super::*;
     use crate::platform::{Call, Forward};
-    use std::sync::mpsc::{channel, Receiver};
+    use crate::wake::Waker;
+    use std::sync::mpsc::Receiver;
 
     #[derive(Default)]
     struct Calls(Mutex<Vec<Call>>);
@@ -181,7 +182,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("host.json"), r#"{"server":"https://s.example","id":"H1","token":"t","name":""}"#).unwrap();
         let calls = Arc::new(Calls::default());
-        let (tx, rx) = channel();
+        let (tx, rx) = Waker::default().channel();
         let (s, awake) = Settings::start(dir.clone(), &Config::load_from(&dir).unwrap(), Some(calls.clone()), tx);
         awake.unwrap();
         (s, calls, rx, dir)

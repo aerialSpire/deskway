@@ -12,6 +12,8 @@ use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::wake::Wake;
+
 use anyhow::{Context, Result};
 use peer::net::Net;
 use peer::state::{ice_signal, Action, End, Machine, Signal};
@@ -95,9 +97,9 @@ pub struct Params {
     pub sdp: String,
     pub stun: Vec<String>,
     pub turn: Vec<TurnServer>,
-    pub out: Sender<String>,
+    pub out: Wake<String>,
     /// Told when the session is established and when it is over.
-    pub updates: Sender<SessionUpdate>,
+    pub updates: Wake<SessionUpdate>,
     pub sign: AnswerSigner,
     /// Sent once the control channel opens, in order: hello, then the resume token.
     pub greeting: Vec<Control>,
@@ -235,8 +237,8 @@ fn same_connection(original: &str, restart: &str) -> bool {
 /// What the loop keeps about the peer connection besides str0m itself.
 struct Peer {
     session: String,
-    out: Sender<String>,
-    updates: Sender<SessionUpdate>,
+    out: Wake<String>,
+    updates: Wake<SessionUpdate>,
     /// Established was reported (once, on the first Active).
     established: bool,
     machine: Machine,
@@ -311,7 +313,7 @@ struct Session<R> {
     /// The offer this session was started from; restarts must belong to it.
     offer: String,
     answered: Answered,
-    out: Sender<String>,
+    out: Wake<String>,
     sign: AnswerSigner,
     greeting: Vec<Control>,
     peer: Peer,
@@ -542,6 +544,7 @@ fn serve<R: Role>(s: &mut Session<R>, rtc: &mut Rtc, net: &mut Net<SessionEvent>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wake::Waker;
 
     /// A role that does nothing: what the driver does on its own.
     struct Nothing;
@@ -584,8 +587,8 @@ mod tests {
 
     #[test]
     fn a_session_that_cannot_start_says_failed_through_the_server() {
-        let (out, sent) = channel();
-        let (updates, heard) = channel();
+        let (out, sent) = Waker::default().channel();
+        let (updates, heard) = Waker::default().channel();
         let p = Params {
             session: "s1".into(),
             sdp: "not an offer".into(),
@@ -608,8 +611,8 @@ mod tests {
     /// did not.
     pub(super) fn ended_by<R: Role>(role: R, labels: &[&str], within: Duration) -> Option<String> {
         use str0m::change::SdpAnswer;
-        let (out, sent) = channel();
-        let (updates, _heard) = channel();
+        let (out, sent) = Waker::default().channel();
+        let (updates, _heard) = Waker::default().channel();
         let (net_tx, net_rx) = channel::<NetEvent>();
         let mut rtc = Rtc::builder().build(Instant::now());
         let mut net = Net::start(&mut rtc, Vec::new(), Vec::new(), net_tx).unwrap();

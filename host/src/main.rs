@@ -33,6 +33,7 @@ mod transfer;
 mod ui;
 #[cfg(desktop_host)]
 mod video;
+mod wake;
 mod workspace;
 
 use anyhow::{anyhow, bail, Context, Result};
