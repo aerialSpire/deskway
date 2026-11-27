@@ -34,6 +34,7 @@ pub struct InProcess {
     /// The running host's queue and settings.
     control: Option<Wake<Control>>,
     settings: Option<Arc<Settings>>,
+    workspace_watch: Option<platform::WorkspaceWatch>,
     /// Signing in.
     busy: bool,
     /// Why signing in failed.
@@ -45,7 +46,7 @@ pub struct InProcess {
 
 impl InProcess {
     pub fn new(proxy: EventLoopProxy<UiEvent>, _at_login: bool) -> InProcess {
-        InProcess { proxy, cfg: Config::load().ok(), control: None, settings: None, busy: false, error: String::new(), settings_error: String::new(), permission_request: None }
+        InProcess { proxy, cfg: Config::load().ok(), control: None, settings: None, workspace_watch: None, busy: false, error: String::new(), settings_error: String::new(), permission_request: None }
     }
 
     fn set_login_item(&mut self, on: bool) -> Result<()> {
@@ -70,13 +71,8 @@ impl InProcess {
                 return;
             }
         };
-        let (browser, watch) = match platform::workspace_browser(control.clone()) {
-            Ok(workspace) => workspace,
-            Err(e) => {
-                self.settings_error = e.to_string();
-                return;
-            }
-        };
+        let (browser, watch) = platform::workspace_browser(control.clone());
+        self.workspace_watch = Some(watch);
         let (settings, awake) = Settings::start(dir, &cfg, Some(local.clone()), control.clone());
         let settings = Arc::new(settings);
         let login = if cfg.login_item_setup_pending { self.set_login_item(true) } else { Ok(()) };
@@ -118,7 +114,6 @@ impl InProcess {
             admin: None,
         };
         std::thread::Builder::new().name("signal".into()).spawn(move || {
-            let _watch = watch;
             signal::run(params, requests);
         }).expect("spawn signal thread");
         self.control = Some(control);
@@ -256,6 +251,7 @@ impl Backend for InProcess {
     }
 
     fn quit(&mut self) {
+        self.workspace_watch = None;
         if let Some(c) = &self.control {
             let _ = c.send(Control::Quit);
         }

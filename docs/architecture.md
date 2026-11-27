@@ -194,7 +194,9 @@ attached output, input and filesystem calls.
   A temporarily detached console has no active console session ID. The worker checks its own
   WTS logon identity and reports it locked during detachment. Logoff or a switch to another
   console session ends the old workspace, including its shell, replay and transfer record.
-- macOS samples `CGSessionCopyCurrentDictionary` every 100 ms and checks it at workspace access.
+- macOS reads `CGSessionCopyCurrentDictionary` when the workspace watch starts, on distributed
+  lock and unlock notifications, on NSWorkspace session activation and deactivation, and at
+  workspace access.
   `CGSSessionScreenIsLocked` reports the lock and `kCGSSessionOnConsoleKey` reports whether the app's
   session is on the console. Switching away locks access to that app's workspace. Logging out
   stops the app and its workspace. These checks are independent of capture.

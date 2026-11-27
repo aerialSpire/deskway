@@ -4,13 +4,14 @@
 //! user's session is on the console and whether its screen is locked. That is the signal; no
 //! guessing from the frontmost application.
 
-use std::io;
-use std::sync::{mpsc::{self, Sender}, Arc};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
+use objc2::rc::Retained;
+use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass};
+use objc2_app_kit::{NSWorkspace, NSWorkspaceSessionDidBecomeActiveNotification, NSWorkspaceSessionDidResignActiveNotification};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFRetained, CFString, CFType};
 use objc2_core_graphics::CGSessionCopyCurrentDictionary;
+use objc2_foundation::{NSDistributedNotificationCenter, NSNotification, NSNotificationCenter, NSNotificationSuspensionBehavior, NSObject, NSObjectProtocol, NSString};
 
 use crate::platform::{unix::programs, Desk, WorkspaceState};
 use crate::signal::Control;
@@ -50,38 +51,84 @@ fn browser_state(desk: Desk) -> WorkspaceState {
     WorkspaceState { locked: desk != Desk::Default, ..WorkspaceState::READY }
 }
 
-pub(crate) fn workspace_browser(control: Wake<Control>) -> io::Result<(Browser, WorkspaceWatch)> {
+pub(crate) fn workspace_browser(control: Wake<Control>) -> (Browser, WorkspaceWatch) {
     let browser = workspace::local_browser(
         Arc::new(|rows, cols| programs::browser_pty(programs::shell("/bin/zsh", None, None), rows, cols, || !workspace_state().locked)),
         Arc::new(workspace_state),
     );
     workspace::sweep_home(&|| !workspace_state().locked);
 
-    let (stop, stopped) = mpsc::channel();
-    let thread = thread::Builder::new().name("workspace-watch".into()).spawn(move || {
-        let mut previous = None;
-        loop {
-            let next = workspace_state();
-            if previous != Some(next) {
-                if control.send(Control::WorkspaceChanged(next)).is_err() { break; }
-                previous = Some(next);
-            }
-            if !matches!(stopped.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Timeout)) { break; }
+    (browser, WorkspaceWatch::new(control))
+}
+
+struct ObserverState {
+    control: Wake<Control>,
+    previous: Mutex<Option<WorkspaceState>>,
+}
+
+define_class!(
+    #[unsafe(super = NSObject)]
+    #[ivars = ObserverState]
+    struct WorkspaceObserver;
+
+    unsafe impl NSObjectProtocol for WorkspaceObserver {}
+
+    impl WorkspaceObserver {
+        #[unsafe(method(workspaceChanged:))]
+        fn changed(&self, _: &NSNotification) {
+            self.refresh();
         }
-    })?;
-    Ok((browser, WorkspaceWatch { stop, thread: Some(thread) }))
+    }
+);
+
+impl WorkspaceObserver {
+    fn refresh(&self) {
+        let mut previous = self.ivars().previous.lock().unwrap();
+        let next = workspace_state();
+        if *previous != Some(next) {
+            *previous = Some(next);
+            let _ = self.ivars().control.send(Control::WorkspaceChanged(next));
+        }
+    }
 }
 
 pub(crate) struct WorkspaceWatch {
-    stop: Sender<()>,
-    thread: Option<JoinHandle<()>>,
+    distributed: Retained<NSDistributedNotificationCenter>,
+    workspace: Retained<NSNotificationCenter>,
+    observer: Retained<WorkspaceObserver>,
+}
+
+impl WorkspaceWatch {
+    fn new(control: Wake<Control>) -> Self {
+        let distributed = NSDistributedNotificationCenter::defaultCenter();
+        let workspace = NSWorkspace::sharedWorkspace().notificationCenter();
+        // The panel's main run loop receives distributed notifications, even while hidden.
+        let observer: Retained<WorkspaceObserver> = unsafe {
+            msg_send![super(WorkspaceObserver::alloc().set_ivars(ObserverState { control, previous: Mutex::default() })), init]
+        };
+        let selector = sel!(workspaceChanged:);
+        for name in ["com.apple.screenIsLocked", "com.apple.screenIsUnlocked"] {
+            unsafe {
+                distributed.addObserver_selector_name_object_suspensionBehavior(
+                    &observer, selector, Some(&NSString::from_str(name)), None, NSNotificationSuspensionBehavior::DeliverImmediately,
+                );
+            }
+        }
+        unsafe {
+            for name in [NSWorkspaceSessionDidBecomeActiveNotification, NSWorkspaceSessionDidResignActiveNotification] {
+                workspace.addObserver_selector_name_object(&observer, selector, Some(name), None);
+            }
+        }
+        observer.refresh();
+        Self { distributed, workspace, observer }
+    }
 }
 
 impl Drop for WorkspaceWatch {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+        unsafe {
+            self.distributed.removeObserver_name_object(&self.observer, None, None);
+            self.workspace.removeObserver(&self.observer);
         }
     }
 }
