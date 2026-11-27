@@ -114,7 +114,7 @@ async function onscreenKeyboard(h, m, sent, clearSent) {
   const imeAt = await centre(m, '.kb-ime');
   await m.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: imeAt[0], y: imeAt[1] });
   await sleep(100);
-  h.check('the mouse over "Input method" shows "Opens the system keyboard on phones" at once, inside the window', await m.eval(`(() => { const t = document.querySelector('.kb-tip'); if (t.hidden) return false; const r = t.getBoundingClientRect(); return t.textContent === ${q('kb.imeTip')} && r.left >= 0 && r.right <= innerWidth && r.top >= 0; })()`));
+  h.check('hovering over "Input method" shows its tooltip at once, inside the window', await m.eval(`(() => { const t = document.querySelector('.kb-tip'); if (t.hidden) return false; const r = t.getBoundingClientRect(); return t.textContent === ${q('kb.imeTip')} && r.left >= 0 && r.right <= innerWidth && r.top >= 0; })()`));
   await m.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
   await sleep(100);
   h.check('…and hides when the mouse leaves', await m.eval(`document.querySelector('.kb-tip').hidden`));

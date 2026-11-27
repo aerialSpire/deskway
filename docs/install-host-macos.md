@@ -58,14 +58,14 @@ after an update.
    page, only if it shows the same code.
 3. The panel shows **Online**. The Mac appears in the browser's list of computers.
 
-## 4. Allow your phones and other computers
+## 4. Allow the devices you control from
 
 A Mac accepts control only from devices that were added to it at the Mac itself.
 
-- To add a phone or tablet with a camera, click **Add a phone or computer** in the panel, scan the
-  QR code with the phone's camera, and tap **Add** on the phone.
-- To add a computer without a camera, open Deskway in that computer's browser, click this Mac
-  and choose **Request control**. Then choose **Allow** at the Mac.
+- To add a device that can scan a QR code, click **Add a device** in the panel, scan the
+  code with that device, and choose **Add** on it.
+- To add a device that cannot scan, open Deskway in its browser, click this Mac and choose
+  **Request control**. Then choose **Allow** at the Mac.
 
 The panel's **Allowed devices** list shows every device that may control this Mac.
 

@@ -225,7 +225,7 @@ website and whom the computers let in, so a person only ever adds a device once.
 
 There are two ways to add a device.
 
-At a computer, the panel's **Add a phone or computer** shows a QR code for
+At a computer, the panel's **Add a device** shows a QR code for
 `https://<server>/#pair=<computer id>.<code>`. The code has 80 random bits and is valid for 10
 minutes, for one use, with at most 5 wrong tries. Because it comes after the `#`, it never
 reaches the server, and the page removes it from the address bar immediately. Once signed in, the
