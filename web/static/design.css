@@ -151,6 +151,31 @@ button { cursor: pointer; }
 .dot.warn { background: var(--warn); }
 .dot.accent { background: var(--accent); }
 .status { display: flex; align-items: center; gap: var(--s2); color: var(--quiet); }
+/* Signaling latency and usage gauges, with a visible value at every level. */
+.lat { display: inline-flex; align-items: center; gap: var(--s1); flex: none; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lat.warn { color: var(--warn); }
+.signal { display: inline-flex; align-items: flex-end; gap: 1px; height: 9px; }
+.signal i { width: 2px; border-radius: var(--r-control); background: var(--line-strong); }
+.signal i:nth-child(1) { height: 3px; }
+.signal i:nth-child(2) { height: 5px; }
+.signal i:nth-child(3) { height: 7px; }
+.signal i:nth-child(4) { height: 9px; }
+.signal i.on { background: var(--ok); }
+.lat.warn .signal i.on { background: var(--warn); }
+
+.gauge {
+  min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "label value" "track track"; row-gap: var(--s1);
+  color: var(--quiet); font-size: var(--fs-caption); line-height: var(--lh-tight);
+}
+.g-label { grid-area: label; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-value { grid-area: value; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.g-track { grid-area: track; height: 4px; border-radius: var(--r-control); background: var(--line-strong); overflow: hidden; }
+.g-fill { display: block; height: 100%; border-radius: var(--r-control); background: var(--accent); }
+.gauge.warn .g-fill { background: var(--warn); }
+.gauge.high .g-fill { background: var(--danger); }
+.gauge.warn .g-value { color: var(--warn); }
+.gauge.high .g-value { color: var(--danger); }
 
 /* ---- Tags ---- */
 .tag {

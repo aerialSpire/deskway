@@ -133,7 +133,6 @@ func (s *Server) handleComputerRemove(w http.ResponseWriter, r *http.Request) {
 func (s *Server) forgetHostLocked(id string) {
 	delete(s.hosts, id)
 	delete(s.displays, id)
-	delete(s.asked, id)
 }
 
 // dropComputer ends everything live of a computer that was removed: its socket, its state and
@@ -143,6 +142,7 @@ func (s *Server) dropComputer(id string) {
 	host := s.hosts[id]
 	s.forgetHostLocked(id)
 	delete(s.previews, id)
+	delete(s.asked, id)
 	s.mu.Unlock()
 	if host != nil {
 		host.cancel()
@@ -151,7 +151,7 @@ func (s *Server) dropComputer(id string) {
 }
 
 // deviceList is the computers of browser c's account with what the live connections add:
-// online, who holds them (as this browser sees it), their displays and their current hello.
+// online, who holds them (as this browser sees it), their displays, hello and vitals.
 func (s *Server) deviceList(c *conn) []proto.Device {
 	s.mu.Lock()
 	list := s.store.DevicesFor(c.user)
@@ -160,6 +160,7 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 		d := &list[i]
 		if h := s.hosts[d.ID]; h != nil {
 			d.Online, d.Version, d.Caps = true, h.version, h.caps
+			d.Machine, d.Vitals = h.machine, h.vitals
 			holders[i] = h.holder
 			if !c.ai {
 				d.KeptTerminal = h.keptTerminal
@@ -221,10 +222,17 @@ func (s *Server) controllerFor(c *conn, h *proto.Holder) *proto.Controller {
 }
 
 func (s *Server) broadcastDevices() {
+	s.broadcastDevicesTo(nil)
+}
+
+// include, when supplied, checks each client while Server.mu is held.
+func (s *Server) broadcastDevicesTo(include func(*conn) bool) {
 	s.mu.Lock()
 	clients := make([]*conn, 0, len(s.clients))
 	for c := range s.clients {
-		clients = append(clients, c)
+		if include == nil || include(c) {
+			clients = append(clients, c)
+		}
 	}
 	s.mu.Unlock()
 	for _, c := range clients {

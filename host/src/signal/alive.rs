@@ -25,16 +25,41 @@ pub enum Due {
 pub struct Alive {
     silence: Instant,
     ping: Instant,
+    sequence: u64,
+    pending: Option<Instant>,
+    rtt: Option<u64>,
 }
 
 impl Alive {
     pub fn new(now: Instant) -> Alive {
-        Alive { silence: now + SILENT, ping: now + PING_EVERY }
+        Alive {
+            silence: now + SILENT, ping: now + PING_EVERY,
+            sequence: 0, pending: None, rtt: None,
+        }
     }
 
     /// Something came from the server.
     pub fn heard(&mut self, now: Instant) {
         self.silence = now + SILENT;
+    }
+
+    /// The payload ties the reply to this ping, even if an earlier one arrives late.
+    pub fn ping_payload(&mut self, now: Instant) -> [u8; 8] {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.pending = Some(now);
+        self.sequence.to_be_bytes()
+    }
+
+    pub fn pong(&mut self, payload: &[u8], now: Instant) {
+        if payload == self.sequence.to_be_bytes() {
+            if let Some(sent) = self.pending.take() {
+                self.rtt = Some(now.duration_since(sent).as_millis() as u64);
+            }
+        }
+    }
+
+    pub fn rtt(&self) -> Option<u64> {
+        self.rtt
     }
 
     pub fn next_deadline(&self) -> Instant {
@@ -56,6 +81,27 @@ impl Alive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_matching_pong_updates_the_latest_round_trip() {
+        let start = Instant::now();
+        let mut alive = Alive::new(start);
+        let ping = start + PING_EVERY;
+        let first = alive.ping_payload(ping);
+        alive.pong(&[], ping + Duration::from_millis(2));
+        assert_eq!(alive.rtt(), None);
+        alive.pong(&first, ping + Duration::from_millis(18));
+        assert_eq!(alive.rtt(), Some(18));
+        alive.pong(&first, ping + Duration::from_millis(100));
+        assert_eq!(alive.rtt(), Some(18));
+
+        let ping = ping + PING_EVERY;
+        let second = alive.ping_payload(ping);
+        alive.pong(&first, ping + Duration::from_millis(3));
+        assert_eq!(alive.rtt(), Some(18));
+        alive.pong(&second, ping + Duration::from_micros(500));
+        assert_eq!(alive.rtt(), Some(0));
+    }
 
     #[test]
     fn next_deadline_tracks_ping_and_silence() {

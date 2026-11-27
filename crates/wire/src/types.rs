@@ -51,6 +51,31 @@ wire_struct! {
     }
 }
 
+wire_struct! {
+    /// Hardware reported once per host startup.
+    pub struct Machine {
+        "cpu" cpu: String,
+        "cores" cores: u32,
+        "threads" threads: u32,
+        "memory" memory: u64,
+    }
+}
+
+wire_struct! {
+    pub struct Usage {
+        "used" used: u64,
+        "total" total: u64,
+    }
+}
+
+wire_struct! {
+    pub struct DiskUsage {
+        "name" name: String,
+        "used" used: u64,
+        "total" total: u64,
+    }
+}
+
 wire_values! {
     pub enum AuthKind { "dk" => DeviceKey, "rs" => Resume }
 }

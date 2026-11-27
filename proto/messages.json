@@ -3,7 +3,7 @@
     "The single definition of every Deskway message. Go (internal/proto), Rust (crates/wire) and JS (web/static/js/proto.js) are checked against it by contract tests. docs/protocol.md is the readable version.",
     "version.json defines the current protocol version. The minimum supported host version is current minus one.",
     "Field types: string, integer, number, boolean, object, array (with items), map (object with arbitrary keys, with values), any, or the name of an entry in types. enum restricts a string.",
-    "status: current = on the wire today (possibly with new fields, which carry their own status); new = introduced by protocol version 2.",
+    "status: current = on the wire today (possibly with new fields, which carry their own status); new = introduced in the version named by since.",
     "Receivers ignore fields they do not know. Senders only send what the peer's version and caps allow."
   ],
   "capabilities": [
@@ -23,7 +23,8 @@
     { "name": "browse", "who": "host", "since": 4, "meaning": "The data-only browser session also offers the browse channel for the host user’s files." },
     { "name": "file-transfer", "who": "host", "since": 4, "meaning": "The data-only browser session can upload and download regular files." },
     { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
-    { "name": "relay-rtt", "who": "host", "since": 4, "meaning": "The host accepts relay-list on its signaling socket and reports UDP round-trip times." }
+    { "name": "relay-rtt", "who": "host", "since": 4, "meaning": "The host accepts relay-list on its signaling socket and reports UDP round-trip times." },
+    { "name": "vitals", "who": "host", "since": 5, "meaning": "The host reports load and signaling latency when requested in thumbs." }
   ],
   "types": {
     "View": {
@@ -60,7 +61,7 @@
       "fields": {
         "id": { "type": "string", "optional": false, "meaning": "device id" },
         "name": { "type": "string", "optional": false, "meaning": "computer name" },
-        "os": { "type": "string", "optional": false, "meaning": "windows or macos" },
+        "os": { "type": "string", "optional": false, "meaning": "windows, macos or linux" },
         "online": { "type": "boolean", "optional": false, "meaning": "connected to the server now" },
         "last_seen": { "type": "integer", "optional": true, "meaning": "unix seconds" },
         "controller": { "type": "Controller", "optional": true, "meaning": "who holds it now (established or still connecting), as this browser sees it; absent: nobody" },
@@ -69,9 +70,45 @@
         "displays": { "type": "array", "items": "Display", "optional": true, "meaning": "attached displays, while online" },
         "version": { "type": "integer", "optional": true, "status": "current", "since": 2, "meaning": "protocol version from the current signaling hello while online, or the last saved version while offline; absent when unknown" },
         "caps": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 2, "meaning": "the host's capabilities from its hello, while online" },
+        "app": { "type": "string", "optional": true, "since": 5, "meaning": "host program version, or the last saved one while offline" },
+        "machine": { "type": "Machine", "optional": true, "since": 5, "meaning": "hardware from the host's current hello" },
+        "vitals": { "type": "Vitals", "optional": true, "since": 5, "meaning": "the latest requested sample from the current host connection" },
         "ai": { "type": "AiView", "optional": true, "meaning": "AI clients on this computer; absent: the switch was never set" },
         "here": { "type": "boolean", "optional": true, "status": "current", "since": 4, "meaning": "this computer said it is the one this browser or AI client runs on (locate); absent: it did not" },
         "tools": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 4, "meaning": "the AI tools the computer last reported in its hello; absent when none were reported" }
+      }
+    },
+    "Machine": {
+      "meaning": "Hardware read at host startup.",
+      "fields": {
+        "cpu": { "type": "string", "optional": false, "meaning": "CPU model name" },
+        "cores": { "type": "integer", "optional": false, "meaning": "physical CPU cores" },
+        "threads": { "type": "integer", "optional": false, "meaning": "logical CPUs" },
+        "memory": { "type": "integer", "optional": false, "meaning": "total memory in bytes" }
+      }
+    },
+    "Usage": {
+      "meaning": "Memory usage.",
+      "fields": {
+        "used": { "type": "integer", "optional": false, "meaning": "used bytes" },
+        "total": { "type": "integer", "optional": false, "meaning": "total bytes" }
+      }
+    },
+    "DiskUsage": {
+      "meaning": "Usage of a fixed local disk.",
+      "fields": {
+        "name": { "type": "string", "optional": false, "meaning": "mount point or drive letter" },
+        "used": { "type": "integer", "optional": false, "meaning": "used bytes" },
+        "total": { "type": "integer", "optional": false, "meaning": "total bytes" }
+      }
+    },
+    "Vitals": {
+      "meaning": "Load and the latest host-to-server signaling round trip.",
+      "fields": {
+        "cpu": { "type": "number", "optional": false, "meaning": "CPU load in percent, rounded to one decimal place" },
+        "memory": { "type": "Usage", "optional": false, "meaning": "memory usage" },
+        "disks": { "type": "array", "items": "DiskUsage", "optional": false, "meaning": "fixed local disks" },
+        "rtt": { "type": "integer", "optional": true, "meaning": "keepalive round trip in milliseconds, absent before the first measurement" }
       }
     },
     "AiView": {
@@ -503,7 +540,9 @@
           "fields": {
             "version": { "type": "integer", "optional": false, "meaning": "protocol version" },
             "caps": { "type": "array", "items": "string", "optional": false, "meaning": "capability names" },
-            "tools": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 4, "meaning": "host only: the AI tools it carries out (proto/tools.json names), at most 128" }
+            "tools": { "type": "array", "items": "string", "optional": true, "status": "current", "since": 4, "meaning": "host only: the AI tools it carries out (proto/tools.json names), at most 128" },
+            "app": { "type": "string", "optional": true, "since": 5, "meaning": "host only: program version" },
+            "machine": { "type": "Machine", "optional": true, "since": 5, "meaning": "host only: hardware read at startup" }
           }
         },
         {
@@ -523,7 +562,8 @@
           "type": "thumbs", "status": "current", "since": 1, "directions": ["server->host"],
           "meaning": "Someone is looking: capture one preview of each display.",
           "fields": {
-            "on": { "type": "boolean", "optional": false, "meaning": "capture (false: stop)" }
+            "on": { "type": "boolean", "optional": false, "meaning": "capture (false: stop)" },
+            "vitals": { "type": "boolean", "optional": true, "since": 5, "meaning": "sample load and report latency; sent only to hosts with the vitals capability" }
           }
         },
         {
@@ -532,6 +572,16 @@
           "fields": {
             "screen": { "type": "string", "optional": false, "meaning": "display id" },
             "data": { "type": "string", "optional": false, "meaning": "JPEG, base64" }
+          }
+        },
+        {
+          "type": "vitals", "status": "current", "since": 5, "directions": ["host->server"],
+          "meaning": "A requested sample of the computer's load and latest signaling round trip.",
+          "fields": {
+            "cpu": { "type": "number", "optional": false, "meaning": "CPU load in percent, rounded to one decimal place" },
+            "memory": { "type": "Usage", "optional": false, "meaning": "memory usage" },
+            "disks": { "type": "array", "items": "DiskUsage", "optional": false, "meaning": "fixed local disks" },
+            "rtt": { "type": "integer", "optional": true, "meaning": "keepalive round trip in milliseconds, absent before the first measurement" }
           }
         },
         {

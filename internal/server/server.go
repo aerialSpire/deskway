@@ -47,10 +47,10 @@ type Server struct {
 	hosts    map[string]*conn
 	clients  map[*conn]bool
 	displays map[string]json.RawMessage // device id -> its attached displays, while online
-	// Latest preview per device and display, in memory only. A computer is asked for new ones
+	// Latest preview per device and display, in memory only. A computer is asked for a refresh
 	// only when someone looks and these are older than previewMaxAge.
 	previews map[string]map[string]preview
-	asked    map[string]time.Time // device id -> when it was last asked for previews
+	asked    map[string]time.Time // device id -> when it was last asked for previews and vitals
 
 	// WebSocket handlers and the program fetcher outlive what net/http tracks.
 	active sync.WaitGroup
@@ -67,9 +67,12 @@ type conn struct {
 	browser  string // browsers
 	ai       bool   // browsers: an AI client's login (aiMay)
 	watching bool
-	// Hosts: version and capabilities from this connection's hello.
+	// Hosts: protocol version, capabilities and hardware from this connection's hello.
 	version int
 	caps    []string
+	machine *proto.Machine
+	// The latest vitals on this connection, guarded by Server.mu.
+	vitals *proto.Vitals
 	// Hosts: the current list's probe and the latest reported timings. Guarded by Server.mu.
 	relayProbe string
 	relayRTTs  map[string]int

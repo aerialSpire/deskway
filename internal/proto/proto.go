@@ -9,7 +9,7 @@ import "encoding/json"
 // browser accepts; the server refuses no one for it and only passes a host's version on
 // (docs/protocol.md, "Versions and capabilities").
 const (
-	Version    = 4
+	Version    = 5
 	MinVersion = Version - 1
 )
 
@@ -20,7 +20,8 @@ const (
 	TypeApprovals = "approvals" // server -> browser: browsers and computers waiting to be let in
 	TypeICE       = "ice"       // server -> browser: STUN and TURN servers, fresh credentials
 	TypeWatch     = "watch"     // browser -> server: overview open or closed
-	TypeThumbs    = "thumbs"    // server -> host: capture previews
+	TypeThumbs    = "thumbs"    // server -> host: capture previews and optionally sample vitals
+	TypeVitals    = "vitals"    // host -> server: requested load and latency
 	TypeThumb     = "thumb"     // host -> browser, via server
 	TypeStatus    = "status"    // host -> server: the session holding it, its displays
 	TypeDeviceLog = "devlog"    // server -> host: the owner's signed device log, in Auth
@@ -47,7 +48,10 @@ const (
 	TypeRelayRTTs = "relay-rtts" // host -> server: the measured round-trip times
 )
 
-const CapRelayRTT = "relay-rtt"
+const (
+	CapRelayRTT = "relay-rtt"
+	CapVitals   = "vitals"
+)
 
 // MaxAuth bounds the opaque end-to-end authentication blob carried with offers, answers and
 // pairing messages. The server never interprets it: the host and browser verify it themselves.
@@ -95,7 +99,10 @@ type Device struct {
 	WorkspaceAccess string        `json:"workspace_access,omitempty"`
 	KeptTerminal    *KeptTerminal `json:"kept_terminal,omitempty"`
 	// The current socket's hello while online, or the last saved version while offline.
-	Version int `json:"version,omitempty"`
+	Version int      `json:"version,omitempty"`
+	App     string   `json:"app,omitempty"`
+	Machine *Machine `json:"machine,omitempty"` // hardware from the current hello
+	Vitals  *Vitals  `json:"vitals,omitempty"`  // the current connection's latest sample
 	// The host's capabilities while it is online.
 	Caps []string `json:"caps,omitempty"`
 	// AI clients on this computer: the switch, and who uses it now; nil: never switched.
@@ -104,6 +111,30 @@ type Device struct {
 	Here bool `json:"here,omitempty"`
 	// The AI tools the computer last reported; nil: it did not say.
 	Tools []string `json:"tools,omitempty"`
+}
+
+type Machine struct {
+	CPU     string `json:"cpu"`
+	Cores   uint32 `json:"cores"`
+	Threads uint32 `json:"threads"`
+	Memory  uint64 `json:"memory"`
+}
+
+type Usage struct {
+	Used  uint64 `json:"used"`
+	Total uint64 `json:"total"`
+}
+
+type DiskUsage struct {
+	Name string `json:"name"`
+	Usage
+}
+
+type Vitals struct {
+	CPU    float64     `json:"cpu"`
+	Memory Usage       `json:"memory"`
+	Disks  []DiskUsage `json:"disks"`
+	RTT    *uint64     `json:"rtt,omitempty"`
 }
 
 // The states of AiView.
@@ -166,6 +197,13 @@ type Msg struct {
 	Version    int             `json:"version,omitempty"` // hello
 	Caps       []string        `json:"caps,omitempty"`    // hello
 	Tools      []string        `json:"tools,omitempty"`   // a host's hello: the AI tools it carries out
+	App        string          `json:"app,omitempty"`     // host hello
+	Machine    *Machine        `json:"machine,omitempty"` // host hello
+	Vitals     bool            `json:"vitals,omitempty"`  // thumbs: request load and latency
+	CPU        *float64        `json:"cpu,omitempty"`     // vitals
+	Memory     *Usage          `json:"memory,omitempty"`  // vitals
+	Disks      *[]DiskUsage    `json:"disks,omitempty"`   // vitals, including an empty list
+	RTT        *uint64         `json:"rtt,omitempty"`     // vitals
 	Build      string          `json:"build,omitempty"`   // hello, to browsers
 	Session    string          `json:"session,omitempty"`
 	Device     string          `json:"device,omitempty"`

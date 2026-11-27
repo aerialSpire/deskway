@@ -36,13 +36,15 @@ A type name has the same meaning everywhere. When the same name appears on two c
 
 - **Compatibility window.** Each release's server and web client support the current protocol
   version and keep all existing features working with hosts on the previous protocol version.
-  The minimum is `protocol_version - 1`. Version 1 denotes everything from before `hello` existed.
+  The current version is 5 and the minimum is 4. Version 1 predates `hello`.
 - Every connection starts with `hello {version, caps}` in both directions: between browser and
   server, between host and server, and between browser and host on the control channel once it
   opens.
-- The server saves the last reported version for offline display and `upgrade-check`. For online
-  computers, the device list uses the version and `caps` from the current signaling socket's
-  hello. The version stays unknown until that socket reports it. The server accepts signaling
+- The host's signaling hello adds `app` (the installed host program version) and `machine`
+  (CPU model, physical cores, logical threads and total memory in bytes). The server saves
+  the reported protocol version and `app` for offline display. It uses the protocol version
+  for `upgrade-check`. The online list reports the current connection's `version`, `caps` and
+  `machine` once its hello arrives. The server accepts signaling
   sockets regardless of version. The browser refuses to connect when the current socket reports
   a version below the minimum and checks the version again in the host's authoritative
   control-channel `hello`. The browser waits for that `hello` before handling other host messages,
@@ -68,6 +70,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `file-transfer` | Files has browsing and folder operations only |
   | `ai` | no AI seat: AI clients cannot use the computer |
   | `relay-rtt` | the host's signaling socket does not receive `relay-list` |
+  | `vitals` | the server omits `vitals` on preview requests |
 - A newer peer sends a new message or field only when the other side's version or capabilities
   show that it is understood. Receivers ignore unknown fields.
 - To add a message or field, add it to `messages.json` with its `since` and update the
@@ -80,6 +83,22 @@ on connect. When a node comes online or is removed, the server sends an update i
 addresses differ from the last list. The computer replies with
 `relay-rtts {probe, rtts}`, carrying the shortest measured round-trip time in milliseconds
 for each relay that answered. The server matches the reply to the current list using `probe`.
+
+## Computer previews and vitals
+
+When a browser sends `watch {on:true}`, it receives the cached previews. A host can be asked
+for a refresh while a browser of its account is watching, when its previews are missing or at
+least 30 seconds old. The same check applies when a host sends its hello. The server sends
+`thumbs {on:true}` at most once per computer every 30 seconds. It adds `vitals:true` for hosts
+with the capability. A headless host with that capability answers with vitals alone.
+
+The host sends `vitals {cpu, memory, disks, rtt?}`. CPU is a percentage rounded to one decimal
+place. Memory is `{used,total}` in bytes, and each disk is `{name,used,total}` in bytes, with
+the name taken from its mount point or drive letter. The optional `rtt` is the latest
+host-to-server WebSocket keepalive round trip in milliseconds. It first appears after the host
+receives a matching pong. The server keeps the latest sample in memory for the current host
+connection, includes it in `devices`, and sends the updated list to watching browsers of the
+account. Going offline drops that sample.
 
 ## The computer you are using
 

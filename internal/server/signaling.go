@@ -43,7 +43,6 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	// A reconnecting host replaces its stale socket instead of waiting for ping timeout.
 	old := s.hosts[id]
 	s.hosts[id] = c
-	watching := s.anyWatcherLocked(id)
 	s.mu.Unlock()
 	if old != nil {
 		old.cancel()
@@ -56,9 +55,6 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 	if owner != "" {
 		s.sendDeviceLog(owner)
 		s.sendAccount(owner)
-	}
-	if watching {
-		c.send(proto.Msg{Type: proto.TypeThumbs, On: true})
 	}
 	s.locateOn(c)
 
@@ -124,9 +120,6 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	// Its sessions go on; their signaling waits until the browser attaches again.
 	s.sessions.Unbind(c)
-	if c.watching {
-		s.syncThumbs()
-	}
 }
 
 // sendICE gives browsers and AI clients the main server's entries and renews their credentials.
@@ -245,6 +238,7 @@ func (s *Server) fromClient(c *conn, m proto.Msg) {
 		s.mu.Unlock()
 		if m.On {
 			s.syncThumbs(c)
+			c.send(proto.Msg{Type: proto.TypeDevices, Devices: s.deviceList(c)})
 		}
 		return
 	case proto.TypeLocate:
@@ -353,10 +347,21 @@ func (s *Server) fromHost(c *conn, m proto.Msg, watchRelays func()) {
 			s.mu.Unlock()
 			return
 		}
+		if len(m.App) > 64 {
+			m.App = ""
+		}
+		if m.Machine != nil && len(m.Machine.CPU) > 256 {
+			m.Machine = nil
+		}
+		first := c.version == 0
 		c.version = max(0, m.Version)
+		c.machine = m.Machine
 		c.caps = m.Caps[:min(len(m.Caps), 64)]
 		measureRelays := slices.Contains(c.caps, proto.CapRelayRTT)
-		err := s.store.SetHostHello(c.deviceID, c.version, tools)
+		err := s.store.SetHostHello(c.deviceID, c.version, m.App, tools)
+		if first {
+			s.requestPreviewLocked(c, time.Now())
+		}
 		s.mu.Unlock()
 		if err != nil {
 			log.Printf("server: keep %s's hello: %v", c.deviceID, err)
@@ -381,6 +386,9 @@ func (s *Server) fromHost(c *conn, m proto.Msg, watchRelays func()) {
 		return
 	case proto.TypeAudit:
 		s.onAudit(c, m)
+		return
+	case proto.TypeVitals:
+		s.onVitals(c, m)
 		return
 	case proto.TypeThumb:
 		if len(m.Screen) > 64 {

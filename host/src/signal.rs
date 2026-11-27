@@ -34,6 +34,7 @@ use peer::state::End;
 use crate::session::{self, SessionEvent, SessionUpdate};
 use crate::session::terminal::registry::Registry as Terminals;
 use crate::settings::{PanelRequest, Settings};
+use crate::vitals::{self, Sample};
 use crate::wake::{Wake, Waker};
 
 mod alive;
@@ -277,6 +278,7 @@ struct Host {
     browser: Option<crate::workspace::Browser>,
     workspace_state: WorkspaceState,
     transfers: session::file_transfer::Registry,
+    machine: Option<types::Machine>,
     out_tx: Wake<String>,
     updates_tx: Wake<SessionUpdate>,
     /// The sessions on the two seats (their handles feed the session threads).
@@ -347,9 +349,15 @@ impl Host {
 
     fn hello(&self) -> Wire {
         let features = self.features();
-        let caps = features.signaling_caps();
+        let mut caps = features.signaling_caps();
+        if self.machine.is_some() {
+            caps.push(wire::caps::VITALS.into());
+        }
         let tools = features.tools().map(String::from).collect();
-        Wire::Hello { version: wire::PROTOCOL_VERSION, caps, tools: Some(tools) }
+        Wire::Hello {
+            version: wire::PROTOCOL_VERSION, caps, tools: Some(tools),
+            app: Some(env!("CARGO_PKG_VERSION").into()), machine: self.machine.clone(),
+        }
     }
 
     fn report(&self) {
@@ -639,8 +647,9 @@ impl Host {
         self.send_status();
     }
 
-    fn on_message(&mut self, text: &str) {
-        let Ok(m) = serde_json::from_str::<Value>(text) else { return };
+    /// Returns whether the message requests a vitals sample.
+    fn on_message(&mut self, text: &str) -> bool {
+        let Ok(m) = serde_json::from_str::<Value>(text) else { return false };
         let session = m["session"].as_str().unwrap_or_default();
         match m["type"].as_str().unwrap_or_default() {
             // The server's version and caps: nothing here depends on them yet.
@@ -680,8 +689,11 @@ impl Host {
                 }
             }
             "thumbs" => {
-                if let Some(desk) = &self.desktop {
-                    desk.platform.thumbnails(m["on"].as_bool().unwrap_or(false));
+                if let Ok(Wire::Thumbs { on, vitals }) = serde_json::from_value(m) {
+                    if let Some(desk) = &self.desktop {
+                        desk.platform.thumbnails(on);
+                    }
+                    return on && vitals == Some(true) && self.machine.is_some();
                 }
             }
             // Who this computer belongs to, for the panel.
@@ -704,6 +716,7 @@ impl Host {
             }
             _ => {}
         }
+        false
     }
 
     /// A browser or AI client of the account says where it runs: answered `here` when that is
@@ -1039,11 +1052,9 @@ impl Queues {
         }
     }
 
-    fn on_message(&self, host: &mut Host, text: &str) {
+    fn on_message(&self, host: &mut Host, text: &str) -> bool {
         self.drain_control(host);
-        if !host.quit {
-            host.on_message(text);
-        }
+        !host.quit && host.on_message(text)
     }
 
     /// What can be handled without the server.
@@ -1067,13 +1078,24 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
     ws.send(WsMessage::text(serde_json::to_string(&host.hello())?))?;
     host.send_status();
     let mut alive = alive::Alive::new(Instant::now());
+    // A sample from an old connection must never be sent on its replacement.
+    let (sample_tx, samples) = q.wake.channel();
+    let mut sampling = false;
     loop {
         tcp(ws).set_nonblocking(true)?;
         let read = match ws.read() {
             Ok(m) => {
-                alive.heard(Instant::now());
-                if let WsMessage::Text(t) = m {
-                    q.on_message(host, t.as_str());
+                let now = Instant::now();
+                alive.heard(now);
+                match m {
+                    WsMessage::Text(t) => {
+                        let requested = q.on_message(host, t.as_str());
+                        if requested && !sampling {
+                            sampling = Sample::request(sample_tx.clone()).is_ok();
+                        }
+                    }
+                    WsMessage::Pong(payload) => alive.pong(&payload, now),
+                    _ => {}
                 }
                 true
             }
@@ -1083,12 +1105,19 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
         // Blocking sends and flushes use WRITE_TIMEOUT, including tungstenite's automatic
         // replies. This keeps the write deadline without juggling partial WebSocket or TLS writes.
         tcp(ws).set_nonblocking(false)?;
-        match alive.due(Instant::now()) {
+        let now = Instant::now();
+        match alive.due(now) {
             alive::Due::Nothing => {}
-            alive::Due::Ping => ws.send(WsMessage::Ping(Default::default()))?,
+            alive::Due::Ping => ws.send(WsMessage::Ping(alive.ping_payload(now).to_vec().into()))?,
             alive::Due::Gone => anyhow::bail!("the server said nothing for {}s", alive::SILENT.as_secs()),
         }
         q.drain_local(host);
+        while let Ok(sample) = samples.try_recv() {
+            sampling = false;
+            if let Some(sample) = sample {
+                ws.send(WsMessage::text(serde_json::to_string(&sample.message(alive.rtt()))?))?;
+            }
+        }
         for e in q.platform.iter().flat_map(Receiver::try_iter) {
             host.on_platform(e, Some(ws))?;
         }
@@ -1153,6 +1182,7 @@ impl Host {
             workspace_state: browser.as_ref().map_or(WorkspaceState::READY, |b| (b.state)()),
             browser,
             transfers: Default::default(),
+            machine: vitals::machine(),
             out_tx,
             updates_tx,
             sessions: Seats::default(),
@@ -1417,6 +1447,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_preview_request_samples_vitals_only_when_supported_and_requested() {
+        for (cap, flag, want) in [(true, Some(true), true), (true, None, false), (true, Some(false), false), (false, Some(true), false)] {
+            let mut test = Test::with_features("vitals", false, false, Features::default());
+            if !cap {
+                test.host.machine = None;
+            }
+            let Wire::Hello { caps, app, machine, .. } = test.host.hello() else { panic!("expected hello") };
+            assert_eq!(caps.iter().any(|cap| cap == wire::caps::VITALS), cap);
+            assert_eq!(app.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+            assert_eq!(machine.is_some(), cap);
+
+            let (mut server, control, done) = test.serve();
+            let mut request = json!({ "type": "thumbs", "on": true });
+            if let Some(flag) = flag {
+                request["vitals"] = json!(flag);
+            }
+            server.send(WsMessage::text(request.to_string())).unwrap();
+            if want {
+                let report = read_signal(&mut server);
+                assert_eq!(report["type"], "vitals");
+                assert!(report["cpu"].is_number() && report["memory"].is_object() && report["disks"].is_array());
+                assert!(report.get("rtt").is_none());
+            } else {
+                server.get_mut().set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+                assert!(matches!(server.read(), Err(tungstenite::Error::Io(e))
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)));
+            }
+            control.send(Control::Quit).unwrap();
+            done.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+        }
+    }
+
     fn read_signal(server: &mut WebSocket<TcpStream>) -> Value {
         serde_json::from_str(server.read().unwrap().into_text().unwrap().as_str()).unwrap()
     }
@@ -1524,7 +1587,8 @@ mod tests {
             ("headless", Features { work: true, ..Features::default() }, Some("no_desktop")),
         ] {
             let mut t = Test::with_features(case, true, true, features);
-            let Wire::Hello { caps, tools, .. } = t.host.hello() else { panic!("expected hello") };
+            let Wire::Hello { mut caps, tools, .. } = t.host.hello() else { panic!("expected hello") };
+            caps.retain(|cap| cap != wire::caps::VITALS);
             assert_eq!(caps.iter().any(|c| c == wire::caps::DESK), refusal.is_none());
             assert_eq!(caps.last().map(String::as_str), Some(wire::caps::RELAY_RTT));
             assert_eq!(tools.unwrap(), features.tools().collect::<Vec<_>>());
