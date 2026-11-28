@@ -1,5 +1,5 @@
 // The server: its HTTP API, the signaling socket, and the ICE servers it hands out.
-import { PROTOCOL_VERSION, Signal } from './proto.js';
+import { CAPS, PROTOCOL_VERSION, Signal } from './proto.js';
 
 let unauthorized = () => {};
 
@@ -47,6 +47,7 @@ class Signaling {
     this.onMessage = () => {};
     this.onUp = () => {};
     this.onDown = () => {};
+    this.serverCaps = [];
   }
 
   connect() {
@@ -58,12 +59,16 @@ class Signaling {
     ws.onopen = () => {
       this.delay = 1000;
       clearTimeout(this.staleTimer);
-      // Every connection starts with hello; the browser has no capabilities to announce.
-      ws.send(JSON.stringify({ type: Signal.HELLO, version: PROTOCOL_VERSION, caps: [] }));
+      ws.send(JSON.stringify({ type: Signal.HELLO, version: PROTOCOL_VERSION, caps: [CAPS.TERMINALS] }));
       this.onUp();
       for (const m of this.pending.splice(0)) ws.send(JSON.stringify(m));
     };
-    ws.onmessage = (e) => this.onMessage(JSON.parse(e.data));
+    ws.onmessage = (e) => {
+      if (this.ws !== ws) return;
+      const message = JSON.parse(e.data);
+      if (message.type === Signal.HELLO) this.serverCaps = message.caps ?? [];
+      this.onMessage(message);
+    };
     ws.onclose = () => {
       if (!this.wanted || this.ws !== ws) return;
       clearTimeout(this.staleTimer);
@@ -95,6 +100,8 @@ class Signaling {
   }
 
   isOpen() { return !!this.ws && this.ws.readyState === WebSocket.OPEN; }
+
+  hasCap(cap) { return this.serverCaps.includes(cap); }
 
   send(m) {
     if (this.isOpen()) this.ws.send(JSON.stringify(m));

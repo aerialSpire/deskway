@@ -21,23 +21,23 @@ import { ownComputer, openWindow, onWindowView } from '../windows.js';
 
 // Pressing a computer's picture (and every Retry / reconnect after an end, `again`: chosen
 // already). Must run inside the tap: the session goes full screen at once.
-export function press(d, again = false, view = 'desktop') {
-  if (!d.online) { show(d, { reason: 'offline' }, view); return; }
+export function press(d, again = false, view = 'desktop', target) {
+  if (!d.online) { show(d, { reason: 'offline' }, view, target); return; }
   if (!offered(d, view)) return;
   // The page knows its socket is down: nothing can start now, and it says so at once.
-  if (!socket.isOpen()) { show(d, { reason: 'unreachable' }, view); return; }
-  if (openWindow(d, view)) return;
+  if (!socket.isOpen()) { show(d, { reason: 'unreachable' }, view, target); return; }
+  if (openWindow(d, view, target)) return;
   // The computer this browser runs on (here.js): asked once, then as any other.
   if (d.here && !again) {
     dialog(t('here.confirmTitle'), t('here.confirmText'), [
       { label: t('common.cancel') },
-      { label: t('here.confirmGo'), primary: true, run: () => press(d, true, view) },
+      { label: t('here.confirmGo'), primary: true, run: () => press(d, true, view, target) },
     ]);
     return;
   }
   // A report naming this device may describe another tab or a session that just ended.
   if (view === 'desktop' && d.controller && !d.controller.device) showOfferMessage(d, view, takeoverMessage(d.controller, t));
-  else openSession(d, false, view);
+  else openSession(d, false, view, target);
 }
 
 function offered(d, view) {
@@ -55,18 +55,19 @@ function offered(d, view) {
   return true;
 }
 
-export function openSession(d, force, view = 'desktop') {
+export function openSession(d, force, view = 'desktop', target) {
   // A delayed action may still run after a new connection has started on this page.
   if (currentSession()) return;
   // A delayed action uses the latest report from the online computer's current socket.
-  const live = state.devices.find((x) => x.id === d.id);
+  const deviceStatus = () => state.devices.find((x) => x.id === d.id);
+  const live = deviceStatus();
   if (live?.online && live.version && live.version < MIN_VERSION) { show(d, { reason: 'old' }, view); return; }
   if (!offered(live || d, view)) return;
   setView('session', d.id);
   // Full screen needs a tap; a computer's own window takes it over as it opens, without one:
   // there “Full screen” is pressed by hand.
   const full = !ownComputer || (navigator.userActivation?.isActive ?? true);
-  const s = new Session(live || d, { force, view, full, onEnd: (end) => ended(s, end) });
+  const s = new Session(live || d, { force, view, target, deviceStatus, full, onEnd: (end) => ended(s, end) });
   setCurrentSession(s);
   // The phone's back gesture (or the browser's back button) ends this session, like “Disconnect”.
   history.pushState({ deskway: 'session', id: s.id }, '');
@@ -92,17 +93,17 @@ function ended(s, end) {
   setView('detail', s.device.id);
   // Its history entry goes too, unless going back is what ended it.
   if (history.state && history.state.deskway === 'session' && history.state.id === s.id) history.back();
-  show(device() || s.device, end, s.content.currentView || 'desktop');
+  show(device() || s.device, end, s.content.currentView || 'desktop', s.content.terminal?.selection);
 }
 
-onWindowView((view) => {
+onWindowView((view, target) => {
   if (view !== 'terminal' && view !== 'files') return;
   const session = currentSession();
   if (session) {
-    if (session.content.currentView && (view === 'terminal' || session.hasCap(CAPS.BROWSE))) session.content.show(view);
+    if (session.content.currentView && (view === 'terminal' || session.hasCap(CAPS.BROWSE))) session.content.show(view, target);
   } else if (!dialogOpen()) {
     const d = state.devices.find((d) => d.id === ownComputer);
-    if (d) press(d, false, view);
+    if (d) press(d, false, view, target);
   }
 });
 
@@ -114,18 +115,22 @@ export function startOwnWindow() {
   if (!d) return;
   ownStarted = true;
   document.title = `${d.name} · Deskway`;
-  const view = new URLSearchParams(location.search).get('view');
-  press(d, false, ['terminal', 'files'].includes(view) ? view : 'desktop');
+  const params = new URLSearchParams(location.search);
+  const view = params.get('view');
+  const terminal = params.get('terminal');
+  const id = Number(terminal);
+  const target = terminal === 'new' ? null : id > 0 && Number.isSafeInteger(id) ? id : undefined;
+  press(d, false, ['terminal', 'files'].includes(view) ? view : 'desktop', target);
 }
 
-function showOfferMessage(d, view, { action, title, text, go }) {
-  const pair = () => showNotAdded(d, (x) => openSession(x, false, view));
+function showOfferMessage(d, view, { action, title, text, go }, target) {
+  const pair = () => showNotAdded(d, (x) => openSession(x, false, view, target));
   switch (action) {
     case 'reconnect':
     case 'retry':
       dialog(title, text, [
         { label: t('common.back') },
-        { label: t(action === 'reconnect' ? 'session.reconnect' : 'common.retry'), primary: true, run: () => press(device() || d, true, view) },
+        { label: t(action === 'reconnect' ? 'session.reconnect' : 'common.retry'), primary: true, run: () => press(device() || d, true, view, target) },
       ]);
       break;
     case 'desktop':
@@ -134,17 +139,17 @@ function showOfferMessage(d, view, { action, title, text, go }) {
         { label: t('detail.hint'), primary: true, run: () => press(device() || d, true) },
       ]);
       break;
-    case 'replace': openSession(d, false, view); break;
+    case 'replace': openSession(d, false, view, target); break;
     case 'takeover':
       dialog(title, text, [
         { label: t('common.cancel') },
-        { label: go, primary: true, run: () => openSession(d, true, view) },
+        { label: go, primary: true, run: () => openSession(d, true, view, target) },
       ]);
       break;
     case 'takeBack':
       dialog(title, text, [
         { label: t('session.backToList'), run: () => setView('list') },
-        { label: t('session.takeBack'), primary: true, run: () => openSession(device() || d, true, view) },
+        { label: t('session.takeBack'), primary: true, run: () => openSession(device() || d, true, view, target) },
       ]);
       break;
     case 'pair': pair(); break;
@@ -154,10 +159,10 @@ function showOfferMessage(d, view, { action, title, text, go }) {
   }
 }
 
-function show(d, end, view) {
+function show(d, end, view, target) {
   const { reason } = end;
   const message = offerMessage(end, { view, headless: noDesktop(d), t, time: () => timeText(new Date()) });
-  if (message) { showOfferMessage(d, view, message); return; }
+  if (message) { showOfferMessage(d, view, message, target); return; }
   switch (reason) {
     case 'left':
       break;
@@ -171,7 +176,7 @@ function show(d, end, view) {
     // offered only for a changed key (Deskway reinstalled there), never for a forged answer.
     case 'keyChanged':
       gotIt(t('session.impostorTitle'), t('session.keyChanged'),
-        { also: { label: t('session.addAgain'), run: () => showNotAdded(d, (x) => openSession(x, false, view)) } });
+        { also: { label: t('session.addAgain'), run: () => showNotAdded(d, (x) => openSession(x, false, view, target)) } });
       break;
     case 'forged': gotIt(t('session.impostorTitle'), t('session.forged')); break;
     default: gotIt(t('session.cantConnect'), t('common.tryAgain'));

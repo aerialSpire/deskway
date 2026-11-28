@@ -45,9 +45,8 @@ export function renderDetail() {
     preview,
     notice || kept ? h('div', { class: 'terminal-kept' },
       notice ? h('p', { class: 'notice', role: 'status' }, notice) : null,
-      kept ? h('div', { class: 'notice', role: 'status' },
-      keptText,
-      h('button', { class: 'btn compact', type: 'button', disabled, onclick: open('terminal') }, t('terminal.return'))) : null) : null,
+      kept ? h('div', { class: 'notice', role: 'status' }, keptText,
+        h('button', { class: 'btn compact', type: 'button', disabled, onclick: open('terminal') }, t('terminal.return'))) : null) : null,
     showActions && (!kept || d.caps.includes(CAPS.BROWSE))
       ? h('div', { class: 'computer-actions' },
         h('button', { class: 'btn', type: 'button', disabled, onclick: open('terminal') }, t('terminal.label')),

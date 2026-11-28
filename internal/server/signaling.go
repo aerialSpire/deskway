@@ -51,7 +51,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		old.cancel()
 	}
 	s.sessions.HostUp(c)
-	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{}})
+	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapTerminals}})
 	s.touch(id)
 	log.Printf("server: host online: %.8s", id)
 	s.broadcastDevices()
@@ -110,7 +110,7 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.clients[c] = true
 	s.mu.Unlock()
-	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{}, Build: s.build})
+	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapTerminals}, Build: s.build})
 	c.send(proto.Msg{Type: proto.TypeDevices, Devices: s.deviceList(c)})
 	c.send(proto.Msg{Type: proto.TypeApprovals, Approvals: s.store.Approvals(c.user, pendingBrowserTTL)})
 	go s.sendICE(ctx, c)
@@ -233,6 +233,14 @@ func (s *Server) fromClient(c *conn, m proto.Msg) {
 	}
 	switch m.Type {
 	case proto.TypeHello:
+		s.mu.Lock()
+		hadTerminals := slices.Contains(c.caps, proto.CapTerminals)
+		c.caps = m.Caps[:min(len(m.Caps), 64)]
+		showTerminals := slices.Contains(c.caps, proto.CapTerminals)
+		s.mu.Unlock()
+		if !c.ai && showTerminals != hadTerminals {
+			c.send(proto.Msg{Type: proto.TypeDevices, Devices: s.deviceList(c)})
+		}
 		return
 	case proto.TypeWatch:
 		s.mu.Lock()
@@ -295,6 +303,10 @@ func validHolder(h *proto.Holder) bool {
 	return h.Session != "" && len(h.Session) <= 64 && len(h.Cred) <= 256 && len(h.Name) <= 256 && len(h.User) <= 64
 }
 
+func validTerminal(terminal proto.KeptTerminal) bool {
+	return terminal.Since > 0 && terminal.Name != "" && len(terminal.Name) <= 256 && len(terminal.Cred) <= 256
+}
+
 // onStatus takes a host's status: the sessions holding its two seats, what AI clients may do
 // there, and its displays.
 func (s *Server) onStatus(c *conn, m proto.Msg) {
@@ -306,9 +318,12 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 	}
 	holder, ai := valid(m.Holder), valid(m.AIHolder)
 	kept := m.KeptTerminal
-	if kept != nil && (kept.Since <= 0 || kept.Name == "" || len(kept.Name) > 256 || len(kept.Cred) > 256) {
+	if kept != nil && !validTerminal(*kept) {
 		kept = nil
 	}
+	terminals := slices.DeleteFunc(m.Terminals, func(terminal proto.TerminalStatus) bool {
+		return !validTerminal(terminal.KeptTerminal)
+	})
 	state := m.AIState
 	if state != proto.AIOff && state != proto.AIOn && state != proto.AIStopped {
 		state = ""
@@ -322,7 +337,7 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 		s.displays[c.deviceID] = m.Displays
 	}
 	c.holder, c.aiHolder, c.aiState, c.aiRefused = holder, ai, state, m.AIRefused
-	c.keptTerminal = kept
+	c.keptTerminal, c.terminals = kept, terminals
 	switch m.WorkspaceAccess {
 	case "locked", "no_user_session", "view_only":
 		c.workspaceAccess = m.WorkspaceAccess

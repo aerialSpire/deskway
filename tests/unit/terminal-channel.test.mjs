@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { TerminalChannel } from '../../web/static/js/session/terminal-channel.js';
 import { TERMINAL_FRAME, TERMINAL_INPUT_WINDOW, TERMINAL_OUTPUT_WINDOW } from '../../web/static/js/proto.js';
 
-function setup() {
+function setup(target) {
   const sent = [], output = [], status = [];
   const channel = {
     readyState: 'open', bufferedAmount: 0,
@@ -12,19 +12,45 @@ function setup() {
   };
   const terminal = new TerminalChannel(channel, (bytes, done) => output.push({ bytes, done }), (m) => status.push(m));
   const receive = (m) => channel.onmessage({ data: m instanceof ArrayBuffer ? m : JSON.stringify(m) });
-  terminal.size(24, 80);
+  terminal.size(24, 80, target);
   return { terminal, channel, sent, output, status, receive };
 }
 
 test('open and resize use the terminal channel', () => {
-  const { terminal, sent, receive } = setup();
-  assert.deepEqual(sent.shift(), { t: 'open', rows: 24, cols: 80 });
-  terminal.input(Uint8Array.of(3));
-  assert.equal(sent.length, 0);
-  receive({ t: 'opened' });
-  terminal.size(24, 80);
-  terminal.size(31, 93);
-  assert.deepEqual(sent.shift(), { t: 'resize', rows: 31, cols: 93 });
+  for (const [target, id, selection] of [
+    [undefined, undefined, {}], [null, 21, { new: true }], [7, 7, { id: 7 }],
+  ]) {
+    const { terminal, sent, receive } = setup(target);
+    assert.deepEqual(sent.shift(), { t: 'open', rows: 24, cols: 80, ...selection });
+    terminal.input(Uint8Array.of(3));
+    assert.equal(sent.length, 0);
+    receive({ t: 'opened', id });
+    assert.equal(terminal.id, id);
+    terminal.size(24, 80, target);
+    terminal.size(31, 93, target);
+    assert.deepEqual(sent.shift(), { t: 'resize', rows: 31, cols: 93 });
+  }
+});
+
+test('switching sends close and waits for the channel and outstanding emulator writes', () => {
+  for (const channelClosesFirst of [false, true]) {
+    const { terminal, channel, sent, output, status, receive } = setup(4);
+    receive({ t: 'opened', id: 4 });
+    receive(new ArrayBuffer(5));
+    channel.close = () => { channel.readyState = 'closing'; };
+    const closed = () => { channel.readyState = 'closed'; channel.onclose(); };
+    let left = 0;
+    terminal.leave(() => left++);
+    assert.equal(channel.readyState, 'closing');
+    assert.deepEqual(sent.at(-1), { t: 'close' });
+    const consumed = output[0].done;
+    const [before, after] = channelClosesFirst ? [closed, consumed] : [consumed, closed];
+    before();
+    assert.equal(left, 0);
+    after();
+    assert.equal(left, 1);
+    assert.deepEqual(status, [{ t: 'opened', id: 4 }]);
+  }
 });
 
 test('replay consumes ordinary output credit and enables input after the emulator catches up', () => {

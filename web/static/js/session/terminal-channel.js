@@ -26,11 +26,13 @@ export class TerminalChannel {
     return true;
   }
 
-  size(rows, cols) {
+  size(rows, cols, target) {
     if (this.phase !== 'ready' && !this.attached) return;
     const size = `${rows}:${cols}`;
     if (this.lastSize === size) return;
-    if (this.send({ t: this.attached ? Msg.RESIZE : Msg.OPEN, rows, cols })) {
+    const message = this.attached ? { t: Msg.RESIZE, rows, cols }
+      : { t: Msg.OPEN, rows, cols, ...(target === null ? { new: true } : { id: target }) };
+    if (this.send(message)) {
       this.lastSize = size;
       if (this.phase === 'ready') this.phase = 'opening';
     }
@@ -70,6 +72,7 @@ export class TerminalChannel {
           this.reportOpened();
         }
         this.reportResult();
+        this.reportLeft();
       });
       return;
     }
@@ -80,6 +83,7 @@ export class TerminalChannel {
     if (validate('terminal', m)) { this.protocolError(); return; }
     if (m.t === Msg.OPENED && this.phase === 'opening' && (m.replay ?? 0) >= 0) {
       this.phase = 'running';
+      this.id = m.id;
       this.replayLeft = m.replay ?? 0;
       this.opened = m;
       this.reportOpened();
@@ -131,10 +135,28 @@ export class TerminalChannel {
     return true;
   }
 
+  leave(onClose) {
+    this.send({ t: Msg.CLOSE });
+    this.dispose();
+    this.onLeft = onClose;
+    this.channel.onclose = () => this.reportLeft();
+    this.channel.close();
+    this.reportLeft();
+  }
+
+  reportLeft() {
+    if (!this.onLeft || this.channel.readyState !== 'closed' || this.outputCredit.outstanding) return;
+    const onLeft = this.onLeft;
+    this.onLeft = null;
+    onLeft();
+  }
+
   dispose() {
     this.disposed = true;
+    this.onLeft = null;
     this.queuedInput.length = 0;
     this.channel.onmessage = null;
+    this.channel.onopen = null;
     this.channel.onclose = null;
   }
 }

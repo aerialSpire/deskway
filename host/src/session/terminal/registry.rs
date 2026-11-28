@@ -1,13 +1,16 @@
-//! Owns the computer's one PTY. Only the desk seat's current session can attach to it.
+//! Owns the computer's browser PTYs. The desk seat's session can attach to one at a time.
 
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc::{self, Receiver, Sender, SyncSender, TryRecvError}, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::wake::Wake;
 
-use wire::types::KeptTerminal;
+use wire::types::{Reason, TerminalStatus};
 
 use crate::i18n::{t, tf};
 use crate::platform::Pty;
@@ -17,6 +20,9 @@ use crate::platform::WorkspaceState;
 use crate::workspace::BrowserState;
 use crate::session::{SessionEvent, SessionUpdate};
 use super::{replay::History, Replay};
+
+#[cfg(test)]
+pub(in crate::session) use tests::fake_pty;
 
 const KEEP_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -61,7 +67,7 @@ impl Registry {
     }
 
     pub fn user_changed(&self) {
-        self.shared.state.lock().unwrap().close(Closed::UserChanged);
+        self.shared.state.lock().unwrap().close_all(Closed::UserChanged);
         self.shared.changed();
     }
 
@@ -69,8 +75,8 @@ impl Registry {
         self.shared.detach(id, why, true);
     }
 
-    pub fn status(&self) -> Option<KeptTerminal> {
-        self.shared.state.lock().unwrap().left().map(|left| left.report.clone())
+    pub fn status(&self) -> Vec<TerminalStatus> {
+        self.shared.state.lock().unwrap().status()
     }
 
     pub fn stop(&mut self) {
@@ -124,19 +130,20 @@ impl Shared {
             let deadline = {
                 let mut state = self.state.lock().unwrap();
                 if state.stopping { break; }
-                if state.left().is_some() {
-                    let more = state.drain_left(Instant::now());
-                    if state.left().is_none() { self.changed(); }
-                    if more {
-                        drop(state);
-                        thread::yield_now();
-                        continue;
+                let count = state.terminals.len();
+                let (more, deadline) = state.drain_left(Instant::now());
+                if count != state.terminals.len() { self.changed(); }
+                if let Some(Kept { shell, place: Place::Attached(notify), .. }) = state.attached.and_then(|id| state.terminals.get(&id)) {
+                    if shell.ready.swap(false, Ordering::Relaxed) {
+                        let _ = notify.send(SessionEvent::TerminalReady);
                     }
                 }
-                if let Some(Kept { place: Place::Attached { notify, .. }, .. }) = &state.terminal {
-                    let _ = notify.send(SessionEvent::TerminalReady);
+                if more {
+                    drop(state);
+                    thread::yield_now();
+                    continue;
                 }
-                state.left().map(|left| left.at + KEEP_FOR)
+                deadline
             };
             if let Some(deadline) = deadline {
                 let _ = ready.recv_timeout(deadline.saturating_duration_since(Instant::now()));
@@ -179,18 +186,18 @@ impl Lease {
         state.user == Some(self.user) && state.refusal(false).is_none()
     }
 
-    pub(super) fn attach(&self, rows: u16, cols: u16, notify: Sender<SessionEvent>) -> io::Result<Option<(Option<Replay>, bool)>> {
+    pub(super) fn attach(&self, target: Selection, rows: u16, cols: u16, notify: Sender<SessionEvent>) -> io::Result<Option<Attachment>> {
         let mut state = self.shared.state.lock().unwrap();
         if !self.accessible() {
             return Ok(None);
         }
-        let was_left = state.left().is_some();
-        let info = state.attach(&self.id, &self.name, &self.cred, Instant::now(), notify, || {
+        let before = (state.attached, state.terminals.len());
+        let info = state.attach((&self.id, &self.name, &self.cred), target, (Instant::now(), SystemTime::now()), notify, || {
             Shell::new((self.shared.open)(self.user, rows, cols)?, self.shared.wake.clone())
-        }).map(|attached| attached.map(|(shell, returned)| {
-            (returned.then(|| Replay::new(&shell.replay)), shell.replay.dropped)
+        }).map(|attached| attached.map(|(id, shell, returned)| Attachment {
+            id, replay: returned.then(|| Replay::new(&shell.replay)), dropped: shell.replay.dropped,
         }));
-        if was_left && state.left().is_none() {
+        if matches!(info, Ok(Some(_))) || before != (state.attached, state.terminals.len()) {
             self.shared.changed();
         }
         info
@@ -205,43 +212,65 @@ impl Lease {
         self.shared.detach(&self.id, why, false);
     }
 
-    pub(super) fn end(&self, why: &str) {
+    pub(in crate::session) fn end(&self, why: &str) {
         self.shared.detach(&self.id, why, true);
     }
 
     pub fn close(&self, why: Closed) -> bool {
-        self.shared.state.lock().unwrap().close_attached(&self.id, why)
+        let closed = self.shared.state.lock().unwrap().close_attached(&self.id, why);
+        if closed { self.shared.changed(); }
+        closed
     }
 
     pub(super) fn terminate(&self) -> Option<io::Result<bool>> {
         let mut state = self.shared.state.lock().unwrap();
-        self.accessible().then(|| state.terminate(&self.id)).flatten()
+        let result = self.accessible().then(|| state.terminate(&self.id)).flatten();
+        if matches!(result, Some(Ok(true))) { self.shared.changed(); }
+        result
     }
 }
 
 #[derive(Default)]
 struct State {
     seat: Option<String>,
-    terminal: Option<Kept>,
+    terminals: BTreeMap<u64, Kept>,
+    attached: Option<u64>,
+    last_id: u64,
     stopping: bool,
+}
+
+pub(super) struct Attachment {
+    pub(super) id: u64,
+    pub(super) replay: Option<Replay>,
+    pub(super) dropped: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Selection {
+    LatestOrNew,
+    Id(u64),
+    New,
 }
 
 struct Kept {
     shell: Shell,
     place: Place,
+    since: u64,
+    name: String,
+    cred: Option<String>,
 }
 
 enum Place {
-    Attached { name: String, cred: String, notify: Sender<SessionEvent> },
+    Attached(Sender<SessionEvent>),
     Left(Left),
 }
 
 struct Left {
     at: Instant,
-    report: KeptTerminal,
+    wall: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum Closed {
     Exit(i32),
     Person,
@@ -252,113 +281,198 @@ pub enum Closed {
 }
 
 impl State {
-    fn left(&self) -> Option<&Left> {
-        match &self.terminal.as_ref()?.place {
-            Place::Left(left) => Some(left),
-            Place::Attached { .. } => None,
-        }
+    // The newest departure comes first so signaling can also report the legacy terminal.
+    fn status(&self) -> Vec<TerminalStatus> {
+        let mut terminals: Vec<_> = self.terminals.iter().collect();
+        terminals.sort_by_key(|(&id, kept)| Reverse(kept.left().map(|left| (left.at, id))));
+        terminals.into_iter().map(|(&id, kept)| TerminalStatus {
+            id, since: kept.since, attached: kept.left().is_none(),
+            name: kept.name.clone(), cred: kept.cred.clone(), left: kept.left().map(|left| left.wall),
+        }).collect()
     }
 
-    fn attach(&mut self, id: &str, name: &str, cred: &str, now: Instant, notify: Sender<SessionEvent>,
-        open: impl FnOnce() -> io::Result<Shell>,
-    ) -> io::Result<Option<(&mut Shell, bool)>> {
-        if self.stopping || self.seat.as_deref() != Some(id) || self.attached(id).is_some() {
+    fn attach(
+        &mut self, device: (&str, &str, &str), selection: Selection, (now, wall): (Instant, SystemTime),
+        notify: Sender<SessionEvent>, open: impl FnOnce() -> io::Result<Shell>,
+    ) -> io::Result<Option<(u64, &mut Shell, bool)>> {
+        let (session, name, cred) = device;
+        if self.stopping || self.seat.as_deref() != Some(session) {
             return Ok(None);
         }
-        for _ in 0..=OUTPUT_FRAMES {
-            if !self.drain_left(now) { break; }
-        }
-        let returned = self.terminal.is_some();
-        let place = Place::Attached { name: name.into(), cred: cred.into(), notify };
-        let event = if let Some(kept) = &mut self.terminal {
-            kept.place = place;
-            "terminal.returned"
-        } else {
-            self.terminal = Some(Kept { shell: open()?, place });
-            "terminal.opened"
+        let target = match selection {
+            Selection::Id(id) if self.attached == Some(id) || !self.prepare_return(id, now) => return Ok(None),
+            Selection::Id(id) => Some(id),
+            Selection::New => None,
+            Selection::LatestOrNew => loop {
+                let latest = self.terminals.iter()
+                    .filter_map(|(&id, kept)| Some((kept.left()?.at, id)))
+                    .max().map(|(_, id)| id);
+                match latest {
+                    Some(id) if !self.prepare_return(id, now) => {}
+                    _ => break latest,
+                }
+            },
         };
+        self.detach(session, Reason::Left.as_str(), now, wall, false);
+        let place = Place::Attached(notify);
+        let cred = (!cred.is_empty()).then(|| cred.to_owned());
+        let (id, kept, event) = if let Some(id) = target {
+            let kept = self.terminals.get_mut(&id).unwrap();
+            kept.place = place;
+            kept.name = name.into();
+            kept.cred = cred;
+            (id, kept, "terminal.returned")
+        } else {
+            let shell = open()?;
+            self.last_id += 1;
+            let id = self.last_id;
+            let kept = self.terminals.entry(id).or_insert(Kept {
+                shell, place, since: unix_seconds(wall), name: name.into(), cred,
+            });
+            (id, kept, "terminal.opened")
+        };
+        self.attached = Some(id);
+        kept.shell.pty.set_attached(true);
         eprintln!("{}", tf(event, &[("name", name.into())]));
-        Ok(self.attached(id).map(|shell| {
-            shell.pty.set_attached(true);
-            (shell, returned)
-        }))
+        Ok(Some((id, &mut kept.shell, target.is_some())))
     }
 
-    fn attached(&mut self, id: &str) -> Option<&mut Shell> {
-        let kept = self.terminal.as_mut()?;
-        (self.seat.as_deref() == Some(id) && matches!(kept.place, Place::Attached { .. })).then_some(&mut kept.shell)
+    fn prepare_return(&mut self, id: u64, now: Instant) -> bool {
+        let Some(kept) = self.terminals.get_mut(&id) else { return false };
+        for _ in 0..=OUTPUT_FRAMES {
+            match kept.drain(now) {
+                Ok(true) => {}
+                Ok(false) => return true,
+                Err(why) => {
+                    self.close(id, why);
+                    return false;
+                }
+            }
+        }
+        true
     }
 
-    fn detach(&mut self, id: &str, why: &str, now: Instant, wall: SystemTime, end: bool) -> bool {
-        if self.seat.as_deref() != Some(id) {
+    fn attached(&mut self, session: &str) -> Option<&mut Shell> {
+        self.terminals.get_mut(&self.attached_id(session)?).map(|kept| &mut kept.shell)
+    }
+
+    fn attached_id(&self, session: &str) -> Option<u64> {
+        self.attached.filter(|_| self.seat.as_deref() == Some(session))
+    }
+
+    fn detach(&mut self, session: &str, why: &str, now: Instant, wall: SystemTime, end: bool) -> bool {
+        if self.seat.as_deref() != Some(session) {
             return false;
         }
         if end {
             self.seat = None;
         }
-        let Some(kept) = &mut self.terminal else { return false };
-        let Place::Attached { name, cred, .. } = &kept.place else { return false };
+        let Some(id) = self.attached.take() else { return false };
+        let kept = self.terminals.get_mut(&id).unwrap();
         kept.shell.pty.set_attached(false);
-        eprintln!("{}", tf("terminal.left", &[("name", name.clone()), ("reason", why.into())]));
-        kept.place = Place::Left(Left { at: now, report: KeptTerminal {
-            since: wall.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(), name: name.clone(), cred: Some(cred.clone()).filter(|cred| !cred.is_empty()),
-        } });
+        eprintln!("{}", tf("terminal.left", &[("name", kept.name.clone()), ("reason", why.into())]));
+        kept.place = Place::Left(Left { at: now, wall: unix_seconds(wall) });
         true
     }
 
-    fn drain_left(&mut self, now: Instant) -> bool {
-        let Some(left) = self.left() else { return false; };
-        if now >= left.at + KEEP_FOR {
-            self.close(Closed::Idle);
-            return false;
-        }
-        match self.terminal.as_mut().unwrap().shell.output(usize::MAX, |_| Ok(true)) {
-            Ok((bytes, None)) => bytes > 0,
-            Ok((_, Some(code))) => { self.close(Closed::Exit(code)); false }
-            Err(_) => { self.close(Closed::Io); false }
-        }
+    fn drain_left(&mut self, now: Instant) -> (bool, Option<Instant>) {
+        let mut more = false;
+        let mut deadline = None;
+        self.terminals.retain(|_, kept| {
+            let Some(left) = kept.left() else { return true };
+            let expiry = left.at + KEEP_FOR;
+            match kept.drain(now) {
+                Ok(progress) => {
+                    more |= progress;
+                    deadline = Some(deadline.map_or(expiry, |earliest: Instant| earliest.min(expiry)));
+                    true
+                }
+                Err(why) => {
+                    why.log();
+                    false
+                }
+            }
+        });
+        (more, deadline)
     }
 
-    fn close_attached(&mut self, id: &str, why: Closed) -> bool {
-        if self.attached(id).is_none() {
-            return false;
-        }
-        self.close(why);
+    fn close_attached(&mut self, session: &str, why: Closed) -> bool {
+        let Some(id) = self.attached_id(session) else { return false };
+        self.close(id, why);
         true
     }
 
-    fn terminate(&mut self, id: &str) -> Option<io::Result<bool>> {
-        let result = self.attached(id)?.pty.terminate();
+    fn terminate(&mut self, session: &str) -> Option<io::Result<bool>> {
+        let result = self.attached(session)?.pty.terminate();
         if matches!(result, Ok(true)) {
-            self.close(Closed::Person);
+            self.close_attached(session, Closed::Person);
         }
         Some(result)
     }
 
     fn stop(&mut self) {
         self.stopping = true;
-        self.close(Closed::Stop);
+        self.close_all(Closed::Stop);
     }
 
-    fn close(&mut self, why: Closed) {
-        if self.terminal.take().is_none() {
-            return;
+    fn close(&mut self, id: u64, why: Closed) {
+        if self.attached == Some(id) {
+            self.attached = None;
         }
-        let reason = match why {
-            Closed::Exit(code) => tf("terminal.exit", &[("code", code.to_string())]),
-            Closed::Person => t("terminal.person"),
-            Closed::Idle => t("terminal.idle"),
-            Closed::Stop => t("terminal.stop"),
-            Closed::Io => t("terminal.io"),
-            Closed::UserChanged => t("terminal.user_changed"),
+        self.terminals.remove(&id);
+        why.log();
+    }
+
+    fn close_all(&mut self, why: Closed) {
+        self.attached = None;
+        for _ in std::mem::take(&mut self.terminals) {
+            why.log();
+        }
+    }
+}
+
+impl Kept {
+    fn left(&self) -> Option<&Left> {
+        match &self.place {
+            Place::Left(left) => Some(left),
+            Place::Attached(_) => None,
+        }
+    }
+
+    fn drain(&mut self, now: Instant) -> Result<bool, Closed> {
+        if self.left().is_some_and(|left| now >= left.at + KEEP_FOR) {
+            return Err(Closed::Idle);
+        }
+        match self.shell.output(usize::MAX, |_| Ok(true)) {
+            Ok((bytes, None)) => Ok(bytes > 0),
+            Ok((_, Some(code))) => Err(Closed::Exit(code)),
+            Err(_) => Err(Closed::Io),
+        }
+    }
+}
+
+impl Closed {
+    fn log(self) {
+        let reason = match self {
+            Self::Exit(code) => tf("terminal.exit", &[("code", code.to_string())]),
+            Self::Person => t("terminal.person"),
+            Self::Idle => t("terminal.idle"),
+            Self::Stop => t("terminal.stop"),
+            Self::Io => t("terminal.io"),
+            Self::UserChanged => t("terminal.user_changed"),
         };
         eprintln!("{}", tf("terminal.closed", &[("reason", reason)]));
     }
 }
 
+fn unix_seconds(wall: SystemTime) -> u64 {
+    wall.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
 pub(super) struct Shell {
     // Drop the receiver before the PTY so a reader blocked on the bounded queue can exit.
     events: Receiver<PtyEvent>,
+    ready: Arc<AtomicBool>,
     pending: Option<PtyEvent>,
     offset: usize,
     pub(super) pty: Box<dyn Pty>,
@@ -369,15 +483,21 @@ impl Shell {
     fn new(mut pty: Box<dyn Pty>, wake: SyncSender<()>) -> io::Result<Self> {
         let (sender, events) = mpsc::sync_channel(OUTPUT_FRAMES);
         let writable = wake.clone();
+        let ready = Arc::new(AtomicBool::new(false));
+        let (output_ready, write_ready) = (ready.clone(), ready.clone());
         pty.listen(PtyEvents {
             output: Box::new(move |event| {
                 if sender.send(event).is_err() { return false; }
+                output_ready.store(true, Ordering::Relaxed);
                 let _ = wake.try_send(());
                 true
             }),
-            writable: Arc::new(move || { let _ = writable.try_send(()); }),
+            writable: Arc::new(move || {
+                write_ready.store(true, Ordering::Relaxed);
+                let _ = writable.try_send(());
+            }),
         })?;
-        Ok(Self { events, pending: None, offset: 0, pty, replay: History::default() })
+        Ok(Self { events, ready, pending: None, offset: 0, pty, replay: History::default() })
     }
 
     pub(super) fn output(&mut self, capacity: usize, send: impl FnOnce(&[u8]) -> anyhow::Result<bool>) -> anyhow::Result<(usize, Option<i32>)> {
@@ -437,6 +557,10 @@ mod tests {
 
     struct FakePty(Arc<Mutex<Process>>);
 
+    pub(in crate::session) fn fake_pty() -> Box<dyn Pty> {
+        Box::new(FakePty(Arc::new(Mutex::new(Process::default()))))
+    }
+
     impl Process {
         fn emit(&mut self, event: PtyEvent) {
             assert!((self.events.as_mut().unwrap().output)(event));
@@ -484,12 +608,18 @@ mod tests {
     }
 
     fn opened(now: Instant) -> (State, Arc<Mutex<Process>>) {
-        let process = Arc::new(Mutex::new(Process::default()));
         let mut state = State { seat: Some("one".into()), ..State::default() };
-        let (_, returned) = state.attach("one", "Phone", "cred1", now, mpsc::channel().0, || Shell::new(Box::new(FakePty(process.clone())), mpsc::sync_channel(1).0))
+        let (_, process) = open_fake(&mut state, now);
+        (state, process)
+    }
+
+    fn open_fake(state: &mut State, now: Instant) -> (u64, Arc<Mutex<Process>>) {
+        let process = Arc::new(Mutex::new(Process::default()));
+        let (id, _, returned) = state.attach(("one", "Phone", "cred1"), Selection::New, (now, UNIX_EPOCH + Duration::from_secs(100)), mpsc::channel().0,
+            || Shell::new(Box::new(FakePty(process.clone())), mpsc::sync_channel(1).0))
             .unwrap().unwrap();
         assert!(!returned);
-        (state, process)
+        (id, process)
     }
 
     #[test]
@@ -504,28 +634,37 @@ mod tests {
     }
 
     #[test]
-    fn locking_revokes_the_attachment_and_user_change_closes_the_kept_shell() {
+    fn taking_the_seat_detaches_the_shell_and_user_change_closes_all_shells() {
         let (updates, _) = Waker::default().channel();
         for next in [WorkspaceState::NO_USER, WorkspaceState { user: Some(2), locked: false }] {
             let state = Arc::new(Mutex::new(WorkspaceState::READY));
-            let process = Arc::new(Mutex::new(Process::default()));
-            let open = process.clone();
+            let processes = [Arc::new(Mutex::new(Process::default())), Arc::new(Mutex::new(Process::default()))];
+            let open = Mutex::new(processes.clone().into_iter());
             let native = state.clone();
             let registry = Registry::guarded(
-                Arc::new(move |_, _, _| Ok(Box::new(FakePty(open.clone())))),
+                Arc::new(move |_, _, _| Ok(Box::new(FakePty(open.lock().unwrap().next().unwrap())))),
                 Arc::new(move || *native.lock().unwrap()), updates.clone(),
             );
             let lease = registry.admit("one".into(), "Phone".into(), "cred".into());
-            assert!(lease.attach(24, 80, mpsc::channel().0).unwrap().is_some());
+            for id in [1, 2] {
+                assert_eq!(lease.attach(Selection::New, 24, 80, mpsc::channel().0).unwrap().unwrap().id, id);
+            }
+            assert!(registry.status().iter().any(|terminal| terminal.id == 2 && terminal.attached));
+            let new = registry.admit("two".into(), "Laptop".into(), "other".into());
+            assert!(!lease.holds_seat());
+            let status = registry.status();
+            assert_eq!(status.len(), 2);
+            assert!(status.iter().all(|terminal| !terminal.attached && terminal.left.is_some() && terminal.name == "Phone"));
+            assert_eq!(new.attach(Selection::LatestOrNew, 24, 80, mpsc::channel().0).unwrap().unwrap().id, 2);
             state.lock().unwrap().locked = true;
-            assert!(lease.with_shell(|_| ()).is_none());
-            registry.end("one", "locked");
-            assert_eq!(registry.status().unwrap().name, "Phone");
-            assert_eq!(process.lock().unwrap().drops, 0);
+            assert!(new.with_shell(|_| ()).is_none());
+            registry.end("two", "locked");
+            assert_eq!(registry.status()[0].name, "Laptop");
+            assert!(processes.iter().all(|process| process.lock().unwrap().drops == 0));
             *state.lock().unwrap() = next;
             registry.user_changed();
-            assert!(registry.status().is_none());
-            assert_eq!(process.lock().unwrap().drops, 1);
+            assert!(registry.status().is_empty());
+            assert!(processes.iter().all(|process| process.lock().unwrap().drops == 1));
         }
     }
 
@@ -552,7 +691,8 @@ mod tests {
         for (id, withhold) in [("live", true), ("replay", true), ("return", false)] {
             locked.store(false, Ordering::Relaxed);
             let mut terminal = Terminal::new(registry.admit(id.into(), "browser".into(), "device".into()), mpsc::channel().0);
-            terminal.open(24, 80);
+            let target = if id == "live" { Selection::New } else { Selection::Id(1) };
+            terminal.open(24, 80, target);
             if id == "live" {
                 process.lock().unwrap().emit(PtyEvent::Bytes(b"kept output".to_vec()));
             }
@@ -575,21 +715,50 @@ mod tests {
     }
 
     #[test]
-    fn lifetime_ends_only_on_exit_explicit_close_idle_or_stop() {
+    fn terminal_selection_uses_departure_order_and_refuses_an_attached_id() {
+        let now = Instant::now();
+        let (mut state, _) = opened(now);
+        open_fake(&mut state, now + Duration::from_secs(1));
+        for (step, leave_first, target, expected) in [
+            (2, false, Selection::Id(2), None),
+            (3, false, Selection::LatestOrNew, Some(1)),
+            (5, true, Selection::LatestOrNew, Some(1)),
+        ] {
+            let at = now + Duration::from_secs(step);
+            if leave_first {
+                assert!(state.detach("one", "left", at - Duration::from_secs(1), UNIX_EPOCH, false));
+            }
+            let attachment = state.attach(("one", "Phone", "cred1"), target, (at, UNIX_EPOCH), mpsc::channel().0, || panic!("unexpected shell"))
+                .unwrap().map(|(id, _, _)| id);
+            assert_eq!(attachment, expected);
+            assert_eq!(state.attached, expected.or(Some(2)));
+        }
+    }
+
+    #[test]
+    fn shells_exit_close_and_expire_independently_until_stop() {
         for (why, detached) in [
             (Closed::Exit(17), false), (Closed::Exit(17), true), (Closed::Person, false),
-            (Closed::Idle, true), (Closed::Stop, false), (Closed::Stop, true),
+            (Closed::Idle, true), (Closed::Io, true), (Closed::Stop, false), (Closed::Stop, true),
         ] {
             let now = Instant::now();
             let wall = UNIX_EPOCH + Duration::from_secs(123);
-            let (mut state, process) = opened(now);
-            assert!(state.left().is_none());
-            if detached {
-                assert!(state.detach("one", "left", now, wall, true));
-                assert_eq!(state.left().unwrap().report, KeptTerminal { since: 123, name: "Phone".into(), cred: Some("cred1".into()) });
-                assert!(!state.detach("one", "failed", now + Duration::from_secs(1), wall, true));
+            let (mut state, first) = opened(now);
+            let (id, process, other) = if detached {
+                assert!(state.detach("one", "left", now, wall, false));
+                assert!(state.status().contains(&TerminalStatus {
+                    id: 1, since: 100, name: "Phone".into(), cred: Some("cred1".into()), attached: false, left: Some(123),
+                }));
                 assert!(state.terminate("one").is_none());
-            }
+                let (_, other) = open_fake(&mut state, now + Duration::from_secs(1));
+                let later = Duration::from_secs(2);
+                assert!(state.detach("one", "left", now + later, wall + later, true));
+                assert!(!state.detach("one", "failed", now + later, wall + later, true));
+                (1, first, other)
+            } else {
+                let (id, process) = open_fake(&mut state, now + Duration::from_secs(1));
+                (id, process, first)
+            };
             match why {
                 Closed::Exit(code) if detached => {
                     process.lock().unwrap().exit(code);
@@ -604,15 +773,19 @@ mod tests {
                 }
                 Closed::Person => assert!(state.terminate("one").unwrap().unwrap()),
                 Closed::Idle => {
-                    state.drain_left(now + KEEP_FOR - Duration::from_secs(1));
-                    assert!(state.left().is_some());
+                    assert_eq!(state.drain_left(now + KEEP_FOR - Duration::from_secs(1)).1, Some(now + KEEP_FOR));
                     assert_eq!(process.lock().unwrap().drops, 0);
-                    state.drain_left(now + KEEP_FOR);
+                    assert_eq!(state.drain_left(now + KEEP_FOR).1, Some(now + KEEP_FOR + Duration::from_secs(2)));
+                }
+                Closed::Io => {
+                    process.lock().unwrap().emit(PtyEvent::Error(io::ErrorKind::BrokenPipe.into()));
+                    state.drain_left(now);
                 }
                 Closed::Stop => state.stop(),
-                Closed::Io | Closed::UserChanged => unreachable!(),
+                Closed::UserChanged => unreachable!(),
             }
-            assert!(state.terminal.is_none(), "{why:?}, detached={detached}");
+            assert!(!state.terminals.contains_key(&id), "{why:?}, detached={detached}");
+            assert_eq!(other.lock().unwrap().drops, usize::from(matches!(why, Closed::Stop)));
             assert_eq!(process.lock().unwrap().drops, 1, "{why:?}, detached={detached}");
         }
     }
@@ -698,22 +871,26 @@ mod tests {
         let first = &mut Stream::new(24, 80, None);
         assert!(first.credit.window.take(OUTPUT_WINDOW, OUTPUT_WINDOW));
         assert!(first.input.receive(b"old input".to_vec()));
+        let (_, other) = open_fake(&mut state, now);
         assert!(state.detach("one", "taken", now, UNIX_EPOCH, true));
         assert!(state.attached("one").is_none());
         let detached = b'x';
         let live = b'y';
         let mode = b"\x1b[?2004h";
         process.lock().unwrap().emit(PtyEvent::Bytes(mode.to_vec()));
-        assert!(state.drain_left(now));
+        assert!(state.drain_left(now).0);
         for _ in 0..2 * super::super::replay::LIMIT / FRAME {
             process.lock().unwrap().emit(PtyEvent::Bytes(vec![detached; FRAME]));
-            assert!(state.drain_left(now));
+            assert!(state.drain_left(now).0);
         }
         process.lock().unwrap().redraw_error = true;
 
         state.seat = Some("two".into());
-        let (shell, returned) = state.attach("two", "Laptop", "cred2", now, mpsc::channel().0, || panic!("second shell"))
+        assert!(state.attach(("two", "Laptop", "cred2"), Selection::Id(99), (now, UNIX_EPOCH), mpsc::channel().0, || panic!("unexpected shell"))
+            .unwrap().is_none());
+        let (id, shell, returned) = state.attach(("two", "Laptop", "cred2"), Selection::Id(1), (now, UNIX_EPOCH), mpsc::channel().0, || panic!("unexpected shell"))
             .unwrap().unwrap();
+        assert_eq!(id, 1);
         assert!(returned);
         assert!(shell.replay.dropped);
         let mut stream = Stream::new(25, 90, Some(Replay::new(&shell.replay)));
@@ -741,7 +918,9 @@ mod tests {
         assert_eq!(sent.last(), Some(&live));
         assert_eq!(process.lock().unwrap().redraw, [(25, 90)]);
         assert_eq!(process.lock().unwrap().input, b"new input");
-        assert!(state.left().is_none());
+        assert!(state.terminals[&1].left().is_none());
+        assert!(state.terminals[&2].left().is_some());
+        assert_eq!(other.lock().unwrap().drops, 0);
         assert!(state.terminate("one").is_none());
     }
 }

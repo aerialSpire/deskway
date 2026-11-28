@@ -1,7 +1,8 @@
 // Terminal and Files share one authenticated connection and one toolbar.
-import { h } from '../dom.js';
-import { t } from '../i18n.js';
+import { h, ICONS, svg } from '../dom.js';
+import { agoText, t } from '../i18n.js';
 import { CAPS } from '../proto.js';
+import { terminalActions } from '../terminal-ui.js';
 import { FilesView } from './files-view.js';
 import { FileTransfers } from './file-transfers.js';
 import { TerminalView } from './terminal-view.js';
@@ -10,10 +11,12 @@ import { TerminalView } from './terminal-view.js';
 const interrupted = new Map();
 
 export class DataView {
-  constructor(s, view) {
+  constructor(s, view, target, deviceStatus) {
     this.s = s;
+    this.deviceStatus = deviceStatus;
+    this.helloCaps = [CAPS.TERMINALS];
     this.currentView = view;
-    this.terminal = new TerminalView(s);
+    this.terminal = new TerminalView(s, target);
     this.strip = h('div', { class: 'file-transfer-strip' });
     const transferView = [this.strip, () => s.connected, () => this.files.update(),
       (path) => this.files.uploaded(path), () => this.openTransfers()];
@@ -23,12 +26,23 @@ export class DataView {
     if (previous) previous.mount(...transferView);
     this.files = new FilesView(s, this.transfers);
     this.buttons = this.terminal.buttons;
-    this.navigation = ['terminal', 'files'].map((view) => h('button', {
-      class: 'tool', type: 'button', 'data-session-view': view, 'aria-pressed': 'false', onclick: () => this.show(view),
-    }, t(view === 'terminal' ? 'terminal.label' : 'files.label')));
+    this.terminalText = h('span', {}, t('terminal.label'));
+    this.terminalArrow = h('span', { class: 'route-arrow', hidden: true }, svg(ICONS.chevron));
+    this.terminalButton = h('button', {
+      class: 'tool', type: 'button', 'data-session-view': 'terminal', 'aria-pressed': 'false',
+      onclick: () => {
+        if (!this.filesVisible && this.terminal.canSwitch) s.toolbar.togglePanel('terminals');
+        else this.show('terminal');
+      },
+    }, this.terminalText, this.terminalArrow);
+    this.filesButton = h('button', {
+      class: 'tool', type: 'button', 'data-session-view': 'files', 'aria-pressed': 'false', onclick: () => this.show('files'),
+    }, t('files.label'));
+    this.navigation = [this.terminalButton, this.filesButton];
   }
 
   get filesVisible() { return this.currentView === 'files'; }
+  get canBrowse() { return this.s.caps ? this.s.hasCap(CAPS.BROWSE) : this.s.device.caps?.includes(CAPS.BROWSE); }
   get hasTerminal() { return this.terminal.opened || !!this.terminal.stream?.attached; }
   get keeps() { return this.terminal.keeps; }
   get canClose() { return this.terminal.canClose; }
@@ -40,28 +54,29 @@ export class DataView {
 
   bind() {
     this.terminal.bind();
+    this.s.toolbar.addPanel('terminals', this.terminalButton, () => this.terminalPanel());
     this.show(this.currentView);
   }
 
-  show(view) {
+  show(view, target) {
     if (this.currentView !== view) this.s.releaseAll();
     this.currentView = view;
     const files = this.filesVisible;
-    const canBrowse = this.s.caps ? this.s.hasCap(CAPS.BROWSE) : this.s.device.caps?.includes(CAPS.BROWSE);
+    const canBrowse = this.canBrowse;
     this.s.root.classList.toggle('files-session', files);
     this.s.stage.hidden = files;
     this.s.osk.button.hidden = files;
     if (files) this.s.osk.toggle(false);
-    for (const button of this.navigation) {
-      button.hidden = !canBrowse;
-      button.setAttribute('aria-pressed', String(button.dataset.sessionView === view));
-    }
+    this.filesButton.hidden = !canBrowse;
+    this.filesButton.setAttribute('aria-pressed', String(files));
+    this.terminalButton.setAttribute('aria-pressed', String(!files));
     this.files.show(files);
     this.s.updateRemoteControls();
     if (files) {
       if (this.s.caps && !canBrowse) this.files.showNotice(t('files.unavailable'));
       if (this.s.connected && this.s.caps) this.s.ready();
     } else {
+      if (target !== undefined) this.terminal.select(target);
       if (this.s.connected && !this.terminal.stream?.attached && this.terminal.stream?.phase !== 'done') {
         this.s.setWaiting(t(this.terminal.waiting));
       }
@@ -70,6 +85,47 @@ export class DataView {
     this.terminal.active();
     this.s.toolbar.show();
     this.s.layout();
+  }
+
+  terminalPanel() {
+    const stream = this.terminal.stream;
+    const { rows, newTerminal } = terminalActions(this.deviceStatus(), t, (since) => agoText(since, { seen: false }), (target) => {
+      this.s.toolbar.closePanel(this.s.stage);
+      this.terminal.select(target);
+      this.terminal.active();
+    }, stream?.attached ? stream.id : undefined);
+    return h('section', { class: 'panel terminal-picker', 'aria-label': t('terminal.label') },
+      rows.map(({ text, label, run, disabled }) => h('div', { class: 'notice' }, h('span', { class: 'text' }, text),
+        h('button', { class: 'btn compact', type: 'button', 'aria-label': `${label} · ${text}`, disabled, onclick: run }, label))),
+      h('button', { class: 'btn compact block', type: 'button', onclick: newTerminal.run }, newTerminal.label));
+  }
+
+  refreshTerminalList() { this.updateControls(); }
+
+  updateControls() {
+    const { toolbar, stage } = this.s;
+    const supported = this.s.hasCap(CAPS.TERMINALS);
+    const open = toolbar.panelKind === 'terminals';
+    if (open && (this.filesVisible || !this.terminal.canSwitch)) toolbar.closePanel(stage);
+    const stream = this.terminal.stream;
+    const id = supported && stream?.attached && this.deviceStatus()?.terminals?.length > 1 ? stream.id : undefined;
+    const label = id === undefined ? t('terminal.label') : t('terminal.numbered', { id });
+    const hidden = !this.canBrowse && !supported;
+    // The arrow shows whenever the button opens the list, with one terminal too: the list is
+    // where another one is started.
+    const listed = !this.filesVisible && this.terminal.canSwitch;
+    if (this.terminalButton.hidden !== hidden || this.terminalText.textContent !== label || this.terminalArrow.hidden === listed) {
+      this.terminalText.textContent = label;
+      this.terminalButton.hidden = hidden;
+      this.terminalArrow.hidden = !listed;
+      toolbar.fit();
+    }
+    if (listed) {
+      this.terminalButton.setAttribute('aria-expanded', String(toolbar.panelKind === 'terminals'));
+    } else {
+      this.terminalButton.removeAttribute('aria-expanded');
+    }
+    toolbar.refreshPanel('terminals');
   }
 
   keyboardSink() { return this.terminal.keyboardSink(); }

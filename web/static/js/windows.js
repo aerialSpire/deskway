@@ -34,7 +34,7 @@ if (channel) {
     else if (m.t === 'front' && m.id === ownComputer) {
       channel.postMessage({ t: 'here', id: ownComputer });
       window.focus();
-      selectView(m.view);
+      selectView(m.view, m.target);
     } else if (m.t === 'here') waiting.get(m.id)?.();
   };
   if (ownComputer) {
@@ -48,35 +48,36 @@ if (channel) {
 const separate = () => store.get('deskway.windows') === '1';
 
 // Pressing computer `d`: its own window, when this device has them and this is not it.
-export function openWindow(d, view) {
+export function openWindow(d, view, target) {
   if (!separate() || d.id === ownComputer) return false;
   const mine = opened.get(d.id);
   if (mine && !mine.closed) {
     mine.focus();
-    channel?.postMessage({ t: 'front', id: d.id, view });
+    channel?.postMessage({ t: 'front', id: d.id, view, target });
     return true;
   }
   if (channel && open.has(d.id)) {
     // Opened by another window: asked to come to the front. No answer, it is gone: opened anew
     // (still within the press, for the browser).
-    const timer = setTimeout(() => { waiting.delete(d.id); open.delete(d.id); openNew(d, view); }, ANSWER_MS);
+    const timer = setTimeout(() => { waiting.delete(d.id); open.delete(d.id); openNew(d, view, target); }, ANSWER_MS);
     waiting.set(d.id, () => {
       clearTimeout(timer);
       waiting.delete(d.id);
       // A browser may not let a window come forward by itself: then this one says where it is.
       setTimeout(() => { if (document.hasFocus()) gotIt(t('windows.openTitle', { name: d.name }), t('windows.openText')); }, ANSWER_MS);
     });
-    channel.postMessage({ t: 'front', id: d.id, view });
+    channel.postMessage({ t: 'front', id: d.id, view, target });
     return true;
   }
-  return openNew(d, view);
+  return openNew(d, view, target);
 }
 
 // False when the browser refused the window: the computer is then controlled here.
-function openNew(d, view) {
+function openNew(d, view, target) {
   const url = new URL(location.pathname, location.origin);
   url.searchParams.set('computer', d.id);
   if (view !== 'desktop') url.searchParams.set('view', view);
+  if (target !== undefined) url.searchParams.set('terminal', target === null ? 'new' : target);
   const w = window.open(url.href, `deskway-${d.id}`);
   if (w) opened.set(d.id, w);
   return !!w;

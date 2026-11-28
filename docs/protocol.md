@@ -66,6 +66,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `desk` | no lock-screen note |
   | `terminal` | no browser terminal |
   | `terminal-keep` | the browser terminal ends with its session |
+  | `terminals` | no terminal list, return by ID or explicit new terminal |
   | `browse` | no file view on the data-only browser session |
   | `file-transfer` | Files has browsing and folder operations only |
   | `ai` | no AI seat: AI clients cannot use the computer |
@@ -432,12 +433,25 @@ The browser offers a terminal only when the live signaling hello reports `termin
 the answer as usual, and waits for the control hello to confirm the capability. These additions
 are gated by that capability within protocol 4.
 
-The browser sends `open{rows, cols}` the first time the Terminal view is shown and can
-size the emulator. After `open`, the host attaches the desk session to its one login shell,
-starting it if needed, and sends `opened` before any binary output. Binary messages carry raw
-bytes in both directions. `resize{rows, cols}` changes the PTY size. Ending the desk session,
-losing the terminal channel or sending `close` detaches the browser. An ICE restart on the
-same connection preserves its attachment and credit.
+The browser sends `open{rows, cols, id?, new?}` the first time the Terminal view is shown and can
+size the emulator. Without a selector, the host returns to the most recently detached shell
+or starts a login shell if none is kept. An `id` returns to that shell. `new: true` starts a
+login shell. The host sends `error{why: "open"}` if it cannot start a shell or if the
+shell requested by ID no longer exists or is attached elsewhere.
+Sending both `id` and `new` yields `error{why: "protocol"}`. The host assigns IDs in increasing
+order for its lifetime and sends `opened` before any binary output. Each channel has one
+attachment. To switch, the browser sends `close`, closes that channel and opens a fresh `terminal` channel on the
+same connection. The host accepts one `terminal` channel at a time, and only the seated
+session can attach. Binary messages carry raw bytes in both directions. `resize{rows, cols}`
+changes the attached PTY size. Ending the desk session, losing the terminal channel or
+sending `close` detaches the browser. An ICE restart on the same connection preserves its
+attachment and credit.
+
+The `terminals` additions are capability-gated within protocol 5. The server and browser
+announce `terminals` in their signaling hellos to receive the list. The browser also
+announces it in the data session's control hello. The host waits for that hello before
+sending its own. Both peers must announce `terminals` on control to use `open.id` or
+`open.new` and receive `opened.id`.
 
 A host with `terminal-keep` accepts `terminate` only from an attached session and replies
 with `closed` after the shell and jobs are gone. On failure it sends `error{why: "close"}`
@@ -446,8 +460,8 @@ number for a signal. Once the browser has processed the preceding output, `close
 completes a requested close. Otherwise the browser shows the exit result. An attachment
 failure carries `error{why}`. On older hosts the shell ends with the session.
 
-The host keeps the most recent 256 KiB (262,144 bytes) of PTY output in memory and keeps
-draining the PTY while detached. When trimming, it tracks UTF-8 continuation bytes and
+The host keeps the most recent 256 KiB (262,144 bytes) of output per PTY in memory and keeps
+draining each PTY while detached. When trimming, it tracks UTF-8 continuation bytes and
 the terminal parser's escape states and discards through the next ground boundary. This
 also discards an escape string longer than the whole buffer. On return, an `opened` message
 with `replay` gives the byte count before live output, including any DEC private mode
@@ -462,11 +476,14 @@ UTF-8 bytes and replay restores the modes observed in ConPTY's output. ConPTY ca
 bracketed-paste markers for a program without virtual terminal input enabled, in which case
 the paste arrives as text.
 
-Host `status` carries optional `kept_terminal` only while the shell is detached. It carries
-`since` (Unix seconds), `name`, and the verified device credential when available. The server
-resolves the account's current device name and forwards the time and name to the account's
-browsers in `devices`. The host measures the 24-hour detached lifetime with a monotonic
-clock. Older servers and browsers can ignore the display field.
+Host `status` carries `terminals` to a server with that capability. Each entry has `id`,
+`since` (creation time in Unix seconds), `attached`, `name` and the verified `cred` when
+available. While detached, `left` gives the departure time in Unix seconds. The host also
+reports the most recently detached shell still running in `kept_terminal`, with its departure
+time in `since`. The server resolves the current device names and forwards both reports
+without credentials in the account's `devices` list. Browsers with `terminals` receive the
+full list. AI clients receive neither report. The host measures each shell's 24-hour
+detached lifetime with a monotonic clock.
 
 Messages are at most 16 KiB so one message cannot monopolize the SCTP association. The PTY
 reader drains into a bounded queue. The host pauses delivery to the browser when the channel

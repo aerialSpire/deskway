@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::types::{AiState, AiSwitch, AnswerAuth, DiskUsage, Display, Holder, IceCandidate, IceServer, KeptTerminal, LogEntry, Machine, OfferAuth, PairAuth, PairedAuth, Reason, Usage, View};
+use super::types::{AiState, AiSwitch, AnswerAuth, DiskUsage, Display, Holder, IceCandidate, IceServer, KeptTerminal, LogEntry, Machine, OfferAuth, PairAuth, PairedAuth, Reason, TerminalStatus, Usage, View};
 use super::wire_enum;
 
 wire_enum! {
@@ -30,6 +30,8 @@ wire_enum! {
             "ai_refused" ai_refused: Option<i64>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "kept_terminal" kept_terminal: Option<KeptTerminal>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "terminals" terminals: Option<Vec<TerminalStatus>>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "workspace_access" workspace_access: Option<Reason>,
         },

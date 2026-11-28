@@ -10,8 +10,10 @@ import { TerminalChannel } from './terminal-channel.js';
 const encoder = new TextEncoder();
 
 export class TerminalView {
-  constructor(s) {
+  constructor(s, target) {
     this.s = s;
+    // An ID returns to that shell, null starts a new shell, and undefined uses the host's default.
+    this.target = target;
     this.buttons = [s.osk.button];
     this.onscreenCapsLock = false;
     this.el = h('div', { class: 'terminal-surface' });
@@ -20,14 +22,19 @@ export class TerminalView {
     s.stack.append(this.status);
   }
 
-  get controlsReady() { return !!this.stream?.running; }
+  get controlsReady() { return !!this.stream?.running && !this.switching; }
   get blocked() { return !this.controlsReady; }
   get keeps() {
     return this.s.caps ? this.s.hasCap(CAPS.TERMINAL_KEEP) : this.s.device.caps?.includes(CAPS.TERMINAL_KEEP);
   }
-  get canClose() { return !!this.stream?.attached && !this.stream.closing; }
+  get canClose() { return !!this.stream?.attached && !this.stream.closing && !this.switching; }
+  get canSwitch() { return this.s.connected && this.s.hasCap(CAPS.TERMINALS) && !!this.stream && !this.switching && !this.stream.closing; }
+  // A switch owns the next open as soon as the user chooses it.
+  get selection() { return this.switching ? this.target : this.stream?.id ?? this.target; }
   get connectingNotice() {
-    if (this.opened || (!this.emulator && this.s.device.kept_terminal)) return 'terminal.reconnecting';
+    if (this.opened || this.selection != null || (this.selection === undefined && !this.emulator && this.s.device.kept_terminal)) {
+      return 'terminal.reconnecting';
+    }
   }
   get waiting() { return this.connectingNotice || 'terminal.starting'; }
   get recoveringNotice() {
@@ -46,17 +53,40 @@ export class TerminalView {
   }
 
   useChannels({ terminal }) {
+    this.target = this.selection;
     this.stream?.dispose();
-    this.emulator?.reset();
+    // xterm keeps queued writes across reset. Each stream needs its own emulator.
+    if (this.emulator) this.mountEmulator();
     this.status.hidden = true;
+    this.switching = false;
     this.stream = new TerminalChannel(terminal, (bytes, done) => this.emulator.write(bytes, done), (m) => this.onStatus(m));
     terminal.onopen = () => this.active();
   }
 
+  select(target) {
+    if (!this.stream || this.stream.phase === 'ready') {
+      this.target = target;
+      return;
+    }
+    if (!this.canSwitch || (target != null && target === this.stream.id && this.stream.attached)) return;
+    const stream = this.stream;
+    this.target = target;
+    this.switching = true;
+    this.opened = false;
+    this.s.releaseAll();
+    this.s.updateRemoteControls();
+    stream.leave(() => {
+      if (this.s.closed || this.stream !== stream) return;
+      this.useChannels({ terminal: this.s.connection.pc.createDataChannel(CAPS.TERMINAL) });
+      if (!this.s.stage.hidden) this.s.setWaiting(t(this.waiting));
+      this.active();
+    });
+  }
+
   active() {
-    if (!this.s.connected || !this.s.hasCap(CAPS.TERMINAL) || this.stream?.channel.readyState !== 'open') return;
+    if (this.switching || !this.s.connected || !this.s.hasCap(CAPS.TERMINAL) || this.stream?.channel.readyState !== 'open') return;
     if (this.s.stage.hidden) {
-      if (this.opened) this.stream.size(this.emulator.rows, this.emulator.cols);
+      if ((this.opened || (this.s.hasCap(CAPS.TERMINALS) && this.target !== undefined)) && this.emulator) this.size();
       return;
     }
     if (!this.loading) this.loading = this.load();
@@ -72,23 +102,9 @@ export class TerminalView {
       const [{ Terminal }, { FitAddon }] = await Promise.all([
         import('../../vendor/xterm.mjs'), import('../../vendor/addon-fit.mjs'), styled,
       ]);
-      if (this.s.closed || this.stream.phase === 'done') return;
-      const css = getComputedStyle(this.el);
-      const value = (token) => css.getPropertyValue(token).trim();
-      const emulator = new Terminal({
-        fontFamily: value('--font-mono'),
-        fontSize: parseFloat(css.fontSize),
-        theme: { background: value('--screen'), foreground: value('--dark-ink'), cursor: value('--dark-ink'), selectionBackground: value('--dark-key-down') },
-      });
-      this.emulator = emulator;
-      this.fitter = new FitAddon();
-      emulator.loadAddon(this.fitter);
-      emulator.open(this.el);
-      // The session's text boxes own keyboard focus and IME.
-      emulator.textarea.inert = true;
-      emulator.onData((text) => {
-        if (!this.s.blocked) this.stream.input(encoder.encode(text));
-      });
+      if (this.s.closed) return;
+      this.xterm = { Terminal, FitAddon };
+      this.mountEmulator();
       this.resize = new ResizeObserver(() => this.fit());
       this.resize.observe(this.el);
       this.fit();
@@ -97,10 +113,38 @@ export class TerminalView {
     }
   }
 
+  mountEmulator() {
+    // Files can keep the terminal attached at its last size while the stage is hidden.
+    const size = this.emulator ? { rows: this.emulator.rows, cols: this.emulator.cols } : {};
+    this.emulator?.dispose();
+    const { Terminal, FitAddon } = this.xterm;
+    const css = getComputedStyle(this.el);
+    const value = (token) => css.getPropertyValue(token).trim();
+    const emulator = new Terminal({
+      ...size,
+      fontFamily: value('--font-mono'),
+      fontSize: parseFloat(css.fontSize),
+      theme: { background: value('--screen'), foreground: value('--dark-ink'), cursor: value('--dark-ink'), selectionBackground: value('--dark-key-down') },
+    });
+    this.emulator = emulator;
+    this.fitter = new FitAddon();
+    emulator.loadAddon(this.fitter);
+    emulator.open(this.el);
+    // The session's text boxes own keyboard focus and IME.
+    emulator.textarea.inert = true;
+    emulator.onData((text) => {
+      if (!this.s.blocked) this.stream.input(encoder.encode(text));
+    });
+  }
+
   fit() {
     if (!this.fitter || !this.el.clientWidth || !this.el.clientHeight) return;
     this.fitter.fit();
-    if (this.s.connected) this.stream.size(this.emulator.rows, this.emulator.cols);
+    if (this.s.connected && !this.switching && this.s.hasCap(CAPS.TERMINAL)) this.size();
+  }
+
+  size() {
+    this.stream.size(this.emulator.rows, this.emulator.cols, this.s.hasCap(CAPS.TERMINALS) ? this.target : undefined);
   }
 
   keyboardSink() {
@@ -148,17 +192,21 @@ export class TerminalView {
 
   onStatus(m) {
     if (m.t === Msg.CLOSED) { this.s.leave(); return; }
-    if (!this.s.stage.hidden) this.s.ready();
+    if (m.t === Msg.OPENED || !this.s.stage.hidden) this.s.ready();
     if (m.t === Msg.OPENED) {
       this.opened = true;
       this.fit();
       if (m.dropped) this.showStatus(t('terminal.dropped'));
     } else {
-      if (m.t === Msg.EXIT || (m.why !== 'close' && this.stream.channel.readyState === 'open')) this.opened = false;
+      const why = m.why === 'open' && this.target != null && this.s.hasCap(CAPS.TERMINALS) ? 'return' : m.why;
+      if (m.t === Msg.EXIT || (m.why !== 'close' && this.stream.channel.readyState === 'open')) {
+        this.opened = false;
+        this.target = this.stream.id = undefined;
+      }
       if (m.why !== 'close') this.s.osk.toggle(false);
       this.showStatus(m.t === Msg.EXIT
         ? t(m.code < 0 ? 'terminal.signal' : 'terminal.exit', { code: Math.abs(m.code) })
-        : t(`terminal.error.${m.why}`));
+        : t(`terminal.error.${why}`));
     }
     this.s.updateRemoteControls();
   }

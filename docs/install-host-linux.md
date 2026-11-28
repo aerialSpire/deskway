@@ -1,7 +1,7 @@
 # Install Deskway Host on Linux
 
-When the Linux computer is online, choose **Terminal** or **Files** below the desktop notice
-on its page. The session toolbar switches between the two. Files opens the host user's home
+When the Linux computer is online, choose **Terminal** or **Files** below the
+desktop notice on its page. The session toolbar switches between Terminal and Files. Files opens the host user's home
 directory without starting a shell. Use the path above the entries to go to an ancestor or the
 root. Scroll for more entries and use **Refresh** to see changes. The folder menu creates
 folders. Each entry's menu can rename or delete it. A folder must be empty to be deleted.
@@ -37,16 +37,17 @@ longer resume. Partials left by a host that stopped unexpectedly are swept after
 startup in the host user's home and when any folder is listed.
 The journal records the device, direction, path, file size, outcome and any replacement once per transfer.
 
-Choose **Terminal** to start or return to the shell.
+Choose **Terminal** to return to the last detached shell or start one.
 A browser this computer trusts can use the host user's login shell, starting in that user's
 home directory. Type with a physical keyboard or choose **Keyboard** for Deskway's on-screen
 keyboard. Select **Input method** on that keyboard to use your device's input method.
 Paste into the terminal with your browser's Paste command or from the input-method box.
 When a shell or terminal application enables bracketed paste, it receives a multiline paste
 as one paste. On a Mac controller, Option can type characters from the local keyboard layout.
-**Disconnect** leaves the terminal and its programs running. On the computer's page, choose
-**Return** to rejoin the shell and see recent output. If another device or tab holds the
-terminal, Deskway asks before taking over the same shell. If older output was discarded,
+**Disconnect** leaves the terminal and its programs running. In the Terminal view, press
+**Terminal** in the toolbar to return to a shell or choose **New terminal**. The shell you
+leave keeps running. If another device or tab holds the computer, Deskway asks before taking
+over. On return, if older output was discarded,
 the terminal displays a notice in your browser's language. Replay restores private modes
 such as bracketed paste and the alternate screen. Colours, cursor position for
 non-full-screen programs, scroll regions and character sets can be lost when older output
@@ -56,7 +57,7 @@ redraw their prompts.
 In the terminal's Disconnect dialog, choose **Close the terminal and disconnect** to end the
 shell and its jobs. If closing fails, Deskway shows an error in the attached terminal.
 You can also type `exit`. Deskway closes a terminal left unattended for
-24 hours. Stopping, updating or rebooting the host also ends the terminal and its jobs.
+24 hours. Stopping, updating or rebooting the host ends all its terminals and their jobs.
 The host writes terminal opens, departures, returns and closures to its output, which systemd
 sends to the journal.
 The service runs headless.

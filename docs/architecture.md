@@ -26,7 +26,7 @@ Every change follows these rules:
 |---|---|
 | Windows | `DeskwayNet` (network service, low privilege): signaling, sessions, WebRTC, AI clients' tool calls. `Deskway` agent (SYSTEM, in the console session): the `Platform` implementation. User worker (`deskway-host worker`, as the person signed in at the console, started by the `Deskway` service): the ordinary workspace (browser Terminal and Files, AI programs, files, clipboard text, apps and windows). Admin worker (`worker --admin`, the same with the person's elevated token, only while administrator rights are allowed). Panel/tray per signed-in user. |
 | macOS | One process: everything, `Platform` and the workspace implemented in-process. |
-| Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the desk seat's terminal, and the AI seat with its in-process workspace for commands, files and tunnels. |
+| Linux | One host process, run as an ordinary user under systemd or in the foreground. It handles signaling, the desk seat's terminals, and the AI seat with its in-process workspace for commands, files and tunnels. |
 | AI client's machine | `deskway` (cli/): `login`, `mcp` for MCP over stdio, `gateway` for MCP over HTTP, and a proxy that holds the profile's sign-in and a link to each computer in use. Clients share the profile's proxy by default. A supervised gateway can own its proxy in-process. |
 
 Each platform has exactly one process model. The network service talks to the agent only
@@ -109,7 +109,7 @@ session/
   file_transfer.rs admitted page's transfer record and resumable channel, with the same worker limit as browsing
   credit.rs        byte credit shared by terminal and file transfers
   terminal.rs      one PTY attachment's resize and credit
-  terminal/        registry.rs: the host's one browser PTY, attachment and idle timeout;
+  terminal/        registry.rs: browser PTYs, one desk attachment and per-PTY idle timeouts;
                    replay.rs: the bounded recent output and its safe start
   ai.rs            the AI role, an AI client's deskway: control and ai channels (MCP in
                    frames, wire::mcp), no media. Decides when the AI seat is idle
@@ -158,7 +158,7 @@ MCP gate. Every host offers the base tools. A workspace adds work tools, includi
 tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and the picture role.
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
 according to the live hello's `desk` capability. Linux, macOS and Windows offer `terminal`,
-`terminal-keep`, `browse` and `file-transfer` through the ordinary user's workspace. View-only hosts omit
+`terminal-keep`, `terminals`, `browse` and `file-transfer` through the ordinary user's workspace. View-only hosts omit
 those capabilities. The host status reports why a browser workspace is unavailable.
 Verified data-only and picture browser offers contend for the same desk seat. A picture offer to a Linux host receives
 `no_desktop`. A data-only browser offer to a host without terminal support receives `no_terminal`.
@@ -186,14 +186,16 @@ and destination, and the offsets and incremental digests used to resume. The bro
 SHA-256 blocks incrementally as it sends or writes each chunk. Web Crypto's digest API takes
 the entire input.
 
-The host's terminal registry owns the PTY even with no desk session. Only the admitted desk
-session can attach. It owns its own input queue and credit, while the registry owns the recent
-output. The process that owns the PTY uses a blocking reader to deliver output followed by exit.
+The host's terminal registry owns each browser PTY and its replay by terminal ID even with no
+desk session. Only the admitted desk session can attach, to one PTY at a time. Each attachment
+uses a fresh channel with its own input queue and credit. The process that owns a PTY uses a
+blocking reader to deliver output followed by exit.
 Windows sends those events as notices over the workspace pipe with bounded frame credit. A local
 workspace uses a bounded channel. The session consumes output with the browser's existing byte
-credit. The registry drains events when detached, including when signaling is unavailable.
-The registry reports a detached shell's last device and departure time through host status.
-It drops the shell, jobs and replay when the terminal closes or the host stops. The signaling
+credit. One registry thread drains all detached PTYs and waits for events or the earliest idle
+deadline, including when signaling is unavailable. Host status reports each terminal's creation,
+attachment and last device. The registry drops a shell, its jobs and its replay when it closes,
+and drops all of them when the host stops or its workspace user changes. The signaling
 host processes queued workspace transitions before judging offers. A lock revokes the current
 data seat and releases it without auto-lock. The workspace checks the live console state before
 attached output, input and filesystem calls.
