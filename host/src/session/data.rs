@@ -6,13 +6,13 @@ use std::time::{Duration, Instant};
 
 use peer::state::Signal;
 use str0m::change::SdpOffer;
-use str0m::channel::{ChannelData, ChannelId, Reliability};
+use str0m::channel::{Channel, ChannelData, ChannelId, Reliability};
 use str0m::Event;
 use wire::browse::{self, Browse, BrowseError};
 use wire::control::Control;
 use wire::types::Reason;
 
-use super::terminal::{registry::Lease, Terminal};
+use super::terminal::{self, registry::Lease, Port, Terminal};
 use super::{file_transfer::{Page, Transfers}, Cx, Role, SessionEvent};
 use crate::i18n::t;
 use crate::workspace::{BrowseFiles, BrowserUser};
@@ -22,6 +22,18 @@ pub fn data_only(sdp: &str) -> bool {
     SdpOffer::from_sdp_string(sdp).is_ok_and(|offer| {
         matches!(&offer.media_lines[..], [media] if media.typ.is_channel() && !media.disabled)
     })
+}
+
+struct ChannelPort<'a>(Channel<'a>);
+
+impl Port for ChannelPort<'_> {
+    fn write(&mut self, binary: bool, data: &[u8]) -> anyhow::Result<bool> {
+        Ok(self.0.write(binary, data)?)
+    }
+
+    fn buffered(&mut self) -> usize {
+        self.0.buffered_amount()
+    }
 }
 
 pub struct Data {
@@ -49,16 +61,33 @@ impl Data {
         }
     }
 
-    fn open_terminal(&mut self, id: ChannelId) -> Option<&mut Terminal> {
-        if self.terminal_channel.is_some() { return None; }
+    fn open_terminal(&mut self, id: ChannelId) -> bool {
+        if self.terminal_channel.is_some() { return false; }
         self.terminal_channel = Some(id);
-        Some(&mut self.terminal)
+        true
     }
 
     fn close_terminal(&mut self, id: ChannelId) -> bool {
         if self.terminal_channel.take_if(|current| *current == id).is_none() { return false; }
-        self.terminal.channel_closed();
+        self.terminal.transport_closed();
         true
+    }
+
+    fn poll_terminal(&mut self, cx: &mut Cx) -> Option<Instant> {
+        let id = self.terminal_channel?;
+        let mut port = ChannelPort(cx.rtc.channel(id)?);
+        match self.terminal.pump(&mut port) {
+            Ok(progress) => progress.then(Instant::now),
+            Err(failure) => {
+                self.terminal.pump_failed(failure);
+                // If the channel cannot send even an error, its close reports the failure.
+                if self.terminal.pump(&mut port).is_err() {
+                    cx.rtc.direct_api().close_data_channel(id);
+                    self.terminal.discard_reply();
+                }
+                Some(Instant::now())
+            }
+        }
     }
 }
 
@@ -83,13 +112,11 @@ impl Role for Data {
         if reliable {
             match label {
                 "control" if cx.control().is_none() => return true,
-                wire::terminal::CHANNEL => {
-                    if let Some(terminal) = self.open_terminal(id) {
-                        if let Some(mut channel) = cx.rtc.channel(id) {
-                            terminal.configure(&mut channel);
-                        }
-                        return false;
+                wire::terminal::CHANNEL if self.open_terminal(id) => {
+                    if let Some(mut channel) = cx.rtc.channel(id) {
+                        channel.set_buffered_amount_low_threshold(terminal::LOW - 1);
                     }
+                    return false;
                 }
                 wire::file_transfer::CHANNEL => {
                     if let Some(transfer) = &mut self.transfers {
@@ -130,7 +157,7 @@ impl Role for Data {
         } else if !self.lease.holds_seat() {
             return false;
         } else if self.terminal_channel == Some(d.id) {
-            self.terminal.message(cx.active() && self.greeting.is_none(), d);
+            self.terminal.message(cx.active() && self.greeting.is_none(), d.binary, d.data);
         } else if let Some(transfer) = self.transfers.as_mut().filter(|t| t.channel() == Some(d.id)) {
             if !transfer.receive(d.data, d.binary) {
                 cx.rtc.direct_api().close_data_channel(d.id);
@@ -173,7 +200,7 @@ impl Role for Data {
         if !cx.active() || !self.lease.holds_seat() {
             return None;
         }
-        let terminal = self.terminal_channel.and_then(|id| self.terminal.poll(cx, id));
+        let terminal = self.poll_terminal(cx);
         let files = self.files.as_mut().and_then(|files| files.poll(cx));
         let transfer = self.transfers.as_mut().and_then(|t| t.poll(cx));
         terminal.into_iter().chain(files).chain(transfer).min()
@@ -324,10 +351,9 @@ mod tests {
         let mut api = rtc.sdp_api();
         let [first, early, second] = [wire::terminal::CHANNEL; 3].map(|label| api.add_channel(label.into()));
         for (channel, allowed) in [(first, true), (early, false), (second, true)] {
-            let slot = data.open_terminal(channel);
-            assert_eq!(slot.is_some(), allowed);
-            if let Some(slot) = slot {
-                slot.message(true, ChannelData { id: channel, binary: false, data: br#"{"t":"open","rows":24,"cols":80}"#.to_vec() });
+            assert_eq!(data.open_terminal(channel), allowed);
+            if allowed {
+                data.terminal.message(true, false, br#"{"t":"open","rows":24,"cols":80}"#.to_vec());
             }
             assert_eq!(registry.status().iter().filter(|kept| kept.attached).map(|kept| kept.id).collect::<Vec<_>>(), [1]);
             if !allowed {

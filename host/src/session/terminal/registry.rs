@@ -539,7 +539,7 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::{Stream, Terminal};
+    use super::super::{Port, PumpError, Stream, Terminal, HIGH};
     use crate::wake::Waker;
     use std::io::Write;
     use wire::terminal::{FRAME, OUTPUT_WINDOW};
@@ -605,6 +605,29 @@ mod tests {
 
     impl Drop for FakePty {
         fn drop(&mut self) { self.0.lock().unwrap().drops += 1; }
+    }
+
+    struct FakePort {
+        buffered: usize,
+        result: Result<bool, io::ErrorKind>,
+        writes: Vec<(bool, Vec<u8>)>,
+    }
+
+    impl Default for FakePort {
+        fn default() -> Self {
+            Self { buffered: 0, result: Ok(true), writes: Vec::new() }
+        }
+    }
+
+    impl Port for FakePort {
+        fn write(&mut self, binary: bool, data: &[u8]) -> anyhow::Result<bool> {
+            self.writes.push((binary, data.to_vec()));
+            Ok(self.result.map_err(io::Error::from)?)
+        }
+
+        fn buffered(&mut self) -> usize {
+            self.buffered
+        }
     }
 
     fn opened(now: Instant) -> (State, Arc<Mutex<Process>>) {
@@ -696,21 +719,70 @@ mod tests {
             if id == "live" {
                 process.lock().unwrap().emit(PtyEvent::Bytes(b"kept output".to_vec()));
             }
+            // The attachment check succeeds, then access is revoked before the frame is queued.
+            revoke.store(withhold, Ordering::Relaxed);
+            let mut port = FakePort::default();
+            assert_eq!(terminal.pump(&mut port).unwrap(), !withhold);
             if withhold {
-                // The attachment check succeeds, then access is revoked before the frame is queued.
-                revoke.store(true, Ordering::Relaxed);
-                terminal.pump_stream(0, |_, _| panic!("queued output after revocation")).unwrap();
                 assert!(locked.load(Ordering::Relaxed));
+                assert_eq!(port.writes.len(), 1); // Opened only.
             } else {
-                let mut sent = Vec::new();
-                terminal.pump_stream(0, |binary, data| {
-                    assert!(binary);
-                    sent.extend_from_slice(data);
-                    Ok(true)
-                }).unwrap();
-                assert_eq!(sent, b"kept output");
+                assert_eq!(port.writes[1..], [(true, b"kept output".to_vec())]);
             }
+            assert!(!port.writes[0].0);
             registry.end(id, "locked");
+        }
+    }
+
+    #[test]
+    fn pump_classifies_pty_and_port_failures() {
+        #[derive(Clone, Copy, Debug)]
+        enum Outcome { Progress, Waiting, PtyFailed, TransportFailed }
+        use Outcome::*;
+
+        let broken = io::ErrorKind::BrokenPipe;
+        for (buffered, write, event, expected) in [
+            (0, Ok(true), PtyEvent::Bytes(b"output".to_vec()), Progress),
+            (0, Ok(false), PtyEvent::Bytes(b"output".to_vec()), Waiting),
+            (HIGH, Ok(true), PtyEvent::Bytes(b"output".to_vec()), Waiting),
+            (0, Err(broken), PtyEvent::Bytes(b"output".to_vec()), TransportFailed),
+            (0, Ok(true), PtyEvent::Error(broken.into()), PtyFailed),
+        ] {
+            let (updates, _) = Waker::default().channel();
+            let process = Arc::new(Mutex::new(Process::default()));
+            let open = process.clone();
+            let registry = Registry::new(move |_, _| Ok(Box::new(FakePty(open.clone()))), updates);
+            let lease = registry.admit("session".into(), "browser".into(), "device".into());
+            let mut terminal = Terminal::new(lease, mpsc::channel().0);
+            terminal.open(24, 80, Selection::New);
+            let mut port = FakePort::default();
+            assert!(!terminal.pump(&mut port).unwrap());
+            assert_eq!(port.writes, [(false, br#"{"t":"opened"}"#.to_vec())]);
+            port.writes.clear();
+
+            process.lock().unwrap().emit(event);
+            port.buffered = buffered;
+            port.result = write;
+            match (terminal.pump(&mut port), expected) {
+                (Ok(true), Progress) => assert_eq!(port.writes, [(true, b"output".to_vec())]),
+                (Ok(false), Waiting) => {
+                    assert_eq!(port.writes.len(), usize::from(buffered == 0));
+                    port = FakePort::default();
+                    assert!(terminal.pump(&mut port).unwrap());
+                    assert_eq!(port.writes, [(true, b"output".to_vec())]);
+                }
+                (Err(error @ PumpError::Terminal(_)), PtyFailed)
+                | (Err(error @ PumpError::Transport(_)), TransportFailed) => {
+                    terminal.pump_failed(error);
+                    let status = registry.status();
+                    assert_eq!(status.len(), usize::from(matches!(expected, TransportFailed)));
+                    assert!(status.iter().all(|terminal| !terminal.attached));
+                    port = FakePort::default();
+                    assert!(terminal.pump(&mut port).unwrap());
+                    assert_eq!(port.writes, [(false, br#"{"t":"error","why":"io"}"#.to_vec())]);
+                }
+                (actual, expected) => panic!("expected {expected:?}, got {actual:?}"),
+            }
         }
     }
 
