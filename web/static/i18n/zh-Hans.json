@@ -488,6 +488,7 @@
   "terminal.takenHere": "终端 {id} 已在这台电脑上使用。",
   "terminal.attached": "终端 {id} · {name} 正在使用。",
   "terminal.detached": "终端 {id} · {name} 于{ago}离开。",
+  "terminal.detachedHere": "终端 {id} · 于{ago}在这台电脑上离开。",
   "terminal.reconnecting": "终端仍在计算机上运行。重新连接后，你将看到错过的输出。",
   "session.noDesktop": "这台电脑没有桌面。",
   "session.permissionsTitle": "这台 Mac 缺少远程控制权限",

@@ -329,7 +329,7 @@ export const area = {
       };
       const localOutcomes = openHere();
       await waitFor(() => localOutcomes.some(m => m.t === 'opened' && m.id === originalId), 'local terminal returns to the free shell');
-      await page.until(`(${device})?.terminals?.some(x => x.id === ${originalId} && x.here)`, 'terminal attached at the computer');
+      await page.until(`(${device})?.terminals?.some(x => x.id === ${originalId} && x.attached && x.here)`, 'terminal attached at the computer');
       await click(page, terminalButton, t('terminal.numbered', { id: secondId }));
       await click(page, '.terminal-picker .notice button', t('terminal.takeOver'));
       await page.until(`${title} === ${q('terminal.takeOverTitle', { id: originalId })}`, 'browser takeover confirmation');

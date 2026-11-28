@@ -158,6 +158,7 @@ wire_struct! {
         "cred" cred: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         "left" left: Option<u64>,
+        /// The last holder was the computer, even if it has since detached.
         #[serde(skip_serializing_if = "Option::is_none")]
         "here" here: Option<bool>,
     }

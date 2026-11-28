@@ -187,7 +187,7 @@ type TerminalStatus struct {
 	ID           uint64 `json:"id"`
 	Attached     bool   `json:"attached"`
 	Left         int64  `json:"left,omitempty"`
-	Here         bool   `json:"here,omitempty"`
+	Here         bool   `json:"here,omitempty"` // the last holder was the computer
 }
 
 // Controller is who holds a computer, as one browser of its account sees it.

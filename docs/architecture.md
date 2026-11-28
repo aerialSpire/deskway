@@ -199,7 +199,8 @@ and a local stream, and their renderers share a credit and replay client. On Win
 local stream has a dedicated connection on the UI pipe. macOS connects inside the host
 process. One registry thread drains detached PTYs while waiting for events or the earliest
 idle deadline. Both the local stream and the registry work independently of signaling. Host
-status reports each terminal's creation, attachment and last holder. The registry drops a shell,
+status reports each terminal's creation, attachment and last holder, including whether that
+holder was the window at the computer. The registry drops a shell,
 its jobs and its replay when it closes,
 and drops all of them when the host stops or its workspace user changes. The signaling
 host processes queued workspace transitions before judging offers. A lock revokes the current

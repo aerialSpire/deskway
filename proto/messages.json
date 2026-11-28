@@ -211,7 +211,7 @@
         "name": { "type": "string", "optional": false, "meaning": "the last attached device's name or This computer" },
         "cred": { "type": "string", "optional": true, "meaning": "the verified device credential, only from host to server" },
         "left": { "type": "integer", "optional": true, "meaning": "unix seconds when the holder left, while detached" },
-        "here": { "type": "boolean", "optional": true, "meaning": "the terminal is in use at the computer, sent on both signaling hops with terminal-takeover" }
+        "here": { "type": "boolean", "optional": true, "meaning": "the terminal's last holder was the computer, with attached showing whether it still holds the terminal. Sent on both signaling hops with terminal-takeover" }
       }
     },
     "Approval": {

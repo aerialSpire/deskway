@@ -66,3 +66,20 @@ test('a terminal here offers takeover only with the live capability', () => {
   }
   assert.deepEqual(terminalTakenNotice(t, 7), ['terminal.takenHere', { id: 7 }]);
 });
+
+test('a terminal left at this computer uses the browser wording when marked here', () => {
+  const t = (key, args) => args ? [key, args] : key;
+  const ago = (since) => `since ${since}`;
+  const terminal = { id: 7, name: 'This computer', attached: false, left: 123 };
+  for (const [status, text] of [
+    [terminal, ['terminal.detached', { id: 7, name: 'This computer', ago: 'since 123' }]],
+    [{ ...terminal, here: true }, ['terminal.detachedHere', { id: 7, ago: 'since 123' }]],
+  ]) {
+    const calls = [];
+    const { rows: [row] } = terminalActions({ terminals: [status] }, t, ago, (...args) => calls.push(args), undefined, true);
+    assert.deepEqual(row.text, text);
+    assert.equal(row.label, 'terminal.return');
+    row.run();
+    assert.deepEqual(calls, [[7]]);
+  }
+});

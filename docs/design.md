@@ -19,8 +19,8 @@ or shadow is written as a literal anywhere else.
 | Colour, over the remote picture | `--dark` panels, `--dark-solid` the keyboard, `--dark-ink`, `--dark-quiet`, `--dark-key`, `--dark-key-quiet`, `--dark-key-down`, `--dark-hover` |
 | Type | `--fs-caption` 12, `--fs-small` 13, `--fs-body` 14, `--fs-subtitle` 16, `--fs-title` 20, `--fs-display` 28; `--lh-body` 1.6, `--lh-tight` 1.4, `--lh-title` 1.25; weights 300 (text) and 400 (emphasis, buttons) |
 | Spacing | `--s1` 4, `--s2` 8, `--s3` 12, `--s4` 16, `--s5` 20, `--s6` 24, `--s8` 32, `--s12` 48 |
-| Radius | `--r-control` 4 (buttons, inputs, switches, tags), `--r-box` 6 (cards, dialogs, menus, notices, panels); circles use `50%` |
-| Height | `--h-control` 44 (actions and inputs, touch-sized), `--h-compact` 32 (in-row actions, selects, the toolbar with a mouse) |
+| Radius | `--r-inline-icon` 3 (inline icon buttons), `--r-control` 4 (buttons, inputs, switches, tags), `--r-box` 6 (cards, dialogs, menus, notices, panels); circles use `50%` |
+| Height | `--h-inline-icon` 18 (inline icon buttons), `--h-control` 44 (actions and inputs, touch-sized), `--h-compact` 32 (in-row actions, selects, the toolbar with a mouse) |
 | Shadow | `--shadow-card`, `--shadow-card-hover`, `--shadow-pop` (menus, dialogs, the toolbar), `--shadow-float` (anything over the remote picture) |
 
 There is one font stack per language (`--font-zh-hans`, `--font-zh-hant`, `--font-en`), selected
@@ -93,9 +93,11 @@ the window's close button at the top right. Below them come the settings, then t
 signing out is at the bottom.
 
 The host panel puts **Terminal** last among its activity rows. The terminal window uses a
-native title bar and a strip of numbered terminal tabs above xterm. The attached tab shows
-its close action. A tab in use by the browser shows the device name. Taking over or ending a
-terminal asks for confirmation.
+native title bar and a surface with a strip of tabs in terminal ID order. The attached tab
+has an accent fill and text and contains its close icon. Other tabs are flat and show the
+device in warning colour while in use by a browser. The strip ends with a plus button. The
+inset terminal area uses the screen colour and shows a notice after takeover or shell exit.
+Taking over or closing a terminal asks for confirmation.
 
 The language is chosen with a single component, the language menu: a globe, the current
 language's name in that language, and a menu (`.lang-btn`). It is the same in the browser and in

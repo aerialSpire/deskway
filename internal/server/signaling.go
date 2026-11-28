@@ -342,7 +342,7 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 	takeover := slices.Contains(c.caps, proto.CapTerminalTakeover)
 	for i := range terminals {
 		terminal := &terminals[i]
-		terminal.Here = terminal.Here && terminal.Attached && takeover
+		terminal.Here = terminal.Here && takeover
 		if terminal.Here {
 			terminal.Cred = ""
 		}

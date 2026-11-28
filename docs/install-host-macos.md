@@ -145,9 +145,10 @@ A view-only host omits Terminal and Files.
 
 At the Mac, choose **Open** on the host panel’s **Terminal** row. You can use it while the
 host awaits approval or cannot reach the server. Choose a tab to return to a shell or
-**+** to start one. The attached tab’s **×** ends the shell after confirmation. Closing the
-window leaves the shell running. Either side can confirm **Take over** to move an attachment
-between the browser and the Mac.
+**+** to start one. Tabs stay in number order and highlight the current shell. Its **×** ends
+the shell after confirmation. Closing the window leaves the shell running. Either side can
+confirm **Take over** to move an attachment between the browser and the Mac. The window shows
+a notice when the shell exits or a device takes it over.
 Deskway stays in the Dock while the panel or terminal window is open, including while minimized.
 
 ## Updating

@@ -493,12 +493,14 @@ the paste arrives as text.
 
 Host `status` carries `terminals` to a server with that capability. Each entry has `id`,
 `since` (creation time in Unix seconds), `attached`, `name` and the verified `cred` when
-available. When the window at the computer holds the terminal, `here: true` identifies that
-holder, `name` is `This computer`, and `cred` is absent. The host sends `here` to a server
-with `terminal-takeover` and the server forwards it to a browser with that capability.
-While detached, `left` gives the departure time in Unix seconds. The host also
-reports the most recently detached shell still running in `kept_terminal`, with its departure
-time in `since`. The server resolves the current device names and forwards both reports
+available. `here: true` means the window at the computer was the last holder. `attached`
+tells whether it still holds the terminal. For that holder, `name` is `This computer` in
+the host's language and `cred` is absent. The host sends `here` to a server with
+`terminal-takeover` and the server forwards it to a browser with that capability. The
+browser uses its own language for a terminal left at the computer when it receives `here`.
+Without `here`, it uses `name`. While detached, `left` gives the departure time in Unix seconds.
+The host also reports the most recently detached shell still running in `kept_terminal`, with
+its departure time in `since`. The server resolves the current device names and forwards both reports
 without credentials in the account's `devices` list. Browsers with `terminals` receive the
 full list. AI clients receive neither report. The host measures each shell's 24-hour
 detached lifetime with a monotonic clock.

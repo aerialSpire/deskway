@@ -37,35 +37,61 @@ class LocalChannel {
   }
 }
 
-function button(text, fn, attrs = {}) {
-  const el = h('button', { class: 'btn compact', type: 'button', ...attrs }, text);
-  el.onclick = fn;
-  return el;
-}
-
 function render() {
-  const rows = (terminals ?? []).map(({ id, attached, here, name }) => {
+  const rows = (terminals ?? []).toSorted((a, b) => a.id - b.id).map(({ id, attached, here, name }) => {
     const selected = active?.stream.id === id && active.stream.attached;
-    const label = t('terminal.window_tab', { id });
-    const suffix = attached && !here ? ' ' + t('terminal.window_using', { device: name }) : '';
-    const select = () => {
+    const inUse = attached && !here;
+    const tab = h('div', { class: 'tab', role: 'tab', tabindex: '0', 'aria-selected': String(selected) },
+      t('terminal.window_tab', { id }), inUse ? h('span', { class: 'who' }, t('terminal.window_using', { device: name })) : null);
+    tab.onclick = () => {
       if (selected) active.emulator.focus();
-      else if (attached && !here) ask('take', id, name, () => selectTerminal(id, true));
+      else if (inUse) ask('take', id, name, () => selectTerminal(id, true));
       else selectTerminal(id);
     };
-    return h('span', { class: selected ? 'tab selected' : 'tab' },
-      button(label + suffix, select, { 'aria-pressed': selected ? 'true' : 'false' }),
-      selected ? button('×', () => ask('close', id, null, () => {
-        if (active?.stream.id === id) active.stream.terminate();
-      }), { 'aria-label': t('terminal.window_close_title', { id }) }) : null);
+    tab.onkeydown = (event) => {
+      if (event.target !== tab || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      tab.click();
+    };
+    if (selected) {
+      const close = h('button', { class: 'x', type: 'button', 'aria-label': t('terminal.window_close', { id }) },
+        $('close-icon').content.cloneNode(true));
+      close.onclick = (event) => {
+        event.stopPropagation();
+        ask('close', id, null, () => {
+          if (active?.stream.id === id) active.stream.terminate();
+        });
+      };
+      tab.append(close);
+    }
+    return tab;
   });
   if (terminals) {
-    rows.push(button('+', () => selectTerminal(null), { 'aria-label': t('terminal.window_new') }));
+    const add = h('button', { class: 'tab add', type: 'button', 'aria-label': t('terminal.window_new') },
+      $('add-icon').content.cloneNode(true));
+    add.onclick = () => selectTerminal(null);
+    rows.push(add);
   }
   $('tabs').replaceChildren(...rows);
   $('tabs').hidden = !terminals;
-  const message = started && !terminals ? (locked ? 'terminal.window_locked' : 'terminal.window_unavailable') : notice;
-  $('status').textContent = message ? t(message) : '';
+  renderNotice();
+}
+
+function renderNotice() {
+  let message = '';
+  if (started && !terminals) {
+    message = t(locked ? 'terminal.window_locked' : 'terminal.window_unavailable');
+  } else if (notice?.key === 'terminal.window_taken') {
+    // The status list and the stream can report the takeover in either order.
+    const row = terminals.find(({ id }) => id === notice.id);
+    notice.device ??= row && !row.here ? row.name : undefined;
+    if (notice.device !== undefined) message = t(notice.key, notice);
+    // Gone from the list before its taker was seen: the shell ended right after the takeover.
+    else if (!row) message = t('terminal.window_ended', notice);
+  } else if (notice) {
+    message = t(notice.key, notice);
+  }
+  $('status').textContent = message;
   $('status').hidden = !message;
 }
 
@@ -110,13 +136,15 @@ function selectTerminal(target, take = false) {
     emulator.open(el);
     const stream = new TerminalChannel(channel, (data, done) => emulator.write(data, done), (message) => {
       if (message.t === TerminalMsg.OPENED) {
-        if (message.dropped) notice = 'terminal.window_dropped';
+        if (message.dropped) notice = { key: 'terminal.window_dropped' };
         emulator.focus();
       } else if (message.t === TerminalMsg.ERROR && message.why === 'close') {
-        notice = 'terminal.close_failed';
+        notice = { key: 'terminal.close_failed' };
       } else {
         clear();
-        if (message.t === TerminalMsg.ERROR) notice = 'terminal.open_failed';
+        if (message.t === TerminalMsg.DETACHED) notice = { key: 'terminal.window_taken', id: stream.id };
+        else if (message.t === TerminalMsg.EXIT) notice = { key: 'terminal.window_ended', id: stream.id };
+        else if (message.t === TerminalMsg.ERROR) notice = { key: 'terminal.open_failed' };
       }
       render();
     });

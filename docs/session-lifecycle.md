@@ -164,16 +164,18 @@ page offers **Terminal** and **Files**. In the Terminal view, the toolbar's **Te
 opens a panel with the running shells and **New terminal**. With several shells, the button
 shows the current terminal's ID and a chevron. In Files, the button returns to the Terminal view.
 The panel marks the current shell when it opens and shows who is using or last left each shell.
+When status marks a departure at the computer, the panel describes it in the browser's language.
 **Return** attaches to a shell and shows its recent output before live output. A terminal switch
 shows progress only in Terminal and clears it when the shell opens.
 An established connection that recovers in place continues its existing stream. Reconnecting
 after an end restores the selected terminal when it is still running and reopens the last view.
 
 On Windows and macOS, the host panel's **Terminal → Open** starts or returns to a shell by the
-same rule. Opening again focuses the same window. The tabs show all running shells. **+**
-starts another shell, and switching tabs or closing the window leaves its attachment. The
-attached tab's **×** closes the shell and its programs after confirmation. The window shows
-the tabs after exit, close or takeover and waits for the person to choose one.
+same rule. Opening again focuses the same window. The tabs show all running shells in ID
+order and highlight the attached shell. **+** starts another shell, and switching tabs or
+closing the window leaves its attachment. The attached tab's **×** closes the shell and its
+programs after confirmation. After exit or takeover the terminal area shows a notice, naming
+the device that took over. The tabs remain usable, and choosing a tab or **+** clears the notice.
 
 The browser and the window at the computer can hold different shells at the same time.
 Either can confirm **Take over** for a shell in use by the other. The displaced browser sees
