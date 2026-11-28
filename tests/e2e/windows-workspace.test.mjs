@@ -6,6 +6,7 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFile
 import { join, parse, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { keyboardOf, lit, q, issueAdminLink, redeemSetup, sleep, t } from './harness.mjs';
+import { TerminalChannel } from '../../web/static/js/session/terminal-channel.js';
 
 const command = promisify(execFile);
 const user = 'workspace-trial';
@@ -125,7 +126,7 @@ export const area = {
     };
     const exec = (exe, args, env) => command(exe, args, { env, windowsHide: true, timeout: 30000, encoding: 'utf8' });
     const server = start(serverExe, ['-listen', '127.0.0.1:' + address.port, '-data', state]);
-    let host, panel;
+    let host, panel, localChannel;
     try {
       await waitFor(async () => server.log.includes('listening on') && (await fetch(h.opts.url).catch(() => null))?.ok, 'server');
       const page = await h.newPage();
@@ -317,6 +318,32 @@ export const area = {
       await click(page, '.terminal-picker .notice button', t('terminal.return'));
       await page.until(`(${terminal}).includes('second-terminal')`, 'second terminal survived lock');
       h.check('both terminals survive the lock', true);
+
+      const openHere = (target, take) => {
+        localChannel?.close();
+        const channel = localChannel = h.terminalPipe(home);
+        const outcomes = [];
+        const stream = new TerminalChannel(channel, (_, consumed) => consumed(), (message) => outcomes.push(message));
+        channel.onopen = () => stream.size(24, 80, target, take);
+        return outcomes;
+      };
+      const localOutcomes = openHere();
+      await waitFor(() => localOutcomes.some(m => m.t === 'opened' && m.id === originalId), 'local terminal returns to the free shell');
+      await page.until(`(${device})?.terminals?.some(x => x.id === ${originalId} && x.here)`, 'terminal attached at the computer');
+      await click(page, terminalButton, t('terminal.numbered', { id: secondId }));
+      await click(page, '.terminal-picker .notice button', t('terminal.takeOver'));
+      await page.until(`${title} === ${q('terminal.takeOverTitle', { id: originalId })}`, 'browser takeover confirmation');
+      await click(page, '.dialog button', t('terminal.takeOver'));
+      await waitFor(() => localOutcomes.some(m => m.t === 'detached' && m.reason === 'taken'), 'local stream loses the attachment');
+      await page.until(`(${terminal}).includes('interrupt-returned')`, 'browser takes the terminal and gets its replay');
+      const takenBack = openHere(originalId, true);
+      await waitFor(() => takenBack.some(m => m.t === 'opened' && m.id === originalId), 'local stream takes its terminal back');
+      await page.until(`document.querySelector('.terminal-picker')?.textContent.includes(${q('terminal.takenHere', { id: originalId })}) && !!s && s.info().connection === 'connected'`, 'browser sees terminal takeover without losing its session');
+      h.check('the local terminal and browser can take the same shell in both directions', true);
+      const returnSecond = `${t('terminal.return')} · ${t('terminal.numbered', { id: secondId })} ·`;
+      await click(page, `.terminal-picker .notice button[aria-label^=${lit(returnSecond)}]`, t('terminal.return'));
+      await page.until(`(${terminal}).includes('second-terminal')`, 'browser returns to the second terminal');
+      localChannel.close();
       await leave(page, true);
 
       await host.stop();
@@ -328,6 +355,7 @@ export const area = {
     } catch (error) {
       throw new Error([error.message, error.cause?.message, host?.log, server.log].filter(Boolean).join('\n'));
     } finally {
+      localChannel?.close();
       panel?.close();
       await host?.stop();
       await server.stop();

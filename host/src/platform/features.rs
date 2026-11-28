@@ -105,6 +105,9 @@ impl Features {
             caps.push(wire::caps::TERMINAL.into());
             caps.push(wire::caps::TERMINAL_KEEP.into());
             caps.push(wire::caps::TERMINALS.into());
+            if cfg!(any(windows, target_os = "macos")) && self.desktop.is_some() {
+                caps.push(wire::caps::TERMINAL_TAKEOVER.into());
+            }
             if self.browse {
                 caps.push(wire::caps::BROWSE.into());
                 if self.file_transfers {

@@ -51,7 +51,7 @@ func (s *Server) handleHostWS(w http.ResponseWriter, r *http.Request) {
 		old.cancel()
 	}
 	s.sessions.HostUp(c)
-	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapTerminals}})
+	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapTerminals, proto.CapTerminalTakeover}})
 	s.touch(id)
 	log.Printf("server: host online: %.8s", id)
 	s.broadcastDevices()
@@ -110,7 +110,7 @@ func (s *Server) handleClientWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.clients[c] = true
 	s.mu.Unlock()
-	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapTerminals}, Build: s.build})
+	c.send(proto.Hello{Type: proto.TypeHello, Version: proto.Version, Caps: []string{proto.CapTerminals, proto.CapTerminalTakeover}, Build: s.build})
 	c.send(proto.Msg{Type: proto.TypeDevices, Devices: s.deviceList(c)})
 	c.send(proto.Msg{Type: proto.TypeApprovals, Approvals: s.store.Approvals(c.user, pendingBrowserTTL)})
 	go s.sendICE(ctx, c)
@@ -235,10 +235,12 @@ func (s *Server) fromClient(c *conn, m proto.Msg) {
 	case proto.TypeHello:
 		s.mu.Lock()
 		hadTerminals := slices.Contains(c.caps, proto.CapTerminals)
+		hadTakeover := slices.Contains(c.caps, proto.CapTerminalTakeover)
 		c.caps = m.Caps[:min(len(m.Caps), 64)]
 		showTerminals := slices.Contains(c.caps, proto.CapTerminals)
+		showTakeover := slices.Contains(c.caps, proto.CapTerminalTakeover)
 		s.mu.Unlock()
-		if !c.ai && showTerminals != hadTerminals {
+		if !c.ai && (showTerminals != hadTerminals || showTakeover != hadTakeover) {
 			c.send(proto.Msg{Type: proto.TypeDevices, Devices: s.deviceList(c)})
 		}
 		return
@@ -337,6 +339,14 @@ func (s *Server) onStatus(c *conn, m proto.Msg) {
 		s.displays[c.deviceID] = m.Displays
 	}
 	c.holder, c.aiHolder, c.aiState, c.aiRefused = holder, ai, state, m.AIRefused
+	takeover := slices.Contains(c.caps, proto.CapTerminalTakeover)
+	for i := range terminals {
+		terminal := &terminals[i]
+		terminal.Here = terminal.Here && terminal.Attached && takeover
+		if terminal.Here {
+			terminal.Cred = ""
+		}
+	}
 	c.keptTerminal, c.terminals = kept, terminals
 	switch m.WorkspaceAccess {
 	case "locked", "no_user_session", "view_only":

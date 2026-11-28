@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { TerminalChannel } from '../../web/static/js/session/terminal-channel.js';
 import { TERMINAL_FRAME, TERMINAL_INPUT_WINDOW, TERMINAL_OUTPUT_WINDOW } from '../../web/static/js/proto.js';
 
-function setup(target) {
+function setup(target, take) {
   const sent = [], output = [], status = [];
   const channel = {
     readyState: 'open', bufferedAmount: 0,
@@ -12,7 +12,7 @@ function setup(target) {
   };
   const terminal = new TerminalChannel(channel, (bytes, done) => output.push({ bytes, done }), (m) => status.push(m));
   const receive = (m) => channel.onmessage({ data: m instanceof ArrayBuffer ? m : JSON.stringify(m) });
-  terminal.size(24, 80, target);
+  terminal.size(24, 80, target, take);
   return { terminal, channel, sent, output, status, receive };
 }
 
@@ -30,6 +30,21 @@ test('open and resize use the terminal channel', () => {
     terminal.size(31, 93, target);
     assert.deepEqual(sent.shift(), { t: 'resize', rows: 31, cols: 93 });
   }
+});
+
+test('a takeover asks once on open and detachment reports after queued output', () => {
+  const { terminal, sent, output, status, receive } = setup(7, true);
+  assert.deepEqual(sent.shift(), { t: 'open', rows: 24, cols: 80, id: 7, take: true });
+  receive({ t: 'opened', id: 7 });
+  terminal.size(31, 93, 7, true);
+  assert.deepEqual(sent.shift(), { t: 'resize', rows: 31, cols: 93 });
+  receive(new ArrayBuffer(3));
+  receive({ t: 'detached', reason: 'taken' });
+  assert.equal(terminal.attached, false);
+  assert.deepEqual(status, [{ t: 'opened', id: 7 }]);
+  output[0].done();
+  assert.deepEqual(status.at(-1), { t: 'detached', reason: 'taken' });
+  assert.deepEqual(sent.shift(), { t: 'ack', bytes: 3 });
 });
 
 test('switching sends close and waits for the channel and outstanding emulator writes', () => {

@@ -1,8 +1,9 @@
 // Terminal and Files share one authenticated connection and one toolbar.
+import { dialog } from '../dialogs.js';
 import { h, ICONS, svg } from '../dom.js';
 import { agoText, t } from '../i18n.js';
 import { CAPS } from '../proto.js';
-import { terminalActions } from '../terminal-ui.js';
+import { terminalActions, terminalTakenNotice } from '../terminal-ui.js';
 import { FilesView } from './files-view.js';
 import { FileTransfers } from './file-transfers.js';
 import { TerminalView } from './terminal-view.js';
@@ -14,9 +15,9 @@ export class DataView {
   constructor(s, view, target, deviceStatus) {
     this.s = s;
     this.deviceStatus = deviceStatus;
-    this.helloCaps = [CAPS.TERMINALS];
+    this.helloCaps = [CAPS.TERMINALS, CAPS.TERMINAL_TAKEOVER];
     this.currentView = view;
-    this.terminal = new TerminalView(s, target);
+    this.terminal = new TerminalView(s, target, (id) => this.terminalTaken(id));
     this.strip = h('div', { class: 'file-transfer-strip' });
     const transferView = [this.strip, () => s.connected, () => this.files.update(),
       (path) => this.files.uploaded(path), () => this.openTransfers()];
@@ -89,15 +90,35 @@ export class DataView {
 
   terminalPanel() {
     const stream = this.terminal.stream;
-    const { rows, newTerminal } = terminalActions(this.deviceStatus(), t, (since) => agoText(since, { seen: false }), (target) => {
-      this.s.toolbar.closePanel(this.s.stage);
-      this.terminal.select(target);
-      this.terminal.active();
-    }, stream?.attached ? stream.id : undefined);
+    const choose = (target, take) => {
+      const open = () => {
+        if (this.s.closed) return;
+        this.takenId = undefined;
+        this.s.toolbar.closePanel(this.s.stage);
+        this.terminal.select(target, take);
+        this.show('terminal');
+      };
+      if (take) {
+        dialog(t('terminal.takeOverTitle', { id: target }), null, [
+          { label: t('common.cancel') },
+          { label: t('terminal.takeOver'), primary: true, run: open },
+        ]);
+      } else open();
+    };
+    const { rows, newTerminal } = terminalActions(this.deviceStatus(), t, (since) => agoText(since, { seen: false }),
+      choose, stream?.attached ? stream.id : undefined, this.s.hasCap(CAPS.TERMINAL_TAKEOVER));
     return h('section', { class: 'panel terminal-picker', 'aria-label': t('terminal.label') },
+      this.takenId === undefined ? null : h('div', { class: 'notice', role: 'status' }, terminalTakenNotice(t, this.takenId)),
       rows.map(({ text, label, run, disabled }) => h('div', { class: 'notice' }, h('span', { class: 'text' }, text),
         h('button', { class: 'btn compact', type: 'button', 'aria-label': `${label} · ${text}`, disabled, onclick: run }, label))),
       h('button', { class: 'btn compact block', type: 'button', onclick: newTerminal.run }, newTerminal.label));
+  }
+
+  terminalTaken(id) {
+    this.takenId = id;
+    const { toolbar } = this.s;
+    if (toolbar.panelKind !== 'terminals') toolbar.togglePanel('terminals');
+    toolbar.show();
   }
 
   refreshTerminalList() { this.updateControls(); }
@@ -106,7 +127,7 @@ export class DataView {
     const { toolbar, stage } = this.s;
     const supported = this.s.hasCap(CAPS.TERMINALS);
     const open = toolbar.panelKind === 'terminals';
-    if (open && (this.filesVisible || !this.terminal.canSwitch)) toolbar.closePanel(stage);
+    if (open && ((this.filesVisible && this.takenId === undefined) || !this.terminal.canSwitch)) toolbar.closePanel(stage);
     const stream = this.terminal.stream;
     const id = supported && stream?.attached && this.deviceStatus()?.terminals?.length > 1 ? stream.id : undefined;
     const label = id === undefined ? t('terminal.label') : t('terminal.numbered', { id });

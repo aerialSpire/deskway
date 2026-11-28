@@ -188,6 +188,7 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 	s.mu.Lock()
 	list := s.store.DevicesFor(c.user)
 	showTerminals := slices.Contains(c.caps, proto.CapTerminals)
+	showTakeover := slices.Contains(c.caps, proto.CapTerminalTakeover)
 	holders := make([]*proto.Holder, len(list))
 	for i := range list {
 		d := &list[i]
@@ -218,8 +219,9 @@ func (s *Server) deviceList(c *conn) []proto.Device {
 		}
 		list[i].Terminals = slices.Clone(list[i].Terminals)
 		for j := range list[i].Terminals {
-			terminal := &list[i].Terminals[j].KeptTerminal
-			*terminal = s.terminalFor(c.user, *terminal)
+			terminal := &list[i].Terminals[j]
+			terminal.KeptTerminal = s.terminalFor(c.user, terminal.KeptTerminal)
+			terminal.Here = terminal.Here && showTakeover
 		}
 	}
 	return list

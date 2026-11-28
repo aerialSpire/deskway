@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { keptTerminalNotice, terminalActions, terminalDisconnectActions } from '../../web/static/js/terminal-ui.js';
+import { keptTerminalNotice, terminalActions, terminalDisconnectActions, terminalTakenNotice } from '../../web/static/js/terminal-ui.js';
 
 test('the computer page shows a kept-terminal notice only for online legacy hosts', () => {
   const d = { online: true, caps: ['terminal'], kept_terminal: { since: 123, name: 'Phone' } };
@@ -51,4 +51,18 @@ test('disconnect offers cancel, destructive close, and primary leave in that ord
       { label: 'tb.disconnect', primary: true, run: leave },
     ]);
   }
+});
+
+test('a terminal here offers takeover only with the live capability', () => {
+  const t = (key, args) => args ? [key, args] : key;
+  const device = { terminals: [{ id: 7, name: 'This computer', attached: true, here: true }] };
+  for (const takeover of [false, true]) {
+    const calls = [];
+    const { rows: [row] } = terminalActions(device, t, null, (...args) => calls.push(args), undefined, takeover);
+    assert.deepEqual(row.text, takeover ? ['terminal.here', { id: 7 }] : ['terminal.attached', { id: 7, name: 'This computer' }]);
+    assert.equal(row.label, takeover ? 'terminal.takeOver' : 'terminal.return');
+    row.run();
+    assert.deepEqual(calls, [takeover ? [7, true] : [7]]);
+  }
+  assert.deepEqual(terminalTakenNotice(t, 7), ['terminal.takenHere', { id: 7 }]);
 });

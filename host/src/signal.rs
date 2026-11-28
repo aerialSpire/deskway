@@ -34,6 +34,8 @@ use wire::types::{self as types, Reason};
 use peer::state::End;
 use crate::session::{self, SessionEvent, SessionUpdate};
 use crate::session::terminal::registry::Registry as Terminals;
+#[cfg(any(windows, target_os = "macos"))]
+use crate::session::terminal::local::LocalSlot;
 use crate::settings::{PanelRequest, Settings};
 use crate::vitals::{self, Sample};
 use crate::wake::{Wake, Waker, WeakWake};
@@ -83,6 +85,11 @@ pub struct Status {
     pub lang: Option<String>,
     /// The keep-awake setting (`power`).
     pub prevent_sleep: bool,
+    /// Available only to the panel of the terminal workspace user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminals: Option<Vec<types::TerminalStatus>>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub terminal_locked: bool,
 }
 
 /// A device that can control this computer, as the panel lists it.
@@ -108,6 +115,13 @@ pub struct AskView {
 }
 
 impl Status {
+    #[cfg(any(windows, target_os = "macos"))]
+    pub fn project_terminals(&mut self, workspace: Option<(crate::session::terminal::registry::LocalTerminals, u64)>) {
+        let terminals = workspace.map(|(local, user)| local.status(user));
+        self.terminal_locked = matches!(terminals, Some(Err(Reason::Locked)));
+        self.terminals = terminals.and_then(Result::ok);
+    }
+
     /// Before the first connection attempt.
     pub fn offline(cfg: &Config) -> Status {
         Status { name: cfg.name.clone(), server: cfg.server.clone(), account: cfg.account.clone(), auto_lock: cfg.auto_lock, lang: cfg.lang.clone(), prevent_sleep: cfg.prevent_sleep, ..Status::default() }
@@ -256,6 +270,8 @@ pub struct Params {
     pub desktop: Option<DesktopParams>,
     pub browser: Option<crate::workspace::Browser>,
     pub notify: Notifier,
+    #[cfg(any(windows, target_os = "macos"))]
+    pub local_terminals: LocalSlot,
     /// Where the controlling browser's clipboard switch is saved.
     pub settings: Arc<Settings>,
     /// The person's workspace, when this process can reach one (`workspace`).
@@ -279,6 +295,8 @@ struct Host {
     desktop: Option<Desktop>,
     terminal: Option<Terminals>,
     server_terminals: bool,
+    server_terminal_takeover: bool,
+    status_pending: bool,
     browser: Option<crate::workspace::Browser>,
     workspace_state: WorkspaceState,
     transfers: session::file_transfer::Registry,
@@ -337,11 +355,11 @@ impl Host {
         }
         if changed_user {
             self.transfers.clear();
-            if let Some(terminal) = &self.terminal {
-                terminal.user_changed();
-            }
         }
-        self.send_status();
+        if let Some(terminal) = &self.terminal {
+            terminal.workspace_changed(next);
+        }
+        self.status_changed();
     }
 
     fn features(&self) -> Features {
@@ -398,6 +416,8 @@ impl Host {
             note: self.note.clone(),
             lang: cfg.lang,
             prevent_sleep: cfg.prevent_sleep,
+            terminals: None,
+            terminal_locked: false,
         });
     }
 
@@ -430,25 +450,40 @@ impl Host {
         }
     }
 
-    /// The sessions holding this computer's seats (connecting or established), the displays and
-    /// what AI clients may do, so the server knows which sessions live and routes them, also
-    /// after it restarted. Held back while a replaced session is still saying goodbye
-    /// (`replaced`).
-    fn send_status(&self) {
+    fn status_changed(&mut self) {
         if let Some(desk) = &self.desktop {
             (desk.features.ai_awake)(self.sessions.of(Seat::Ai).current().is_some());
         }
-        if self.replaced.is_empty() {
-            let (holder, ai) = (self.sessions.of(Seat::Desk).holder(), self.sessions.of(Seat::Ai).holder());
-            let ai_refused = self.trust.as_ref().and_then(Trust::ai_refused);
-            let terminals = self.terminal.as_ref().map(Terminals::status);
-            let kept_terminal = terminals.iter().flatten().find_map(|terminal| Some(types::KeptTerminal {
-                since: terminal.left?, name: terminal.name.clone(), cred: terminal.cred.clone(),
-            }));
-            let terminals = if self.server_terminals { terminals } else { None };
-            self.send(&Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused, kept_terminal, terminals, workspace_access: self.workspace_access() });
-        }
+        self.status_pending = true;
         self.report();
+    }
+
+    fn start_signaling(&mut self) {
+        self.server_terminals = false;
+        self.server_terminal_takeover = false;
+        self.status_changed();
+    }
+
+    /// Build status for this socket with the capabilities it has announced. Wait for replaced
+    /// sessions to queue their goodbyes before reporting their successors.
+    fn take_status(&mut self) -> Option<Wire> {
+        if !std::mem::take(&mut self.status_pending) || !self.replaced.is_empty() {
+            return None;
+        }
+        let (holder, ai) = (self.sessions.of(Seat::Desk).holder(), self.sessions.of(Seat::Ai).holder());
+        let ai_refused = self.trust.as_ref().and_then(Trust::ai_refused);
+        let mut terminals = self.terminal.as_ref().map(Terminals::status);
+        let kept_terminal = terminals.iter().flatten().find_map(|terminal| Some(types::KeptTerminal {
+            since: terminal.left?, name: terminal.name.clone(), cred: terminal.cred.clone(),
+        }));
+        if !self.server_terminals {
+            terminals = None;
+        } else if !self.server_terminal_takeover {
+            for terminal in terminals.iter_mut().flatten() {
+                terminal.here = None;
+            }
+        }
+        Some(Wire::Status { displays: self.displays.clone(), holder, ai, ai_state: Some(self.ai_state()), ai_refused, kept_terminal, terminals, workspace_access: self.workspace_access() })
     }
 
     /// Ends the session on `seat`; the session tells its other end why. A controller taken over
@@ -656,7 +691,7 @@ impl Host {
         let user = m["user"].as_str().unwrap_or_default().to_string();
         // Holding the seat, still connecting: the status names it so from now on.
         self.sessions.of_mut(seat).start(Entry { id: session, name, user, controller: verified.controller.clone(), since: crate::auth::unix_now(), handle: tx });
-        self.send_status();
+        self.status_changed();
     }
 
     /// Returns whether the message requests a vitals sample.
@@ -668,9 +703,11 @@ impl Host {
             "hello" => {
                 if let Ok(Wire::Hello { caps, .. }) = serde_json::from_value(m) {
                     let terminals = caps.iter().any(|cap| cap == wire::caps::TERMINALS);
-                    if self.server_terminals != terminals {
+                    let takeover = caps.iter().any(|cap| cap == wire::caps::TERMINAL_TAKEOVER);
+                    if (self.server_terminals, self.server_terminal_takeover) != (terminals, takeover) {
                         self.server_terminals = terminals;
-                        self.send_status();
+                        self.server_terminal_takeover = takeover;
+                        self.status_changed();
                     }
                 }
             }
@@ -691,7 +728,7 @@ impl Host {
                     t.set_log(&m["auth"], &m["ai"]);
                 }
                 self.hold_to_trust();
-                self.send_status();
+                self.status_changed();
             }
             "candidate" => {
                 if let Some((_, cur)) = self.sessions.find(session) {
@@ -720,7 +757,7 @@ impl Host {
             "account" => {
                 if let Ok(Wire::Account { user, display }) = serde_json::from_value::<Wire>(m.clone()) {
                     let _ = self.settings.set_account(crate::config::Account { user, display });
-                    self.send_status();
+                    self.status_changed();
                 }
             }
             "locate" => self.on_locate(&m),
@@ -822,11 +859,11 @@ impl Host {
                             eprintln!("cannot note when {device} was used: {e:#}");
                         }
                     }
-                    self.send_status();
+                    self.status_changed();
                 }
             }
             SessionUpdate::Ended(id) => self.on_ended(&id),
-            SessionUpdate::TerminalChanged => self.send_status(),
+            SessionUpdate::TerminalChanged => self.status_changed(),
         }
     }
 
@@ -837,7 +874,7 @@ impl Host {
         // The replaced session has said goodbye: the status may name its successor now.
         if self.replaced.iter().any(|r| r == session) {
             self.replaced.retain(|r| r != session);
-            self.send_status();
+            self.status_changed();
         }
         let Some((seat, _)) = self.sessions.find(session) else { return };
         // An attempt that never got established controlled nothing: nothing to lock.
@@ -853,7 +890,7 @@ impl Host {
                     Seat::Ai => desk.platform.ai_session(None),
                 }
             }
-            self.send_status();
+            self.status_changed();
             // Locking follows the person's session only.
             if seat == Seat::Desk && was_controller && self.auto_lock && !self.quit {
                 if let Some(desk) = &self.desktop {
@@ -877,7 +914,7 @@ impl Host {
             PlatformEvent::DisplaysChanged(list) => {
                 if list != self.displays {
                     self.displays = list;
-                    self.send_status();
+                    self.status_changed();
                 }
             }
             PlatformEvent::Desktop(d) => {
@@ -937,7 +974,7 @@ impl Host {
                     t.stop_ai();
                 }
                 self.hold_to_trust();
-                self.send_status();
+                self.status_changed();
             }
             Control::RemoveDevices(ids) => {
                 if let Some(t) = self.trust.as_mut() {
@@ -1200,8 +1237,7 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
     let poller = &connection.poller;
     let mut events = Events::new();
     ws.send(WsMessage::text(serde_json::to_string(&host.hello())?))?;
-    host.server_terminals = false;
-    host.send_status();
+    host.start_signaling();
     let mut alive = alive::Alive::new(Instant::now());
     let mut sampling_here = false;
     let mut sample_requested = false;
@@ -1260,6 +1296,9 @@ fn serve(ws: &mut Socket, host: &mut Host, q: &Queues) -> Result<()> {
         while let Ok(m) = q.out.try_recv() {
             ws.send(WsMessage::text(m))?;
         }
+        if let Some(status) = host.take_status() {
+            ws.send(WsMessage::text(serde_json::to_string(&status)?))?;
+        }
         ws.flush()?;
         if host.quit && !host.has_sessions() {
             return Ok(());
@@ -1287,7 +1326,10 @@ impl Host {
     /// The host as it starts: offline, nobody in control, with the trust store of `cfg`'s
     /// folder (None refuses every offer).
     fn new(p: Params, trust: Option<Trust>, controls: Controls) -> (Host, Queues) {
-        let Params { cfg, view_only, desktop, browser, notify, settings, workspace, admin } = p;
+        let Params { cfg, view_only, desktop, browser, notify, settings, workspace, admin,
+            #[cfg(any(windows, target_os = "macos"))]
+            local_terminals,
+        } = p;
         let Controls { rx: control, wake, .. } = controls;
         let (out_tx, out) = wake.channel();
         let (updates_tx, updates) = wake.channel();
@@ -1297,6 +1339,16 @@ impl Host {
             d.platform.auto_lock(cfg.auto_lock);
             (Desktop { features: d.features, platform: d.platform, router, can_host: d.can_host }, events)
         }).unzip();
+        let workspace_state = browser.as_ref().map_or(WorkspaceState::READY, |b| (b.state)());
+        let terminal = browser.as_ref().map(|b| {
+            let bind = b.bind.clone();
+            Terminals::guarded(Arc::new(move |user, rows, cols| {
+                let browser = bind(user).ok_or(ErrorKind::PermissionDenied)?;
+                (browser.open)(rows, cols)
+            }), b.state.clone(), workspace_state, view_only, updates_tx.clone())
+        });
+        #[cfg(any(windows, target_os = "macos"))]
+        local_terminals.publish(terminal.as_ref().map(Terminals::local_handle));
         let host = Host {
             view_only,
             auto_lock: cfg.auto_lock,
@@ -1308,15 +1360,11 @@ impl Host {
             problem: None,
             quit: false,
             desktop,
-            terminal: browser.as_ref().map(|b| {
-                let bind = b.bind.clone();
-                Terminals::guarded(Arc::new(move |user, rows, cols| {
-                    let browser = bind(user).ok_or(ErrorKind::PermissionDenied)?;
-                    (browser.open)(rows, cols)
-                }), b.state.clone(), updates_tx.clone())
-            }),
+            terminal,
             server_terminals: false,
-            workspace_state: browser.as_ref().map_or(WorkspaceState::READY, |b| (b.state)()),
+            server_terminal_takeover: false,
+            status_pending: false,
+            workspace_state,
             browser,
             transfers: Default::default(),
             machine: vitals::machine(),
@@ -1376,6 +1424,7 @@ pub fn run(p: Params, control: Controls) {
     let (mut host, q) = Host::new(p, trust, control);
     let cfg = host.cfg.clone();
     let view_only = host.view_only;
+    host.report();
     let mut delay = Duration::from_secs(1);
     let mut browse = None;
     eprintln!("Deskway host: {} -> {}{}", cfg.name, cfg.server, if view_only { " (view only)" } else { "" });
@@ -1429,6 +1478,7 @@ pub fn run(p: Params, control: Controls) {
         let Ok(update) = q.updates.recv() else { break };
         host.on_update(update);
     }
+    host.report();
 }
 
 
@@ -1528,7 +1578,10 @@ mod tests {
                     #[cfg(windows)]
                     _lease: None,
                 })),
-            }), notify: Box::new(move |s| to.lock().unwrap().push(s)), settings: Arc::new(settings), workspace, admin: None };
+            }), notify: Box::new(move |s| to.lock().unwrap().push(s)),
+                #[cfg(any(windows, target_os = "macos"))]
+                local_terminals: LocalSlot::default(),
+                settings: Arc::new(settings), workspace, admin: None };
             let (host, q) = Host::new(p, trust, control_rx);
             Test { host, q, control, shown, dir, calls }
         }
@@ -1555,8 +1608,10 @@ mod tests {
         }
 
         /// What went to the server since the last call.
-        fn sent(&self) -> Vec<Value> {
-            self.q.out.try_iter().map(|m| serde_json::from_str(&m).unwrap()).collect()
+        fn sent(&mut self) -> Vec<Value> {
+            let mut sent: Vec<_> = self.q.out.try_iter().map(|m| serde_json::from_str(&m).unwrap()).collect();
+            sent.extend(self.host.take_status().map(|status| serde_json::to_value(status).unwrap()));
+            sent
         }
 
         fn offer(&mut self, auth: Value) -> Value {
@@ -1594,8 +1649,9 @@ mod tests {
             use base64::Engine;
             use p256::ecdsa::signature::Signer;
             self.host.on_message(&json!({ "type": "challenge", "session": session }).to_string());
-            let nonce = self.sent().pop().expect("a nonce")["nonce"].as_str().unwrap().to_string();
-            let challenge = wire::crypto::sha256(wire::challenge::connect_v3("H1", session, &nonce, force, sdp).as_bytes());
+            let reply = self.sent().into_iter().find(|m| m["type"] == "nonce").expect("a nonce");
+            let nonce = reply["nonce"].as_str().unwrap();
+            let challenge = wire::crypto::sha256(wire::challenge::connect_v3("H1", session, nonce, force, sdp).as_bytes());
             let sig: p256::ecdsa::Signature = key.sign(&challenge);
             let auth = json!({ "k": "dk", "nonce": nonce, "cred": cred, "sig": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.to_bytes()) });
             self.q.on_message(&mut self.host, &json!({ "type": "offer", "session": session, "epoch": 0, "sdp": sdp, "ice": [], "view": { "w": 1, "h": 1, "maxW": 1, "maxH": 1, "fps": 30 }, "user": "u2", "force": force, "auth": auth }).to_string());
@@ -1866,7 +1922,7 @@ mod tests {
             let watch = state.clone();
             t.host.browser.as_mut().unwrap().state = Arc::new(move || *watch.lock().unwrap());
             t.host.workspace_changed(native);
-            t.host.send_status();
+            t.host.status_changed();
             let output = t.sent();
             let status = output.iter().rfind(|m| m["type"] == "status").unwrap();
             assert_eq!(status["workspace_access"].as_str(), wanted.map(|why| why.as_str()));
@@ -2040,13 +2096,38 @@ mod tests {
     fn the_status_names_the_holder_until_it_ends() {
         let mut t = Test::new("status", true, true);
         let _rx = t.holding("c1");
-        t.host.send_status();
+        t.host.status_changed();
         let sent = t.sent();
         assert_eq!(statuses(&sent)[0]["holder"], json!({ "session": "s1", "cred": "c1", "name": "Ann", "user": "u", "established": true, "since": 0 }));
         t.host.on_update(SessionUpdate::Ended("s1".into()));
         let sent = t.sent();
         assert_eq!(statuses(&sent).len(), 1);
         assert!(statuses(&sent)[0].get("holder").is_none(), "nobody holds it: no holder");
+    }
+
+    #[test]
+    fn terminal_status_follows_the_current_signaling_hello() {
+        let mut t = Test::with_features("status-reconnect", false, false, Features {
+            terminal: true, ..Features::default()
+        });
+        let hello = |caps: &[&str]| json!({ "type": "hello", "version": 5, "caps": caps }).to_string();
+        t.host.start_signaling();
+        t.host.on_message(&hello(&[wire::caps::TERMINALS, wire::caps::TERMINAL_TAKEOVER]));
+        let sent = t.sent();
+        assert_eq!(statuses(&sent).len(), 1);
+        assert_eq!(statuses(&sent)[0]["terminals"], json!([]));
+
+        // An update arrives while offline, when the last server's capabilities are still known.
+        t.host.on_update(SessionUpdate::TerminalChanged);
+        t.host.start_signaling();
+        let sent = t.sent();
+        assert_eq!(statuses(&sent).len(), 1);
+        assert!(statuses(&sent)[0].get("terminals").is_none());
+
+        t.host.on_message(&hello(&[wire::caps::TERMINALS]));
+        let sent = t.sent();
+        assert_eq!(statuses(&sent).len(), 1);
+        assert_eq!(statuses(&sent)[0]["terminals"], json!([]));
     }
 
     #[test]

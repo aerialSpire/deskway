@@ -21,6 +21,7 @@
     { "name": "terminal", "who": "host", "since": 4, "meaning": "The host offers a data-only browser terminal on its desk seat." },
     { "name": "terminal-keep", "who": "host", "since": 4, "meaning": "The host keeps the browser terminal across sessions and supports explicit termination." },
     { "name": "terminals", "who": "host", "since": 5, "meaning": "The host keeps multiple browser terminals and accepts open.id and open.new. Browsers and servers also announce it to receive terminal IDs and lists." },
+    { "name": "terminal-takeover", "who": "host", "since": 5, "meaning": "The desktop host supports taking a terminal attachment between the browser and the computer. Servers and browsers also announce it to forward or receive TerminalStatus.here." },
     { "name": "browse", "who": "host", "since": 4, "meaning": "The data-only browser session also offers the browse channel for the host user’s files." },
     { "name": "file-transfer", "who": "host", "since": 4, "meaning": "The data-only browser session can upload and download regular files." },
     { "name": "ai", "who": "host", "since": 4, "meaning": "The host takes AI clients on its AI seat, beside a person's session (docs/architecture.md, \"AI control\"); its status reports that seat and the AI state." },
@@ -202,14 +203,15 @@
       }
     },
     "TerminalStatus": {
-      "meaning": "A running browser terminal and its last attachment.",
+      "meaning": "A running terminal and its last attachment.",
       "fields": {
         "id": { "type": "integer", "optional": false, "meaning": "the host-assigned terminal ID" },
         "since": { "type": "integer", "optional": false, "meaning": "unix seconds when the shell was started" },
-        "attached": { "type": "boolean", "optional": false, "meaning": "a browser is attached" },
-        "name": { "type": "string", "optional": false, "meaning": "the last attached device's name" },
+        "attached": { "type": "boolean", "optional": false, "meaning": "the terminal is in use" },
+        "name": { "type": "string", "optional": false, "meaning": "the last attached device's name or This computer" },
         "cred": { "type": "string", "optional": true, "meaning": "the verified device credential, only from host to server" },
-        "left": { "type": "integer", "optional": true, "meaning": "unix seconds when the device left, while detached" }
+        "left": { "type": "integer", "optional": true, "meaning": "unix seconds when the holder left, while detached" },
+        "here": { "type": "boolean", "optional": true, "meaning": "the terminal is in use at the computer, sent on both signaling hops with terminal-takeover" }
       }
     },
     "Approval": {
@@ -561,7 +563,7 @@
         },
         {
           "type": "status", "status": "current", "since": 1, "directions": ["host->server"],
-          "meaning": "The session holding the host and its displays. Sent after hello and on every change. A session the server knows that the status no longer names is over.",
+          "meaning": "The session holding the host and its displays. Sent after hello and when status changes, using the capabilities announced on that connection. A session the server knows that the status no longer names is over.",
           "fields": {
             "displays": { "type": "array", "items": "Display", "optional": false, "meaning": "attached displays" },
             "holder": { "type": "Holder", "optional": true, "meaning": "the session holding the computer, established or still connecting; absent: nobody" },
@@ -1161,21 +1163,22 @@
       ]
     },
     "terminal": {
-      "transport": "WebRTC data channel terminal: reliable and ordered. Text messages contain JSON. Binary messages carry raw PTY input from the browser or raw PTY output from the host.",
+      "transport": "Reliable ordered WebRTC channel terminal or a dedicated local connection. Text frames contain JSON. Binary frames carry raw PTY bytes.",
       "discriminator": "t",
       "max_bytes": 16384,
       "output_window_bytes": 131072,
       "input_window_bytes": 65536,
       "messages": [
-        {"type": "open", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Returns to the most recently detached terminal or starts one if none is kept. Sending both id and new is a protocol error.", "fields": {"rows": {"type": "integer", "optional": false, "meaning": "rows (1–65535)"}, "cols": {"type": "integer", "optional": false, "meaning": "columns (1–65535)"}, "id": {"type": "integer", "optional": true, "since": 5, "meaning": "return to this detached terminal when both peers have terminals"}, "new": {"type": "boolean", "optional": true, "since": 5, "meaning": "true starts a new terminal when both peers have terminals"}}},
+        {"type": "open", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Returns to the most recently detached terminal or starts one if none is kept. Sending id and new together, or take without id, is a protocol error.", "fields": {"rows": {"type": "integer", "optional": false, "meaning": "rows (1–65535)"}, "cols": {"type": "integer", "optional": false, "meaning": "columns (1–65535)"}, "id": {"type": "integer", "optional": true, "since": 5, "meaning": "return to this terminal when both peers have terminals"}, "new": {"type": "boolean", "optional": true, "since": 5, "meaning": "true starts a new terminal when both peers have terminals"}, "take": {"type": "boolean", "optional": true, "since": 5, "meaning": "true with id takes the attachment from its current holder when both peers have terminal-takeover"}}},
         {"type": "opened", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "The terminal is attached. Follows open and precedes output.", "fields": {"id": {"type": "integer", "optional": true, "since": 5, "meaning": "the attached terminal ID, sent to browsers with terminals"}, "replay": {"type": "integer", "optional": true, "meaning": "bytes of replay before live output; present when returning to a shell"}, "dropped": {"type": "boolean", "optional": true, "meaning": "older output was discarded from replay"}}},
         {"type": "resize", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Changes the shell's terminal size.", "fields": {"rows": {"type": "integer", "optional": false, "meaning": "rows (1–65535)"}, "cols": {"type": "integer", "optional": false, "meaning": "columns (1–65535)"}}},
         {"type": "ack", "status": "current", "since": 4, "directions": ["browser->host", "host->browser"], "meaning": "Returns credit after the receiver consumes bytes: output processed by the emulator or input written to the PTY.", "fields": {"bytes": {"type": "integer", "optional": false, "meaning": "newly consumed bytes, between 1 and the remaining unacknowledged byte count"}}},
         {"type": "close", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Leaves the terminal channel. Hosts with terminal-keep detach; older hosts end the shell.", "fields": {}},
         {"type": "terminate", "status": "current", "since": 4, "directions": ["browser->host"], "meaning": "Ends the attached shell and its jobs on a host with terminal-keep.", "fields": {}},
         {"type": "closed", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "Acknowledges terminate after the shell and jobs are closed.", "fields": {}},
+        {"type": "detached", "status": "current", "since": 5, "directions": ["host->browser"], "meaning": "The terminal was taken over. Only the attachment ends. Sent to a peer with terminal-takeover. Older peers receive error io.", "fields": {"reason": {"type": "string", "enum": ["taken"], "optional": false}}},
         {"type": "exit", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "The shell ended. All output precedes this message.", "fields": {"code": {"type": "integer", "optional": false, "meaning": "process exit code, or negative signal number"}}},
-        {"type": "error", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "A terminal operation failed.", "fields": {"why": {"type": "string", "enum": ["open", "close", "io", "protocol"], "optional": false, "meaning": "open: could not start the shell, or the terminal requested by ID no longer exists or is attached elsewhere; close: could not end the shell and its jobs, attachment stays open; io: PTY I/O failed; protocol: invalid terminal message"}}}
+        {"type": "error", "status": "current", "since": 4, "directions": ["host->browser"], "meaning": "A terminal operation failed or the attachment was taken over by the computer.", "fields": {"why": {"type": "string", "enum": ["open", "close", "io", "protocol"], "optional": false, "meaning": "open: could not start the shell, or the terminal requested by ID no longer exists or is attached elsewhere; close: could not end the shell and its jobs, attachment stays open; io: PTY I/O failed, or the computer took the terminal from a peer without terminal-takeover; protocol: invalid terminal message"}}}
       ]
     },
     "ipc": {

@@ -550,31 +550,59 @@ export class Harness {
   // The test host's panel pipe (dev mode names it after its config folder), used here the way
   // the person sitting at the computer uses the panel.
   panelPipe(home = this.opts.hostHome) {
+    const statuses = [];
+    const pipe = this.uiPipe(home, 'LocalAccess', (binary, body) => {
+      // Messages to a panel are {"Status": {...}} or "Exit" (service::net::ToPanel).
+      if (!binary) {
+        const m = JSON.parse(body.toString('utf8'));
+        if (m?.Status) statuses.push(m.Status);
+      }
+    });
+    return { statuses, send: (obj) => pipe.send(JSON.stringify(obj)), get error() { return pipe.error; }, close: pipe.close };
+  }
+
+  terminalPipe(home) {
+    const channel = { readyState: 'connecting' };
+    const pipe = this.uiPipe(home, 'Terminal', (binary, body) => {
+      const data = binary ? new Uint8Array(body).buffer : body.toString('utf8');
+      channel.onmessage?.({ data });
+    }, () => {
+      channel.readyState = 'open';
+      channel.onopen?.();
+    }, () => {
+      channel.readyState = 'closed';
+      channel.onclose?.();
+    });
+    channel.send = pipe.send;
+    channel.close = pipe.close;
+    return channel;
+  }
+
+  uiPipe(home, first, receive, connected, closed) {
     const hash = createHash('sha256').update(home).digest('hex').slice(0, 8);
     const sock = pipeConnect(`\\\\.\\pipe\\deskway-ui-dev-${hash}`);
     let error = null;
-    sock.on('error', (err) => { error = err; });
     let buf = Buffer.alloc(0);
-    const statuses = [];
+    sock.on('error', (err) => { error = err; });
+    sock.on('close', () => closed?.());
     sock.on('data', (d) => {
       buf = Buffer.concat([buf, d]);
       while (buf.length >= 5 && buf.length >= 5 + buf.readUInt32LE(0)) {
         const len = buf.readUInt32LE(0);
-        // Messages to a panel are `{"Status": {...}}` or `"Exit"` (service::net::ToPanel).
-        if (buf[4] === 0) {
-          const m = JSON.parse(buf.subarray(5, 5 + len).toString('utf8'));
-          if (m && m.Status) statuses.push(m.Status);
-        }
+        receive(buf[4] === 1, buf.subarray(5, 5 + len));
         buf = buf.subarray(5 + len);
       }
     });
-    const send = (obj) => {
-      const body = Buffer.from(JSON.stringify(obj));
+    const send = (data) => {
+      const body = Buffer.from(data);
       const head = Buffer.alloc(5);
       head.writeUInt32LE(body.length, 0);
+      head[4] = typeof data === 'string' ? 0 : 1;
       sock.write(Buffer.concat([head, body]));
     };
-    return { statuses, send, get error() { return error; }, close: () => sock.destroy() };
+    send(JSON.stringify(first));
+    sock.on('connect', () => connected?.());
+    return { send, get error() { return error; }, close: () => sock.destroy() };
   }
 
   // ---- the server ----

@@ -30,6 +30,7 @@ use crate::signal::Status;
 
 mod indicator;
 mod local;
+mod terminal;
 #[cfg(target_os = "macos")]
 mod inprocess;
 #[cfg(windows)]
@@ -43,6 +44,7 @@ use inprocess::{BackendEvent, InProcess as HostBackend};
 use service::{BackendEvent, Service as HostBackend};
 
 use indicator::Indicator;
+use terminal::TerminalWindow;
 
 const PANEL_HTML: &str = include_str!("panel.html");
 static PANEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -81,6 +83,7 @@ pub enum UiEvent {
     Ipc(String),
     /// Panel messages belong to one instance of the page.
     PanelIpc(u64, String),
+    Terminal(u64, terminal::Event),
     /// The screens changed: the panel stays on them.
     ScreenChanged,
     TrayOpen,
@@ -108,6 +111,7 @@ pub enum PageMessage {
     Close,
     Minimize,
     Disconnect,
+    OpenTerminal,
     /// Stop AI control here (the indicator's and the panel's Stop AI control).
     StopAi,
     OpenFolder,
@@ -164,6 +168,7 @@ trait Backend {
     /// signed in, how it starts, what it may do).
     fn extras(&self) -> Value;
     fn local(&self) -> &local::Panel;
+    fn terminal(&self) -> Result<crate::session::terminal::local::Connection>;
     /// A request for the host. True if the panel should be drawn again now.
     fn request(&mut self, r: PanelRequest) -> bool;
     /// A page message that is the backend's own. True if the panel should be drawn again now.
@@ -206,6 +211,7 @@ fn panel_state(status: Option<&Status>, extras: Value) -> Value {
         "name": crate::shown_name(&s.name), "auto_lock": s.auto_lock,
         "online": s.online, "waiting": s.waiting, "approval_code": s.approval_code, "controller": s.controller, "paired": s.paired,
         "ai_client": s.ai_client, "ai_state": s.ai_state,
+        "terminal_count": s.terminals.as_ref().map(Vec::len),
         "pair_qr": s.pair_url.as_deref().map(qr_svg), "devices": s.devices, "max_devices": crate::auth::MAX_CONTROLLERS,
         "asks": s.asks, "problem": s.problem, "prevent_sleep": s.prevent_sleep,
         "keep_awake_min_battery": crate::power::MIN_BATTERY_PERCENT,
@@ -375,6 +381,12 @@ impl Panel {
         self.frame.as_ref().map(|frame| &frame.window)
     }
 
+    #[cfg(target_os = "macos")]
+    fn is_open(&self) -> bool {
+        // A closed panel keeps its native frame, even after releasing the page.
+        self.page.is_some() && self.close_at.is_none()
+    }
+
     fn show(&mut self, target: &EventLoopWindowTarget<UiEvent>, ctx: &mut WebContext, proxy: &EventLoopProxy<UiEvent>) {
         if let Err(e) = self.open(target, ctx, proxy) {
             eprintln!("{}: {e}", t(native::PANEL_ERROR));
@@ -413,9 +425,9 @@ impl Panel {
         Ok(())
     }
 
-    fn hide(&mut self) {
+    fn hide(&mut self, terminal_open: bool) {
         if let Some(window) = self.window() {
-            native::hide_panel(window);
+            native::hide_panel(window, terminal_open);
         }
         if self.page.is_some() && self.close_at.is_none() {
             self.close_at = Some(Instant::now() + PANEL_IDLE);
@@ -461,12 +473,13 @@ impl Panel {
 
 /// Shows everything in the language now chosen, if the windows show another: the panel, the
 /// indicator and the tray menu.
-fn follow_language(app: &mut App, panel: &Panel, indicator: &mut Option<Indicator>, open: &MenuItem, quit: &MenuItem) {
+fn follow_language(app: &mut App, panel: &Panel, terminal: Option<&TerminalWindow>, indicator: &mut Option<Indicator>, open: &MenuItem, quit: &MenuItem) {
     if i18n::current() == app.shown {
         return;
     }
     app.shown = i18n::current();
     panel.relabel();
+    if let Some(terminal) = terminal { terminal.relabel(app.status.as_ref()); }
     open.set_text(t("tray.open"));
     quit.set_text(t("tray.quit"));
     if let Some(i) = indicator {
@@ -526,6 +539,8 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
     }
 
     let mut indicator: Option<Indicator> = None;
+    let mut terminal: Option<TerminalWindow> = None;
+    let mut terminal_generation = 0;
     let mut tray_badge = None;
     let mut tray_tooltip = String::new();
 
@@ -568,7 +583,19 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } if panel.window().is_some_and(|window| window.id() == window_id) => {
                 // Closing the panel never stops the host: it keeps running in the tray.
-                panel.hide();
+                panel.hide(terminal.is_some());
+            }
+            Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. }
+                if terminal.as_ref().is_some_and(|terminal| terminal.window.id() == window_id) =>
+            {
+                terminal = None;
+                #[cfg(target_os = "macos")]
+                native::terminal_closed(panel.is_open());
+            }
+            Event::UserEvent(UiEvent::Terminal(generation, event)) => {
+                if let Some(window) = terminal.as_mut().filter(|window| window.generation == generation) {
+                    window.event(event, app.status.as_ref(), &app.backend);
+                }
             }
             // Permissions may have changed in System Settings meanwhile.
             Event::WindowEvent { event: WindowEvent::Focused(true), window_id, .. } if panel.window().is_some_and(|window| window.id() == window_id) => panel.render(&app),
@@ -588,6 +615,7 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
                     panel.show(target, &mut ctx, &proxy);
                     panel.render(&app);
                 } else if id == quit_id {
+                    terminal = None;
                     panel.release();
                     app.backend.quit();
                     // Lets the signaling thread tell the viewer, so it does not keep reconnecting.
@@ -608,7 +636,8 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
                     }
                 }
                 app.status = st;
-                follow_language(&mut app, &panel, &mut indicator, &open_item, &quit_item);
+                follow_language(&mut app, &panel, terminal.as_ref(), &mut indicator, &open_item, &quit_item);
+                if let Some(window) = &mut terminal { window.update(app.status.as_ref()); }
                 show_controller(&app, &mut indicator, target, &mut ctx);
                 panel.render(&app);
             }
@@ -616,6 +645,7 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
                 if app.backend.event(e) {
                     panel.render(&app);
                 } else {
+                    terminal = None;
                     panel.release();
                     *flow = ControlFlow::Exit;
                 }
@@ -666,7 +696,22 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
                     PageMessage::DragRegion { rect } => {
                         if let Some(frame) = &panel.frame { frame.native.set_region(rect); }
                     }
-                    PageMessage::Close => panel.hide(),
+                    PageMessage::Close => panel.hide(terminal.is_some()),
+                    PageMessage::OpenTerminal => {
+                        if let Some(window) = &terminal {
+                            window.focus();
+                        } else if app.status.as_ref().is_some_and(|s| s.terminals.is_some()) {
+                            terminal_generation += 1;
+                            match TerminalWindow::new(target, &mut ctx, proxy.clone(), terminal_generation) {
+                                Ok(mut window) => {
+                                    window.update(app.status.as_ref());
+                                    window.focus();
+                                    terminal = Some(window);
+                                }
+                                Err(e) => eprintln!("{}: {e}", t(native::PANEL_ERROR)),
+                            }
+                        }
+                    }
                     PageMessage::Minimize => {
                         if let Some(window) = panel.window() { native::minimize_panel(window); }
                     }
@@ -687,7 +732,7 @@ pub fn run(at_login: bool, dev: bool) -> Result<()> {
                                 // The panel shows the chosen language at once; the host keeps it.
                                 if let PanelRequest::Lang(code) = &r {
                                     i18n::set(i18n::Lang::parse(code).map(|l| l.code()));
-                                    follow_language(&mut app, &panel, &mut indicator, &open_item, &quit_item);
+                                    follow_language(&mut app, &panel, terminal.as_ref(), &mut indicator, &open_item, &quit_item);
                                 }
                                 app.backend.request(r)
                             }

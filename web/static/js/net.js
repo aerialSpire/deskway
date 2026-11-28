@@ -59,7 +59,7 @@ class Signaling {
     ws.onopen = () => {
       this.delay = 1000;
       clearTimeout(this.staleTimer);
-      ws.send(JSON.stringify({ type: Signal.HELLO, version: PROTOCOL_VERSION, caps: [CAPS.TERMINALS] }));
+      ws.send(JSON.stringify({ type: Signal.HELLO, version: PROTOCOL_VERSION, caps: [CAPS.TERMINALS, CAPS.TERMINAL_TAKEOVER] }));
       this.onUp();
       for (const m of this.pending.splice(0)) ws.send(JSON.stringify(m));
     };

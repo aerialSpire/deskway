@@ -18,7 +18,7 @@ which defines every signed or MACed string. The Go
 | `file` | browser and host | data channel `file`: reliable; text = messages, binary = bytes of the one transfer active in that direction | `t` |
 | `browse` | browser and host | reliable, ordered data channel `browse` with paged directory listings and folder operations | `t` |
 | `file-transfer` | browser and host | reliable, ordered data channel `file-transfer` for regular file uploads and downloads | `t` |
-| `terminal` | browser and host | data channel `terminal`: reliable, ordered. Text carries messages and binary carries raw PTY bytes | `t` |
+| `terminal` | browser and host, or host and local window | reliable ordered data channel `terminal` or local stream. Text carries JSON and binary carries raw PTY bytes | `t` |
 | `ai` | AI client and host | data channel `ai`: reliable, ordered; MCP JSON-RPC in fragments (AI sessions) | JSON-RPC |
 | `tunnel:<port>` | AI client and host | data channel: reliable, ordered; the bytes of one TCP connection to a loopback port (AI sessions) | none |
 | `ipc` | Windows network service and agent | named pipe; length-prefixed bincode frames of `platform::Call` (service to agent) and `PlatformEvent` (agent to service), after an HMAC handshake; video frames and transfer bytes are raw frames | `t` |
@@ -67,6 +67,7 @@ A type name has the same meaning everywhere. When the same name appears on two c
   | `terminal` | no browser terminal |
   | `terminal-keep` | the browser terminal ends with its session |
   | `terminals` | no terminal list, return by ID or explicit new terminal |
+  | `terminal-takeover` | occupied terminal IDs are refused and the list uses the last holder's name |
   | `browse` | no file view on the data-only browser session |
   | `file-transfer` | Files has browsing and folder operations only |
   | `ai` | no AI seat: AI clients cannot use the computer |
@@ -235,8 +236,9 @@ host                       server (restarted)                 browser
 
 - A host's `status` names the session holding it (`holder`: the session, the controller
   credential, the device name, the account, and whether it is established or still connecting).
-  The host sends it after every connect and on every change. The server keeps the session
-  records (`internal/server/sessions.go`). A status makes the session it names live, so the
+  The host sends it after every connect and when its status changes, using the capabilities
+  announced on that connection. The server keeps the session records (`internal/server/sessions.go`).
+  A status makes the session it names live, so the
   session is known again after a server restart; a live session that a status no longer names
   is over, and its page is sent `bye{ended}` immediately.
 - A session belongs to the browser that started it (its account and browser record), not to a
@@ -427,22 +429,22 @@ data, credit or a reply times out after 30 seconds and interrupts the channel at
   failures. The host sends `error` when a transfer fails or is cancelled, after cleaning up
   any staged upload.
 
-## Browser terminal
+## Terminal
 
 The browser offers a terminal only when the live signaling hello reports `terminal`, verifies
 the answer as usual, and waits for the control hello to confirm the capability. These additions
 are gated by that capability within protocol 4.
 
-The browser sends `open{rows, cols, id?, new?}` the first time the Terminal view is shown and can
+The browser sends `open{rows, cols, id?, new?, take?}` the first time the Terminal view is shown and can
 size the emulator. Without a selector, the host returns to the most recently detached shell
 or starts a login shell if none is kept. An `id` returns to that shell. `new: true` starts a
 login shell. The host sends `error{why: "open"}` if it cannot start a shell or if the
-shell requested by ID no longer exists or is attached elsewhere.
-Sending both `id` and `new` yields `error{why: "protocol"}`. The host assigns IDs in increasing
+shell requested by ID no longer exists or is attached elsewhere without `take: true`.
+Sending both `id` and `new`, or `take` without `id`, yields `error{why: "protocol"}`. The host assigns IDs in increasing
 order for its lifetime and sends `opened` before any binary output. Each channel has one
 attachment. To switch, the browser sends `close`, closes that channel and opens a fresh `terminal` channel on the
-same connection. The host accepts one `terminal` channel at a time, and only the seated
-session can attach. Binary messages carry raw bytes in both directions. `resize{rows, cols}`
+same connection. The host accepts one `terminal` channel at a time from the seated session.
+Binary messages carry raw bytes in both directions. `resize{rows, cols}`
 changes the attached PTY size. Ending the desk session, losing the terminal channel or
 sending `close` detaches the browser. An ICE restart on the same connection preserves its
 attachment and credit.
@@ -452,6 +454,19 @@ announce `terminals` in their signaling hellos to receive the list. The browser 
 announces it in the data session's control hello. The host waits for that hello before
 sending its own. Both peers must announce `terminals` on control to use `open.id` or
 `open.new` and receive `opened.id`.
+
+Windows and macOS hosts with a terminal workspace announce `terminal-takeover`. A browser
+that also announces it on control can send `open{id, take: true}` to take the shell from
+its holder at execution. The displaced attachment receives `detached{reason: "taken"}`.
+A browser without the capability receives `error{why: "io"}` when the computer takes
+its terminal. This ends only the attachment. The desk session, Files and active transfers
+continue. The new attachment receives any pending PTY output and exit code.
+
+The local terminal window uses the same messages and byte credit over a fresh stream per
+attachment. On Windows, its dedicated UI-pipe connection starts with the JSON request
+`"Terminal"`. Subsequent frames use a 32-bit little-endian length, a tag (0 for JSON, 1
+for PTY bytes) and up to 16 KiB of payload. macOS uses an in-process connection. The window
+drains queued frames after the driver finishes.
 
 A host with `terminal-keep` accepts `terminate` only from an attached session and replies
 with `closed` after the shell and jobs are gone. On failure it sends `error{why: "close"}`
@@ -478,7 +493,10 @@ the paste arrives as text.
 
 Host `status` carries `terminals` to a server with that capability. Each entry has `id`,
 `since` (creation time in Unix seconds), `attached`, `name` and the verified `cred` when
-available. While detached, `left` gives the departure time in Unix seconds. The host also
+available. When the window at the computer holds the terminal, `here: true` identifies that
+holder, `name` is `This computer`, and `cred` is absent. The host sends `here` to a server
+with `terminal-takeover` and the server forwards it to a browser with that capability.
+While detached, `left` gives the departure time in Unix seconds. The host also
 reports the most recently detached shell still running in `kept_terminal`, with its departure
 time in `since`. The server resolves the current device names and forwards both reports
 without credentials in the account's `devices` list. Browsers with `terminals` receive the

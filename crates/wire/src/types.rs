@@ -158,6 +158,8 @@ wire_struct! {
         "cred" cred: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         "left" left: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        "here" here: Option<bool>,
     }
 }
 

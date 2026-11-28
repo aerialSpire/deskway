@@ -24,6 +24,7 @@ export const CAPS = Object.freeze({
   TERMINAL: 'terminal',
   TERMINAL_KEEP: 'terminal-keep',
   TERMINALS: 'terminals',
+  TERMINAL_TAKEOVER: 'terminal-takeover',
   BROWSE: 'browse',
   FILE_TRANSFER: 'file-transfer',
   AI: 'ai',
@@ -54,7 +55,7 @@ export const TYPES = Object.freeze({
   AuditPage: { calls: '[AuditCall]', total: 'i', clients: '[s]', tools: '[s]' },
   FileEntry: { name: 's', kind: 's:folder|file|link|special', size: 'i', modified: 'i?', mode: 'i?', owner: 's?', attributes: '[s]?', target: 's?', opens: 'b?' },
   KeptTerminal: { since: 'i', name: 's', cred: 's?' },
-  TerminalStatus: { id: 'i', since: 'i', attached: 'b', name: 's', cred: 's?', left: 'i?' },
+  TerminalStatus: { id: 'i', since: 'i', attached: 'b', name: 's', cred: 's?', left: 'i?', here: 'b?' },
   Holder: { session: 's', cred: 's?', name: 's', user: 's', established: 'b', since: 'i?' },
   Approval: { kind: 's:browser|device', id: 's', label: 's', ip: 's', code: 's?', created: 'i', device: 'a?' },
   IceCandidate: { candidate: 's', sdpMid: 's?', sdpMLineIndex: 'i?', usernameFragment: 's?' },
@@ -186,13 +187,14 @@ export const CHANNELS = Object.freeze({
   terminal: {
     discriminator: 't',
     messages: Object.freeze({
-      open: msg(B2H, { rows: 'i', cols: 'i', id: 'i?', new: 'b?' }),
+      open: msg(B2H, { rows: 'i', cols: 'i', id: 'i?', new: 'b?', take: 'b?' }),
       opened: msg(H2B, { id: 'i?', replay: 'i?', dropped: 'b?' }),
       resize: msg(B2H, { rows: 'i', cols: 'i' }),
       ack: msg(`${B2H},${H2B}`, { bytes: 'i' }),
       close: msg(B2H),
       terminate: msg(B2H),
       closed: msg(H2B),
+      detached: msg(H2B, { reason: 's:taken' }),
       exit: msg(H2B, { code: 'i' }),
       error: msg(H2B, { why: 's:open|close|io|protocol' }),
     }),
@@ -221,7 +223,7 @@ export const BrowseMsg = Object.freeze({
 });
 export const BROWSE_MAX_BYTES = 64 * 1024;
 export const TerminalMsg = Object.freeze({
-  OPEN: 'open', OPENED: 'opened', RESIZE: 'resize', ACK: 'ack', CLOSE: 'close', TERMINATE: 'terminate', CLOSED: 'closed', EXIT: 'exit', ERROR: 'error',
+  OPEN: 'open', OPENED: 'opened', RESIZE: 'resize', ACK: 'ack', CLOSE: 'close', TERMINATE: 'terminate', CLOSED: 'closed', DETACHED: 'detached', EXIT: 'exit', ERROR: 'error',
 });
 export const DATA_CHUNK = 16 * 1024;
 export const TERMINAL_FRAME = DATA_CHUNK;

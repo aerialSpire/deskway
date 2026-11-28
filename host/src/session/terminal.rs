@@ -3,22 +3,26 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
-use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 use anyhow::Context;
-use wire::terminal::{Terminal as Msg, TerminalError, FRAME, INPUT_WINDOW, OUTPUT_WINDOW};
+use wire::terminal::{DetachReason, Terminal as Msg, TerminalError, FRAME, INPUT_WINDOW, OUTPUT_WINDOW};
 
 use crate::i18n::t;
 use wire::types::Reason;
-use registry::{Closed, Lease, Selection, Shell};
+use registry::{AttachmentId, Closed, Lease, Selection, Shell};
 use replay::History;
 
 pub mod registry;
+#[cfg(any(windows, target_os = "macos"))]
+pub(crate) mod local;
 mod replay;
-use super::{credit::Credit, SessionEvent};
+use super::credit::Credit;
 
 const HIGH: usize = 64 * 1024;
 pub(super) const LOW: usize = 16 * 1024;
+
+type Notify = Arc<dyn Fn() + Send + Sync>;
 
 pub(super) trait Port {
     /// Returns false if the transport did not accept the frame.
@@ -161,11 +165,10 @@ impl Stream {
         // At most one slice of output and one write per pass, even with a busy PTY.
         let (sent, exit) = shell.output(capacity, |data| send(true, data))?;
         self.credit.window.take(sent, OUTPUT_WINDOW);
-        let writing = if exit.is_none() {
-            let before = self.input.queued.len();
-            self.input.write(&mut *shell.pty).context("write PTY")?;
-            self.input.queued.len() < before && !self.input.queued.is_empty()
-        } else { false };
+        if exit.is_some() { return Ok((false, exit)); }
+        let before = self.input.queued.len();
+        self.input.write(&mut *shell.pty).context("write PTY")?;
+        let writing = self.input.queued.len() < before && !self.input.queued.is_empty();
         let acked = self.input.acknowledge(|bytes| {
             send(false, &serde_json::to_vec(&Msg::Ack { bytes })?)
         })?;
@@ -177,31 +180,35 @@ fn retry(e: &io::Error) -> bool {
     matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted)
 }
 
-fn selection(id: Option<u64>, new: Option<bool>, peer_has_terminals: bool) -> Option<Selection> {
-    match (id, new) {
-        (None, None) => Some(Selection::LatestOrNew),
-        (Some(id), None) if peer_has_terminals => Some(Selection::Id(id)),
-        (None, Some(new)) if peer_has_terminals => Some(if new { Selection::New } else { Selection::LatestOrNew }),
+fn selection(id: Option<u64>, new: Option<bool>, take: Option<bool>, terminals: bool, takeover: bool) -> Option<Selection> {
+    match (id, new, take) {
+        (None, None, None) => Some(Selection::LatestOrNew),
+        (Some(id), None, None) if terminals => Some(Selection::Id { id, take: false }),
+        (Some(id), None, Some(take)) if terminals && takeover => Some(Selection::Id { id, take }),
+        (None, Some(new), None) if terminals => Some(if new { Selection::New } else { Selection::LatestOrNew }),
         _ => None,
     }
 }
 
 pub struct Terminal {
     lease: Lease,
-    own: Sender<SessionEvent>,
+    notify: Notify,
     peer_has_terminals: bool,
+    takeover: bool,
+    attachment: Option<AttachmentId>,
     stream: Option<Stream>,
     reply: Option<Msg>,
     done: bool,
 }
 
 impl Terminal {
-    pub fn new(lease: Lease, own: Sender<SessionEvent>) -> Self {
-        Self { lease, own, peer_has_terminals: false, stream: None, reply: None, done: false }
+    pub fn new(lease: Lease, notify: impl Fn() + Send + Sync + 'static) -> Self {
+        Self { lease, notify: Arc::new(notify), peer_has_terminals: false, takeover: false, attachment: None, stream: None, reply: None, done: false }
     }
 
-    pub(super) fn negotiate(&mut self, caps: &[String]) {
+    pub(super) fn negotiate(&mut self, caps: &[String], offers_takeover: bool) {
         self.peer_has_terminals = caps.iter().any(|cap| cap == wire::caps::TERMINALS);
+        self.takeover = offers_takeover && caps.iter().any(|cap| cap == wire::caps::TERMINAL_TAKEOVER);
     }
 
     fn finish(&mut self, reply: Option<Msg>) {
@@ -210,20 +217,42 @@ impl Terminal {
         self.done = true;
     }
 
+    fn detach(&self, why: &str) {
+        if let Some(key) = &self.attachment { self.lease.detach(key, why); }
+    }
+
+    fn check_revocation(&mut self) -> bool {
+        let Some(reason) = self.attachment.as_ref().and_then(AttachmentId::revoked) else { return false };
+        // The receiver needs the terminal ID before it can report the loss.
+        if !matches!(self.reply, Some(Msg::Opened { .. })) {
+            self.attachment = None;
+            let reply = if self.takeover && reason == Reason::Taken {
+                Msg::Detached { reason: DetachReason::Taken }
+            } else {
+                Msg::Error { why: TerminalError::Io }
+            };
+            self.finish(Some(reply));
+        }
+        true
+    }
+
     fn error(&mut self, why: TerminalError) {
-        self.lease.detach(why.as_str());
-        self.finish(Some(Msg::Error { why }));
+        self.detach(why.as_str());
+        if !self.check_revocation() {
+            self.finish(Some(Msg::Error { why }));
+        }
     }
 
     fn open(&mut self, rows: u16, cols: u16, target: Selection) {
-        let result = self.lease.attach(target, rows, cols, self.own.clone());
+        let result = self.lease.attach(target, rows, cols, self.notify.clone());
         match result {
-            Ok(Some(registry::Attachment { id, replay, dropped })) => {
+            Ok(Some(registry::Attachment { key, replay, dropped })) => {
                 self.reply = Some(Msg::Opened {
-                    id: self.peer_has_terminals.then_some(id),
+                    id: self.peer_has_terminals.then_some(key.terminal),
                     replay: replay.as_ref().map(|replay| replay.len),
                     dropped: dropped.then_some(true),
                 });
+                self.attachment = Some(key);
                 self.stream = Some(Stream::new(rows, cols, replay));
             }
             Ok(None) => self.finish(Some(Msg::Error { why: TerminalError::Open })),
@@ -235,7 +264,7 @@ impl Terminal {
     }
 
     pub(super) fn message(&mut self, active: bool, binary: bool, bytes: Vec<u8>) {
-        if self.done {
+        if self.check_revocation() || self.done {
             return;
         }
         if bytes.len() > FRAME {
@@ -251,17 +280,20 @@ impl Terminal {
             return;
         }
         match serde_json::from_slice(&bytes) {
-            Ok(Msg::Open { rows, cols, id, new }) if active && rows > 0 && cols > 0 && self.stream.is_none() => {
-                match selection(id, new, self.peer_has_terminals) {
+            Ok(Msg::Open { rows, cols, id, new, take }) if active && rows > 0 && cols > 0 && self.stream.is_none() => {
+                match selection(id, new, take, self.peer_has_terminals, self.takeover) {
                     Some(target) => self.open(rows, cols, target),
                     None => self.error(TerminalError::Protocol),
                 }
             }
             Ok(Msg::Resize { rows, cols }) if rows > 0 && cols > 0 => {
-                if let Some(stream) = &mut self.stream {
-                    if let Some(Err(e)) = self.lease.with_shell(|shell| stream.resize(shell, rows, cols)) {
+                if let (Some(stream), Some(key)) = (&mut self.stream, &self.attachment) {
+                    if let Some(Err(e)) = self.lease.with_shell(key, |shell| {
+                        let result = stream.resize(shell, rows, cols);
+                        let closed = result.is_err().then_some(Closed::Io);
+                        (result, closed)
+                    }) {
                         eprintln!("{}: {e}", t("terminal.io"));
-                        self.lease.close(Closed::Io);
                         self.error(TerminalError::Io);
                     }
                 }
@@ -274,10 +306,12 @@ impl Terminal {
                 }
             }
             Ok(Msg::Close {}) => {
-                self.lease.detach(Reason::Left.as_str());
-                self.finish(None);
+                self.detach(Reason::Left.as_str());
+                if !self.check_revocation() {
+                    self.finish(None);
+                }
             }
-            Ok(Msg::Terminate {}) if active => match self.lease.terminate() {
+            Ok(Msg::Terminate {}) if active => match self.attachment.as_ref().and_then(|key| self.lease.terminate(key)) {
                 Some(Ok(true)) => self.finish(Some(Msg::Closed {})),
                 Some(Ok(false)) => {} // The stream will drain the shell's output and send exit.
                 Some(Err(e)) => {
@@ -291,45 +325,53 @@ impl Terminal {
     }
 
     pub(super) fn pump(&mut self, port: &mut impl Port) -> Result<bool, PumpError> {
+        self.check_revocation();
         if let Some(reply) = &self.reply {
             let bytes = serde_json::to_vec(reply).map_err(|e| PumpError::Terminal(e.into()))?;
             if !port.write(false, &bytes).map_err(PumpError::Transport)? {
                 return Ok(false);
             }
             self.reply = None;
+            self.check_revocation();
             if self.stream.is_none() {
                 return Ok(true);
             }
         }
         let buffered = port.buffered();
-        let Some(stream) = &mut self.stream else { return Ok(false) };
-        let Some(result) = self.lease.with_shell(|shell| {
-            stream.pump(shell, buffered, |binary, data| {
+        let (Some(stream), Some(key)) = (&mut self.stream, &self.attachment) else { return Ok(false) };
+        let Some(result) = self.lease.with_shell(key, |shell| {
+            let result = stream.pump(shell, buffered, |binary, data| {
                 if binary && !self.lease.accessible() { return Ok(false); }
                 Ok(port.write(binary, data).map_err(PortWrite)?)
-            })
+            }).map_err(|e| match e.downcast::<PortWrite>() {
+                Ok(PortWrite(e)) => PumpError::Transport(e),
+                Err(e) => PumpError::Terminal(e),
+            });
+            let closed = match &result {
+                Ok((_, exit)) => exit.map(Closed::Exit),
+                Err(PumpError::Terminal(_)) => Some(Closed::Io),
+                Err(PumpError::Transport(_)) => None,
+            };
+            (result, closed)
         }) else { return Ok(false) };
-        let (progress, exit) = result.map_err(|e| match e.downcast::<PortWrite>() {
-            Ok(PortWrite(e)) => PumpError::Transport(e),
-            Err(e) => PumpError::Terminal(e),
-        })?;
+        let (progress, exit) = result?;
         if let Some(code) = exit {
-            self.lease.close(Closed::Exit(code));
             self.finish(Some(Msg::Exit { code }));
         }
         Ok(progress || exit.is_some())
     }
 
     pub(super) fn pump_failed(&mut self, failure: PumpError) {
-        let (error, close) = match failure {
-            PumpError::Terminal(error) => (error, true),
-            PumpError::Transport(error) => (error, false),
+        let error = match failure {
+            PumpError::Terminal(error) | PumpError::Transport(error) => error,
         };
         eprintln!("{}: {error:#}", t("terminal.io"));
-        if close {
-            self.lease.close(Closed::Io);
-        }
         self.error(TerminalError::Io);
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    fn finished(&self) -> bool {
+        self.done && self.reply.is_none()
     }
 
     pub(super) fn discard_reply(&mut self) {
@@ -337,7 +379,8 @@ impl Terminal {
     }
 
     pub(super) fn transport_closed(&mut self) {
-        self.lease.detach(Reason::Failed.as_str());
+        self.detach(Reason::Failed.as_str());
+        self.attachment = None;
         self.stream = None;
         self.reply = None;
         self.done = false;
@@ -350,16 +393,22 @@ mod tests {
 
     #[test]
     fn open_selections_require_the_peer_capability_only_for_explicit_fields() {
-        for (id, new, legacy, capable) in [
-            (None, None, Some(Selection::LatestOrNew), Some(Selection::LatestOrNew)),
-            (Some(7), None, None, Some(Selection::Id(7))),
-            (None, Some(true), None, Some(Selection::New)),
-            (None, Some(false), None, Some(Selection::LatestOrNew)),
-            (Some(7), Some(true), None, None),
-            (Some(7), Some(false), None, None),
+        let returning = |take| Some(Selection::Id { id: 7, take });
+        for (id, new, take, terminals, takeover, expected) in [
+            (None, None, None, false, false, Some(Selection::LatestOrNew)),
+            (Some(7), None, None, false, false, None),
+            (Some(7), None, None, true, false, returning(false)),
+            (None, Some(true), None, true, false, Some(Selection::New)),
+            (None, Some(false), None, true, false, Some(Selection::LatestOrNew)),
+            (Some(7), Some(true), None, true, false, None),
+            (Some(7), Some(false), None, true, false, None),
+            (Some(7), None, Some(true), true, false, None),
+            (Some(7), None, Some(true), true, true, returning(true)),
+            (Some(7), None, Some(false), true, true, returning(false)),
+            (None, None, Some(true), true, true, None),
+            (Some(7), Some(true), Some(true), true, true, None),
         ] {
-            assert_eq!(selection(id, new, false), legacy);
-            assert_eq!(selection(id, new, true), capable);
+            assert_eq!(selection(id, new, take, terminals, takeover), expected);
         }
     }
 
