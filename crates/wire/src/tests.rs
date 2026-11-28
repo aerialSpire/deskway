@@ -113,6 +113,11 @@ fn check_channel<T: Serialize + DeserializeOwned + Debug>(channel: &str, table: 
 #[test]
 fn signaling_host_matches_the_definition() {
     check_channel::<Signal>("signaling.host", Signal::TYPES, Signal::kind);
+    round_trip::<Signal>("terminal left at the computer", &json!({
+        "type": "status",
+        "displays": [],
+        "terminals": [{ "id": 2, "since": 123, "attached": false, "name": "This computer", "left": 456, "here": true }],
+    }));
 }
 
 #[test]

@@ -488,6 +488,7 @@
   "terminal.takenHere": "Terminal {id} is now used at this computer.",
   "terminal.attached": "Terminal {id} · {name} is using it.",
   "terminal.detached": "Terminal {id} · {name} left {ago}.",
+  "terminal.detachedHere": "Terminal {id} · Left at this computer {ago}.",
   "terminal.reconnecting": "The terminal is still running on the computer. You’ll see what you missed when you reconnect.",
   "session.noDesktop": "This computer has no desktop.",
   "session.permissionsTitle": "This Mac lacks remote control permissions",

@@ -12,8 +12,11 @@ export function terminalActions(device, t, ago, open, current, takeover) {
     if (attached && here && takeover) {
       return { text: t('terminal.here', { id }), label: t('terminal.takeOver'), run: () => open(id, true) };
     }
+    const text = attached ? t('terminal.attached', { id, name })
+      : here ? t('terminal.detachedHere', { id, ago: ago(left) })
+        : t('terminal.detached', { id, name, ago: ago(left) });
     return {
-      text: attached ? t('terminal.attached', { id, name }) : t('terminal.detached', { id, name, ago: ago(left) }),
+      text,
       label: t(id === current ? 'terminal.current' : 'terminal.return'),
       disabled: id === current,
       run: () => open(id),

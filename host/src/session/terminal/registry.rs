@@ -404,7 +404,7 @@ impl State {
         terminals.into_iter().map(|(&id, kept)| TerminalStatus {
             id, since: kept.since, attached: kept.left().is_none(),
             name: kept.last.name().into(), cred: kept.last.cred(), left: kept.left().map(|left| left.wall),
-            here: matches!(kept.place, Place::Attached { holder: Holder::Here, .. }).then_some(true),
+            here: matches!(kept.last, Attacher::Here).then_some(true),
         }).collect()
     }
 
@@ -845,6 +845,11 @@ mod tests {
             let result = to.attach(Selection::Id { id, take }, 24, 80, Arc::new(|| {})).unwrap();
             assert_eq!(result.is_some(), take);
             if let Some(result) = result {
+                let status = registry.status();
+                let taken = status.iter().find(|t| t.id == id).unwrap();
+                let left = status.iter().find(|t| t.id == second.key.terminal).unwrap();
+                assert_eq!((taken.attached, taken.here), (true, (!from_here).then_some(true)));
+                assert_eq!((left.attached, left.here), (false, (!from_here).then_some(true)));
                 assert!(result.replay.is_some());
                 assert_eq!(ready.recv_timeout(Duration::from_secs(2)), Ok(()));
                 assert_eq!(first.key.revoked(), Some(Reason::Taken));

@@ -385,17 +385,23 @@ func TestTerminalHereRequiresTakeoverOnBothSignalingHops(t *testing.T) {
 		f.s.mu.Lock()
 		f.s.hosts[host.deviceID] = host
 		f.s.mu.Unlock()
-		f.s.onStatus(host, proto.Msg{Terminals: []proto.TerminalStatus{{
-			KeptTerminal: proto.KeptTerminal{Since: 123, Name: "This computer"},
-			ID:           7, Attached: true, Here: true,
-		}}})
+		fromHere := proto.KeptTerminal{Since: 123, Name: "This computer"}
+		f.s.onStatus(host, proto.Msg{Terminals: []proto.TerminalStatus{
+			{KeptTerminal: fromHere, ID: 7, Attached: true, Here: true},
+			{KeptTerminal: fromHere, ID: 8, Left: 456, Here: true},
+		}})
 		for _, browserCap := range []bool{false, true} {
 			c := &conn{user: f.id("me"), caps: []string{proto.CapTerminals}}
 			if browserCap {
 				c.caps = append(c.caps, proto.CapTerminalTakeover)
 			}
 			got := f.s.deviceList(c)[0].Terminals
-			if len(got) != 1 || got[0].Here != (hostCap && browserCap) || got[0].Name != "This computer" || got[0].Cred != "" {
+			here := hostCap && browserCap
+			want := []proto.TerminalStatus{
+				{KeptTerminal: fromHere, ID: 7, Attached: true, Here: here},
+				{KeptTerminal: fromHere, ID: 8, Left: 456, Here: here},
+			}
+			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("host %t, browser %t: %+v", hostCap, browserCap, got)
 			}
 		}

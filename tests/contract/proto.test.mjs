@@ -81,6 +81,14 @@ test('device lists accept vitals and hosts without them', () => {
   assert.notEqual(check({ ...current, vitals: { ...stats, rtt: '12' } }), null);
 });
 
+test('device lists accept a detached terminal with and without a last holder at the computer', () => {
+  const device = object(def.types.Device.fields, false);
+  const terminal = { id: 2, since: 123, attached: false, name: 'This computer', left: 456 };
+  for (const status of [terminal, { ...terminal, here: true }]) {
+    assert.equal(proto.validate('signaling.browser', { type: 'devices', devices: [{ ...device, terminals: [status] }] }, { strict: true }), null);
+  }
+});
+
 test('type constants', () => {
   const constants = { 'signaling.browser': proto.Signal, control: proto.Control, move: proto.Move, file: proto.FileMsg, terminal: proto.TerminalMsg, browse: proto.BrowseMsg, 'file-transfer': proto.FileTransferMsg };
   for (const [name, c] of Object.entries(constants)) {

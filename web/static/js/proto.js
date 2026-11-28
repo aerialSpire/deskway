@@ -55,6 +55,7 @@ export const TYPES = Object.freeze({
   AuditPage: { calls: '[AuditCall]', total: 'i', clients: '[s]', tools: '[s]' },
   FileEntry: { name: 's', kind: 's:folder|file|link|special', size: 'i', modified: 'i?', mode: 'i?', owner: 's?', attributes: '[s]?', target: 's?', opens: 'b?' },
   KeptTerminal: { since: 'i', name: 's', cred: 's?' },
+  // here identifies the last holder at the computer, attached says whether it still holds the terminal.
   TerminalStatus: { id: 'i', since: 'i', attached: 'b', name: 's', cred: 's?', left: 'i?', here: 'b?' },
   Holder: { session: 's', cred: 's?', name: 's', user: 's', established: 'b', since: 'i?' },
   Approval: { kind: 's:browser|device', id: 's', label: 's', ip: 's', code: 's?', created: 'i', device: 'a?' },

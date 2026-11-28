@@ -96,10 +96,11 @@ the same browser page after unlocking. A computer set to view only offers deskto
 
 At the computer, choose **Open** on the host panel’s **Terminal** row. The window works
 while the host is running, including while it awaits approval or cannot reach the server.
-Choose a tab to return to a shell, **+** to start one, or **×** on the attached tab to
-end it after confirmation. Closing the window leaves the shell running. A tab in use by
-the browser offers to take it over. The browser’s terminal list also offers **Take over**
-when a terminal is in use at the computer.
+Tabs stay in number order and highlight the current shell. Choose a tab to return to a shell,
+**+** to start one, or **×** on the attached tab to end it after confirmation. Closing the
+window leaves the shell running. A tab in use by the browser offers to take it over. The
+browser’s terminal list also offers **Take over** when a terminal is in use at the computer.
+The window shows a notice when the shell exits or a device takes it over.
 
 ## Settings in the panel
 

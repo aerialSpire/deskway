@@ -71,8 +71,10 @@
   --s12: 48px;
 
   /* Shape and size */
+  --r-inline-icon: 3px;
   --r-control: 4px;
   --r-box: 6px;
+  --h-inline-icon: 18px;
   --h-control: 44px;
   --h-compact: 32px;
   --h-row: 40px;

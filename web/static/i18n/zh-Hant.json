@@ -488,6 +488,7 @@
   "terminal.takenHere": "終端機 {id} 已在這台電腦上使用。",
   "terminal.attached": "終端機 {id} · {name} 正在使用。",
   "terminal.detached": "終端機 {id} · {name} 於{ago}離開。",
+  "terminal.detachedHere": "終端機 {id} · 於{ago}在這台電腦上離開。",
   "terminal.reconnecting": "終端機仍在電腦上執行。重新連線後，你會看到錯過的輸出。",
   "session.noDesktop": "這台電腦沒有桌面。",
   "session.permissionsTitle": "這台 Mac 缺少遠端控制權限",
