@@ -79,7 +79,7 @@ device.
 The **Allowed devices** list in the panel shows every device that may control this computer, and
 you can remove devices from it there.
 
-## Terminal and Files in the browser
+## Terminal and Files
 
 After signing in to Windows, open the computer’s page and choose **Terminal** or **Files**.
 Terminal and AI commands use the first `pwsh.exe` on `PATH`, then
@@ -93,6 +93,13 @@ When Windows is locked or showing a secure prompt, take over the desktop and unl
 use these actions. Kept terminals continue to run while Windows is locked. When the
 Windows user signs out or changes, their terminals end. An interrupted upload can resume from
 the same browser page after unlocking. A computer set to view only offers desktop viewing.
+
+At the computer, choose **Open** on the host panel’s **Terminal** row. The window works
+while the host is running, including while it awaits approval or cannot reach the server.
+Choose a tab to return to a shell, **+** to start one, or **×** on the attached tab to
+end it after confirmation. Closing the window leaves the shell running. A tab in use by
+the browser offers to take it over. The browser’s terminal list also offers **Take over**
+when a terminal is in use at the computer.
 
 ## Settings in the panel
 

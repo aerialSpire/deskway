@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::i18n::t;
 use crate::local_server::{Handle, Preferences, Reply, Request, State};
 use crate::platform;
+use crate::session::terminal::local::{self as terminal, Connection, LocalSlot};
 use crate::settings::{PanelRequest, Settings};
 use crate::signal::{self, Control, Status};
 use crate::wake::Wake;
@@ -32,6 +33,7 @@ pub enum BackendEvent {
 }
 
 struct RunningHost {
+    local_terminals: LocalSlot,
     control: Wake<Control>,
     thread: std::thread::JoinHandle<()>,
 }
@@ -138,6 +140,8 @@ impl InProcess {
             .join("\n");
         let _ = self.proxy.send_event(UiEvent::Status(Some(Status::offline(&cfg))));
         let proxy = self.proxy.clone();
+        let local_terminals = LocalSlot::default();
+        let for_status = local_terminals.clone();
         let params = crate::signal::Params {
             // Locking when a session ends is a Windows setting: an old config's value is ignored.
             cfg: Config { auto_lock: false, ..cfg },
@@ -155,9 +159,14 @@ impl InProcess {
                 }),
             }),
             browser: Some(browser),
-            notify: Box::new(move |s| {
+            notify: Box::new(move |mut s| {
+                s.project_terminals(for_status.get().and_then(|local| {
+                    let user = local.user()?;
+                    Some((local, user))
+                }));
                 let _ = proxy.send_event(UiEvent::Status(Some(s)));
             }),
+            local_terminals: local_terminals.clone(),
             settings: settings.clone(),
             // This app is the person signed in.
             workspace: Some(std::sync::Arc::new(crate::workspace::Local::default())),
@@ -167,7 +176,7 @@ impl InProcess {
         let thread = std::thread::Builder::new().name("signal".into()).spawn(move || {
             signal::run(params, requests);
         }).expect("spawn signal thread");
-        *running = Some(RunningHost { control, thread });
+        *running = Some(RunningHost { local_terminals, control, thread });
         self.settings = Some(settings);
     }
 
@@ -204,6 +213,14 @@ impl InProcess {
 }
 
 impl Backend for InProcess {
+    fn terminal(&self) -> Result<Connection> {
+        let lease = self.signal.lock().unwrap().as_ref()
+            .and_then(|host| host.local_terminals.get())
+            .and_then(|local| local.lease(local.user()?))
+            .context(t("terminal.window_unavailable"))?;
+        Ok(terminal::connect(lease))
+    }
+
     fn start(&mut self) -> bool {
         self.start_host();
         let (state, enrolled) = (self.proxy.clone(), self.proxy.clone());

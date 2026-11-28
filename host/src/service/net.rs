@@ -23,6 +23,8 @@ use super::ipc::{self, Pipe, AGENT_PIPE, UI_PIPE};
 use crate::config::Config;
 use crate::local_server;
 use crate::platform::{Platform, PlatformEvent, Remote};
+use crate::session::terminal::local::{self as terminal, Connection, Frame, LocalSlot};
+use crate::session::terminal::registry::LocalTerminals;
 use crate::settings::{PanelRequest, Settings};
 use crate::signal::{self, Control, Status};
 use crate::wake::Wake;
@@ -149,15 +151,18 @@ fn run_host(
     // person's workspace is the user worker's.
     // As the service, the admin worker too, while it runs (`worker::Kind::Admin`); by hand, this
     // process is all there is, and its own rights decide (`platform::start_program`).
-    let (workspace, admin, browser): (
-        Arc<dyn crate::workspace::Workspace>, Option<Arc<dyn crate::workspace::Workspace>>, crate::workspace::Browser,
-    ) = if dev {
+    type Workspace = Arc<dyn crate::workspace::Workspace>;
+    let (workspace, admin, browser, terminal_user): (Workspace, Option<Workspace>, crate::workspace::Browser, PanelUser) = if dev {
         let lock = std::env::var_os("DESKWAY_TEST_WORKSPACE_LOCK").map(std::path::PathBuf::from);
         if lock.is_none() {
             crate::platform::workspace::sweep_home();
         }
         let command = std::env::var("DESKWAY_TEST_WORKSPACE_SHELL").ok();
-        (Arc::new(crate::workspace::Local::default()), None, crate::platform::workspace::browser(lock, command))
+        let browser = crate::platform::workspace::browser(lock, command);
+        let state = browser.state.clone();
+        let own = ipc::WorkspaceIdentity::own()?;
+        (Arc::new(crate::workspace::Local::default()), None, browser,
+            Box::new(move |panel| own.matches(panel).then(|| state().user).flatten()))
     } else {
         use super::worker::Kind;
         use crate::workspace::remote::Remote;
@@ -166,7 +171,8 @@ fn run_host(
         serve_worker(user.clone(), Kind::User)?;
         serve_worker(admin.clone(), Kind::Admin)?;
         let browser = user.browser();
-        (user, Some(admin), browser)
+        let terminals = user.clone();
+        (user, Some(admin), browser, Box::new(move |panel| terminals.terminal_user(panel)))
     };
     let _watch = if dev {
         Some(crate::platform::workspace::WorkspaceWatch::start(browser.state.clone(), move |state| {
@@ -177,10 +183,13 @@ fn run_host(
     };
     let workspace = Some(workspace);
     let desktop = Some(signal::DesktopParams { features: crate::platform::DESKTOP, platform, events: platform_events, can_host: Box::new(|| true) });
-    let params = signal::Params { cfg, view_only, desktop, browser: Some(browser), notify: Box::new(|st| PANELS.status(st)), settings, workspace, admin };
+    let local_terminals = LocalSlot::default();
+    *PANELS.terminals.lock().unwrap() = Some(PanelTerminals { local: local_terminals.clone(), user: terminal_user });
+    let params = signal::Params { cfg, view_only, desktop, browser: Some(browser), notify: Box::new(|st| PANELS.status(st)), local_terminals, settings, workspace, admin };
     if !STOPPING.load(Ordering::Acquire) {
         signal::run(params, control_rx);
     }
+    *PANELS.terminals.lock().unwrap() = None;
     Ok(())
 }
 
@@ -199,16 +208,30 @@ fn signed_in() -> Option<Config> {
     None
 }
 
+type PanelUser = Box<dyn Fn(&ipc::WorkspaceIdentity) -> Option<u64> + Send + Sync>;
+
+struct PanelTerminals {
+    local: LocalSlot,
+    user: PanelUser,
+}
+
+#[derive(Clone)]
+struct Panel {
+    pipe: Arc<Pipe>,
+    identity: Option<ipc::WorkspaceIdentity>,
+}
+
 /// The panels connected now, and what they were last told.
 struct Panels {
-    list: Mutex<Vec<Arc<Pipe>>>,
+    list: Mutex<Vec<Panel>>,
+    terminals: Mutex<Option<PanelTerminals>>,
     left: Condvar,
     latest: Mutex<Option<ToPanel>>,
     root_problem: Mutex<Option<String>>,
     local: Mutex<Option<local_server::State>>,
 }
 
-static PANELS: Panels = Panels { list: Mutex::new(Vec::new()), left: Condvar::new(), latest: Mutex::new(None), root_problem: Mutex::new(None), local: Mutex::new(None) };
+static PANELS: Panels = Panels { list: Mutex::new(Vec::new()), terminals: Mutex::new(None), left: Condvar::new(), latest: Mutex::new(None), root_problem: Mutex::new(None), local: Mutex::new(None) };
 
 impl Panels {
     fn local(&self, state: local_server::State) {
@@ -238,29 +261,48 @@ impl Panels {
         self.send(&m);
     }
 
-    /// Sent outside the lock; a panel that stopped reading is dropped.
-    fn send(&self, m: &ToPanel) {
-        let now: Vec<Arc<Pipe>> = self.list.lock().unwrap().clone();
-        let gone: Vec<Arc<Pipe>> = now.into_iter().filter(|p| p.send_json(m).is_err()).collect();
-        for p in gone {
-            self.leave(&p);
+    fn workspace(&self, identity: &ipc::WorkspaceIdentity) -> Option<(LocalTerminals, u64)> {
+        let terminals = self.terminals.lock().unwrap();
+        let terminals = terminals.as_ref()?;
+        Some((terminals.local.get()?, (terminals.user)(identity)?))
+    }
+
+    fn send_to(&self, panel: &Panel, m: &ToPanel) -> Result<()> {
+        if let ToPanel::Status(status) = m {
+            let mut status = status.clone();
+            status.project_terminals(panel.identity.as_ref()
+                .and_then(|identity| self.workspace(identity)));
+            panel.pipe.send_json(&ToPanel::Status(status))
+        } else {
+            panel.pipe.send_json(m)
         }
     }
 
-    fn join(&self, p: Arc<Pipe>) {
-        if let Some(m) = self.latest.lock().unwrap().clone() {
-            let _ = p.send_json(&m);
+    /// Sent outside the lock; a panel that stopped reading is dropped.
+    fn send(&self, m: &ToPanel) {
+        let now = self.list.lock().unwrap().clone();
+        for panel in now {
+            if self.send_to(&panel, m).is_err() {
+                self.leave(&panel.pipe);
+            }
         }
-        let root_problem = self.root_problem.lock().unwrap();
-        let _ = p.send_json(&ToPanel::RootProblem(root_problem.clone()));
+    }
+
+    fn join(&self, panel: Panel) {
+        let latest = self.latest.lock().unwrap();
+        self.list.lock().unwrap().push(panel.clone());
+        if let Some(m) = latest.as_ref() {
+            let _ = self.send_to(&panel, m);
+        }
+        let root_problem = self.root_problem.lock().unwrap().clone();
+        let _ = panel.pipe.send_json(&ToPanel::RootProblem(root_problem));
         if let Some(state) = self.local.lock().unwrap().clone() {
-            let _ = p.send_json(&ToPanel::Local(state));
+            let _ = panel.pipe.send_json(&ToPanel::Local(state));
         }
-        self.list.lock().unwrap().push(p);
     }
 
     fn leave(&self, p: &Arc<Pipe>) {
-        self.list.lock().unwrap().retain(|c| !Arc::ptr_eq(c, p));
+        self.list.lock().unwrap().retain(|c| !Arc::ptr_eq(&c.pipe, p));
         self.left.notify_all();
     }
 
@@ -367,6 +409,56 @@ fn dev_clear_sign_in(dir: &std::path::Path) -> Result<()> {
     crate::config::remove_sign_in_root(dir).and(crate::platform::sync_dev_browser_root(dir, None))
 }
 
+#[derive(Serialize, Deserialize)]
+enum StreamRequest {
+    Terminal,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum UiRequest {
+    Stream(StreamRequest),
+    Panel(PanelRequest),
+}
+
+fn relay_terminal(pipe: Pipe, connection: Connection, allowed: impl Fn() -> bool) {
+    std::thread::scope(|scope| {
+        let pipe = &pipe;
+        let connection = &connection;
+        scope.spawn(move || loop {
+            match pipe.recv_frame(wire::terminal::FRAME) {
+                Ok((binary, bytes)) => {
+                    if connection.send_wait(Frame { binary, bytes }).is_err() { break; }
+                }
+                Err(_) => {
+                    connection.finish();
+                    pipe.cancel();
+                    break;
+                }
+            }
+        });
+        while let Some(Frame { binary, bytes }) = connection.receive() {
+            if binary && !allowed() { continue; }
+            if pipe.send_frame(binary, &bytes, wire::terminal::FRAME).is_err() {
+                connection.finish();
+                break;
+            }
+        }
+        pipe.cancel();
+    });
+}
+
+fn serve_terminal(pipe: Pipe, identity: Option<ipc::WorkspaceIdentity>) {
+    let workspace = identity.as_ref().and_then(|identity| PANELS.workspace(identity));
+    if let Some((local, user)) = workspace {
+        if let Some(lease) = local.lease(user) {
+            return relay_terminal(pipe, terminal::connect(lease), move || local.accessible(user));
+        }
+    }
+    let reply = wire::terminal::Terminal::Error { why: wire::terminal::TerminalError::Open };
+    let _ = pipe.send_json(&reply);
+}
+
 fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<local_server::Handle>, agent: Arc<Remote>) -> Result<()> {
     let ui_name = ipc::pipe_name(UI_PIPE, dev);
     // SYSTEM and this service have full access. Signed-in (interactive) users may read and
@@ -388,21 +480,19 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
-            let pipe = Arc::new(next);
-            next = loop {
-                match Pipe::create_more(&ui_name, &sddl) {
-                    Ok(p) => break p,
-                    Err(e) => {
-                        eprintln!("ui pipe: {e:#}");
-                        std::thread::sleep(Duration::from_secs(1));
-                    }
-                }
-            };
-            PANELS.join(pipe.clone());
+            let pipe = next;
             let settings = settings.clone();
             let local = local.clone();
             let agent = agent.clone();
             std::thread::spawn(move || {
+                let Ok(first) = pipe.recv_json::<UiRequest>() else { return };
+                let identity = pipe.client_identity().ok();
+                let first = match first {
+                    UiRequest::Stream(StreamRequest::Terminal) => return serve_terminal(pipe, identity),
+                    UiRequest::Panel(request) => request,
+                };
+                let pipe = Arc::new(pipe);
+                PANELS.join(Panel { pipe: pipe.clone(), identity });
                 let admin_link_allowed = || -> Result<bool> {
                     let owner = if dev {
                         Some(ipc::own_sid()?)
@@ -411,7 +501,7 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
                     };
                     pipe.allows_admin_link(owner.as_deref())
                 };
-                while let Ok(r) = pipe.recv_json::<PanelRequest>() {
+                for r in std::iter::once(first).chain(std::iter::from_fn(|| pipe.recv_json::<PanelRequest>().ok())) {
                     if r == PanelRequest::LocalOwner {
                         let owner = local_server::localized(pipe.client_sid(), "local.owner_failed")
                             .map_err(|e| e.to_string());
@@ -457,6 +547,15 @@ fn serve_ui(dev: bool, settings: Arc<Mutex<Option<Arc<Settings>>>>, local: Weak<
                 }
                 PANELS.leave(&pipe);
             });
+            next = loop {
+                match Pipe::create_more(&ui_name, &sddl) {
+                    Ok(p) => break p,
+                    Err(e) => {
+                        eprintln!("ui pipe: {e:#}");
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            };
         }
     })?;
     Ok(())
@@ -480,11 +579,7 @@ impl UiClient {
     /// Connects, and checks the pipe really belongs to the running network service: a program
     /// that grabbed the name first could otherwise show a false status.
     pub fn connect(dev: bool) -> Result<(UiClient, Receiver<ToPanel>)> {
-        let pipe = Arc::new(Pipe::connect(&ipc::pipe_name(UI_PIPE, dev)).with_context(|| crate::i18n::t("status.service_down"))?);
-        if !dev {
-            let expected = service_pid(NET_SERVICE)?;
-            anyhow::ensure!(pipe.server_pid()? == expected, crate::i18n::t("err.pipe_taken"));
-        }
+        let pipe = Arc::new(Self::open_pipe(dev)?);
         let (tx, rx) = channel();
         let p = pipe.clone();
         std::thread::spawn(move || {
@@ -496,6 +591,23 @@ impl UiClient {
         });
         pipe.send_json(&PanelRequest::LocalAccess)?;
         Ok((UiClient { pipe }, rx))
+    }
+
+    fn open_pipe(dev: bool) -> Result<Pipe> {
+        let pipe = Pipe::connect(&ipc::pipe_name(UI_PIPE, dev)).with_context(|| crate::i18n::t("status.service_down"))?;
+        if !dev {
+            let expected = service_pid(NET_SERVICE)?;
+            anyhow::ensure!(pipe.server_pid()? == expected, crate::i18n::t("err.pipe_taken"));
+        }
+        Ok(pipe)
+    }
+
+    pub fn terminal(dev: bool) -> Result<Connection> {
+        let pipe = Self::open_pipe(dev)?;
+        pipe.send_json(&StreamRequest::Terminal)?;
+        let (client, relay) = terminal::connection_pair();
+        std::thread::spawn(move || relay_terminal(pipe, relay, || true));
+        Ok(client)
     }
 
     pub fn send(&self, r: PanelRequest) -> Result<()> {

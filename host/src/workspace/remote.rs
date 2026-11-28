@@ -12,7 +12,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::workspace::{Answer, Code, DesktopOp, Op, WorkError, Workspace};
-use crate::service::ipc::Pipe;
+use crate::service::ipc::{Pipe, WorkspaceIdentity};
 use crate::platform::WorkspaceState;
 use crate::platform::workspace::{WorkspaceActivity, WorkspaceWatch};
 use crate::signal::Control;
@@ -44,6 +44,7 @@ enum Reply {
 
 struct Link {
     pipe: Arc<Pipe>,
+    identity: WorkspaceIdentity,
     next: AtomicU64,
     waiting: Mutex<Option<HashMap<u64, Sender<Answer>>>>,
     sending: Mutex<()>,
@@ -53,6 +54,7 @@ struct Link {
 
 struct LinkWorkspace {
     current: WorkspaceState,
+    sign_in: Option<u64>,
     allowed: Arc<AtomicBool>,
 }
 
@@ -68,11 +70,11 @@ impl LinkWorkspace {
 }
 
 impl Link {
-    fn new(pipe: Arc<Pipe>) -> Self {
+    fn new(pipe: Arc<Pipe>, identity: WorkspaceIdentity) -> Self {
         Self {
-            pipe, next: AtomicU64::new(0), waiting: Mutex::new(Some(HashMap::new())),
+            pipe, identity, next: AtomicU64::new(0), waiting: Mutex::new(Some(HashMap::new())),
             sending: Mutex::default(),
-            state: Mutex::new(LinkWorkspace { current: WorkspaceState::NO_USER, allowed: Arc::new(AtomicBool::new(false)) }),
+            state: Mutex::new(LinkWorkspace { current: WorkspaceState::NO_USER, sign_in: None, allowed: Arc::new(AtomicBool::new(false)) }),
             terminals: Mutex::default(),
         }
     }
@@ -116,6 +118,7 @@ impl Link {
 pub struct Remote {
     worker: Mutex<Option<Arc<Link>>>,
     workspace_updates: Option<Wake<Control>>,
+    generation: AtomicU64,
     /// The administrator's worker: absent, it is no administrator, not nobody signed in.
     admin: bool,
 }
@@ -147,7 +150,7 @@ impl Remote {
     /// Serves one connected worker until it leaves. The requests it still held fail: their
     /// programs run on, and proc_list finds them when it is back.
     pub fn attach(&self, pipe: Arc<Pipe>) -> Result<()> {
-        let link = Arc::new(Link::new(pipe.clone()));
+        let link = Arc::new(Link::new(pipe.clone(), pipe.client_identity()?));
         *self.worker.lock().unwrap() = Some(link.clone());
         let served = loop {
             match pipe.recv_json::<Reply>() {
@@ -156,8 +159,20 @@ impl Remote {
                         let _ = tx.send(answer);
                     }
                 }
-                Ok(Reply::Workspace(state)) => {
-                    link.state.lock().unwrap().update(state);
+                Ok(Reply::Workspace(mut state)) => {
+                    let mut workspace = link.state.lock().unwrap();
+                    let sign_in = state.user;
+                    // A worker reconnect gets a new generation even in the same Windows sign-in.
+                    state.user = sign_in.map(|_| {
+                        if sign_in == workspace.sign_in {
+                            workspace.current.user.unwrap()
+                        } else {
+                            self.generation.fetch_add(1, Ordering::Relaxed)
+                        }
+                    });
+                    workspace.sign_in = sign_in;
+                    workspace.update(state);
+                    drop(workspace);
                     self.state_changed(state);
                 }
                 Ok(Reply::Pty { resource, event }) => link.terminal_notice(resource, event),
@@ -176,6 +191,13 @@ impl Remote {
             let _ = tx.send(Err(WorkError::new(Code::Failed, "the person's session ended before it answered", "Check computer_info, then proc_list.")));
         }
         served
+    }
+
+    pub fn terminal_user(&self, client: &WorkspaceIdentity) -> Option<u64> {
+        let link = self.worker.lock().unwrap().clone()?;
+        if !link.identity.matches(client) { return None; }
+        let user = link.state.lock().unwrap().current.user;
+        user
     }
 
     fn request(&self, op: RequestOp) -> Answer {
@@ -299,7 +321,7 @@ mod tests {
         let connect = std::thread::spawn(move || Pipe::connect(&name).unwrap());
         pipe.accept().unwrap();
         let client = connect.join().unwrap();
-        let link = Link::new(pipe);
+        let link = Link::new(pipe, WorkspaceIdentity::own().unwrap());
         let timeout = Duration::from_millis(20);
         assert!(matches!(link.request(RequestOp::Browser(browser::Operation::Step {
             resource: 1, step: browser::Step::Publish,

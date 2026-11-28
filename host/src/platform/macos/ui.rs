@@ -136,23 +136,37 @@ fn native(window: &Window) -> &NSWindow {
     unsafe { &*window.ns_window().cast::<NSWindow>() }
 }
 
-pub fn show_panel(window: &Window) {
+pub fn activate() {
     if let Some(mtm) = MainThreadMarker::new() {
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         app.activate();
     }
+}
+
+pub fn show_panel(window: &Window) {
+    activate();
     window.set_minimized(false);
     fit_panel(window);
     window.set_visible(true);
     window.set_focus();
 }
 
-pub fn hide_panel(window: &Window) {
-    window.set_visible(false);
-    if let Some(mtm) = MainThreadMarker::new() {
-        NSApplication::sharedApplication(mtm).setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+fn accessory_if_closed(open: bool) {
+    if !open {
+        if let Some(mtm) = MainThreadMarker::new() {
+            NSApplication::sharedApplication(mtm).setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        }
     }
+}
+
+pub fn hide_panel(window: &Window, terminal_open: bool) {
+    window.set_visible(false);
+    accessory_if_closed(terminal_open);
+}
+
+pub fn terminal_closed(panel_open: bool) {
+    accessory_if_closed(panel_open);
 }
 
 pub fn minimize_panel(window: &Window) {

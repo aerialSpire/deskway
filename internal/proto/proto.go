@@ -49,9 +49,10 @@ const (
 )
 
 const (
-	CapRelayRTT  = "relay-rtt"
-	CapVitals    = "vitals"
-	CapTerminals = "terminals"
+	CapRelayRTT         = "relay-rtt"
+	CapVitals           = "vitals"
+	CapTerminals        = "terminals"
+	CapTerminalTakeover = "terminal-takeover"
 )
 
 // MaxAuth bounds the opaque end-to-end authentication blob carried with offers, answers and
@@ -180,12 +181,13 @@ type KeptTerminal struct {
 	Cred  string `json:"cred,omitempty"` // host status only
 }
 
-// TerminalStatus describes a running browser terminal and its last attachment.
+// TerminalStatus describes a running terminal and its last attachment.
 type TerminalStatus struct {
 	KeptTerminal        // Since is the shell's creation time here.
 	ID           uint64 `json:"id"`
 	Attached     bool   `json:"attached"`
 	Left         int64  `json:"left,omitempty"`
+	Here         bool   `json:"here,omitempty"`
 }
 
 // Controller is who holds a computer, as one browser of its account sees it.

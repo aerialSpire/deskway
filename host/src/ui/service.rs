@@ -211,6 +211,10 @@ impl Service {
 }
 
 impl Backend for Service {
+    fn terminal(&self) -> anyhow::Result<crate::session::terminal::local::Connection> {
+        UiClient::terminal(self.dev)
+    }
+
     /// Keeps a connection to the network service and reports its status.
     fn start(&mut self) -> bool {
         let (proxy, client, dev) = (self.proxy.clone(), self.client.clone(), self.dev);

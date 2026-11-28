@@ -1,7 +1,7 @@
 # Design standard
 
 Every Deskway surface uses the same visual language: the browser client (`web/static`) and the
-host's panel, setup window and in-session bar (`host/src/ui`). The shared components and their
+host's panel, setup window, terminal window and in-session bar (`host/src/ui`). The shared components and their
 style tokens live in `web/static/design.css`. The host embeds that file at build time.
 `tests/unit/design.test.mjs` checks that page and component styles use those tokens.
 
@@ -49,7 +49,7 @@ Each component is defined once, and both apps use the same classes.
 | Input | `.input` uses `--h-control` and `--r-control`. Native `<select>` is not used: a choice among a few options is a menu (`.dropdown`) whose entries are `menuitemradio`, with the current choice checked. |
 | Form fields | `.fields` is a column of labelled inputs. `.check` is a checkbox with its label, and `.error` (`role="alert"`) is the line below the fields that says what went wrong. |
 | Switch | `.switch[aria-checked]`. |
-| Dialog | `.overlay` (the scrim) contains `.dialog`, which has a title (`h2`), a body (`p`) and right-aligned `.dialog-actions` with the primary action rightmost. Every confirmation that does not concern a single row is a dialog. All dialogs, including forms in a dialog, are made in one place (`js/dialogs.js`). |
+| Dialog | A title (`h2`), an optional body (`p`) and right-aligned `.dialog-actions` with the primary action rightmost. Browser dialogs use `.overlay` and `.dialog` from `js/dialogs.js`. The host terminal uses a modal `dialog` with the same tokens. |
 | QR code | `.qr` centers a square frame around the inline SVG. The browser and Host panel share the frame. |
 | Inline confirm | `.confirm` is used only to confirm, in place, the removal of one row of a list. |
 | Notice | `.notice` is one line of state on a page: a `.dot`, the text and an optional `.btn.compact`. Over the remote picture the same component is `.notice.dark`. |
@@ -91,6 +91,11 @@ are available only in editable fields and `.copyable-code`.
 The host panel shows the computer's name and status at the top left and the language menu and
 the window's close button at the top right. Below them come the settings, then the devices, and
 signing out is at the bottom.
+
+The host panel puts **Terminal** last among its activity rows. The terminal window uses a
+native title bar and a strip of numbered terminal tabs above xterm. The attached tab shows
+its close action. A tab in use by the browser shows the device name. Taking over or ending a
+terminal asks for confirmation.
 
 The language is chosen with a single component, the language menu: a globe, the current
 language's name in that language, and a menu (`.lang-btn`). It is the same in the browser and in

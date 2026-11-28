@@ -127,7 +127,7 @@ Ordinary AI commands use `$SHELL -lc` or `/bin/zsh -lc` if `SHELL` is unset. Des
 the directories your interactive shell adds to PATH. A login profile that resets PATH drops
 them.
 
-## Terminal and Files in the browser
+## Terminal and Files
 
 **Terminal** returns to the last detached shell or opens a login shell in your home folder.
 The shell uses `$SHELL -l` or `/bin/zsh -l` if `SHELL` is unset.
@@ -142,6 +142,13 @@ choose **New terminal**. Locking the screen or switching to another macOS user e
 Terminal or Files session. Kept terminals continue to run, and you can resume an interrupted transfer from the
 same page after you return and unlock the Mac. Logging out ends the host and its terminals.
 A view-only host omits Terminal and Files.
+
+At the Mac, choose **Open** on the host panel’s **Terminal** row. You can use it while the
+host awaits approval or cannot reach the server. Choose a tab to return to a shell or
+**+** to start one. The attached tab’s **×** ends the shell after confirmation. Closing the
+window leaves the shell running. Either side can confirm **Take over** to move an attachment
+between the browser and the Mac.
+Deskway stays in the Dock while the panel or terminal window is open, including while minimized.
 
 ## Updating
 

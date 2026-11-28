@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--design-->
+<link rel="stylesheet" href="./vendor/xterm.css">
+<style>
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--screen); }
+#tabs { display: flex; gap: var(--s1); overflow-x: auto; align-items: center; padding: var(--s2); background: var(--ground); }
+#tabs[hidden] { display: none; }
+.tab { display: flex; gap: var(--s1); align-items: center; white-space: nowrap; }
+.tab.selected { background: var(--surface); border-radius: var(--r-box); }
+#emulator { flex: 1; min-height: 0; padding: var(--s2); font-size: var(--fs-body); }
+#status { color: var(--dark-ink); margin: var(--s2); }
+dialog { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-box); }
+dialog::backdrop { background: var(--scrim); }
+</style>
+</head>
+<body>
+<div id="tabs"></div>
+<p id="status" role="status" hidden></p>
+<div id="emulator"></div>
+<dialog id="confirm" aria-labelledby="question">
+  <form method="dialog">
+    <h2 id="question"></h2>
+    <p id="detail"></p>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" autofocus data-i18n="common.cancel"></button>
+      <button class="btn primary" id="confirm-action" value="confirm"></button>
+    </div>
+  </form>
+</dialog>
+<!--page-->
+<script type="module" src="./terminal.js"></script>
+</body>
+</html>

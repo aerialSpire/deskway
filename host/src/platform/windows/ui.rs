@@ -55,7 +55,7 @@ pub fn show_panel(window: &Window) {
     window.set_focus();
 }
 
-pub fn hide_panel(window: &Window) {
+pub fn hide_panel(window: &Window, _terminal_open: bool) {
     window.set_visible(false);
 }
 

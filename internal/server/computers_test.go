@@ -374,3 +374,30 @@ func TestTerminalStatusIsVisibleToTheComputersAccount(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalHereRequiresTakeoverOnBothSignalingHops(t *testing.T) {
+	f := signalingFixture(t)
+	for _, hostCap := range []bool{false, true} {
+		host := &conn{deviceID: "pc1", caps: []string{proto.CapTerminals}, cancel: func() {}}
+		if hostCap {
+			host.caps = append(host.caps, proto.CapTerminalTakeover)
+		}
+		f.s.mu.Lock()
+		f.s.hosts[host.deviceID] = host
+		f.s.mu.Unlock()
+		f.s.onStatus(host, proto.Msg{Terminals: []proto.TerminalStatus{{
+			KeptTerminal: proto.KeptTerminal{Since: 123, Name: "This computer"},
+			ID:           7, Attached: true, Here: true,
+		}}})
+		for _, browserCap := range []bool{false, true} {
+			c := &conn{user: f.id("me"), caps: []string{proto.CapTerminals}}
+			if browserCap {
+				c.caps = append(c.caps, proto.CapTerminalTakeover)
+			}
+			got := f.s.deviceList(c)[0].Terminals
+			if len(got) != 1 || got[0].Here != (hostCap && browserCap) || got[0].Name != "This computer" || got[0].Cred != "" {
+				t.Fatalf("host %t, browser %t: %+v", hostCap, browserCap, got)
+			}
+		}
+	}
+}

@@ -16,6 +16,12 @@ wire_values! {
     }
 }
 
+wire_values! {
+    pub enum DetachReason {
+        "taken" => Taken,
+    }
+}
+
 wire_enum! {
     pub enum Terminal (tag "t") {
         "open" => Open {
@@ -24,6 +30,8 @@ wire_enum! {
             "id" id: Option<u64>,
             #[serde(skip_serializing_if = "Option::is_none")]
             "new" new: Option<bool>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            "take" take: Option<bool>,
         },
         "opened" => Opened {
             #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,6 +46,7 @@ wire_enum! {
         "close" => Close {},
         "terminate" => Terminate {},
         "closed" => Closed {},
+        "detached" => Detached { "reason" reason: DetachReason },
         "exit" => Exit { "code" code: i32 },
         "error" => Error { "why" why: TerminalError },
     }

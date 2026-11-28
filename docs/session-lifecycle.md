@@ -130,7 +130,7 @@ the file view and terminal attachment.
 
 Opening Files starts no shell. The first visit to Terminal returns to the most recently
 detached shell or starts one. Switching between Files and Terminal keeps the attachment. Taking over
-detaches the prior browser and leaves its shell running. A session with no terminal has an
+the desk seat detaches the prior browser and leaves its shell running. A session with no terminal has an
 ordinary Disconnect dialog.
 
 The Files and Terminal views share one transfer list. Changing views keeps the list and its
@@ -141,7 +141,7 @@ upload's publish result before the reply deadline, that transfer ends in failure
 If the established connection ends with `failed` or `gone` with unfinished transfers, the page also
 makes one non-forced admission attempt with its resume token and retains the session view.
 The new connection reattaches the same terminal at its last dimensions, including
-while Files is visible. Takeover or leaving the view ends unfinished transfers and clears the
+while Files is visible. Desk-seat takeover or leaving the view ends unfinished transfers and clears the
 list. The host unlinks a partial upload when its record is dropped, including when its resume
 window expires.
 
@@ -158,7 +158,7 @@ the host app's session off the console. Switching back and unlocking lets the br
 Logging out of macOS ends the host and its workspace. Before login the Mac appears offline.
 View-only mode omits Terminal and Files.
 
-The host keeps browser terminals independently of the desk session. Disconnecting, losing
+The host keeps Deskway terminals independently of the desk session. Disconnecting, losing
 the channel or switching terminals leaves the shell and its jobs running. The computer's
 page offers **Terminal** and **Files**. In the Terminal view, the toolbar's **Terminal** button
 opens a panel with the running shells and **New terminal**. With several shells, the button
@@ -169,9 +169,20 @@ shows progress only in Terminal and clears it when the shell opens.
 An established connection that recovers in place continues its existing stream. Reconnecting
 after an end restores the selected terminal when it is still running and reopens the last view.
 
+On Windows and macOS, the host panel's **Terminal → Open** starts or returns to a shell by the
+same rule. Opening again focuses the same window. The tabs show all running shells. **+**
+starts another shell, and switching tabs or closing the window leaves its attachment. The
+attached tab's **×** closes the shell and its programs after confirmation. The window shows
+the tabs after exit, close or takeover and waits for the person to choose one.
+
+The browser and the window at the computer can hold different shells at the same time.
+Either can confirm **Take over** for a shell in use by the other. The displaced browser sees
+the terminal list and a notice. Its desk session, Files and transfers continue. The local
+window clears its attachment on workspace lock and offers the list again after unlock.
+
 Each shell ends on exit or after 24 hours detached. **Close the terminal and disconnect**
-in the Disconnect dialog ends the current shell. Host shutdown or a Windows sign-out or
-user change ends all shells. The host discards the buffer and cleans up the PTY and jobs on
+in the Disconnect dialog ends the current shell. Host shutdown, Windows worker loss, sign-out
+or user change ends all shells. The host discards the buffer and cleans up the PTY and jobs on
 every terminal end. An older host with terminal keeping shows a notice and **Return** for
 its kept shell on the computer's page.
 

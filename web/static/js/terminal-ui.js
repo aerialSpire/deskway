@@ -7,8 +7,11 @@ export function keptTerminalNotice(d, t, ago) {
   return t('terminal.kept', { name: kept.name, ago: ago(kept.since) });
 }
 
-export function terminalActions(device, t, ago, open, current) {
-  const rows = (device?.terminals ?? []).map(({ id, name, left, attached }) => {
+export function terminalActions(device, t, ago, open, current, takeover) {
+  const rows = (device?.terminals ?? []).map(({ id, name, left, attached, here }) => {
+    if (attached && here && takeover) {
+      return { text: t('terminal.here', { id }), label: t('terminal.takeOver'), run: () => open(id, true) };
+    }
     return {
       text: attached ? t('terminal.attached', { id, name }) : t('terminal.detached', { id, name, ago: ago(left) }),
       label: t(id === current ? 'terminal.current' : 'terminal.return'),
@@ -17,6 +20,10 @@ export function terminalActions(device, t, ago, open, current) {
     };
   });
   return { rows, newTerminal: { label: t('terminal.new'), run: () => open(null) } };
+}
+
+export function terminalTakenNotice(t, id) {
+  return t('terminal.takenHere', { id });
 }
 
 export function terminalDisconnectActions(t, cancel, close, leave, canClose) {

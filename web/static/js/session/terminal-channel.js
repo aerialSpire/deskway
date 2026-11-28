@@ -1,4 +1,5 @@
-// The terminal byte stream. Each receiver returns credit as it consumes bytes.
+// Terminal framing and credit for the browser and host window. The transport supplies an
+// ordered channel with string and ArrayBuffer messages. The renderer acknowledges each write.
 import { TerminalMsg as Msg, TERMINAL_FRAME, TERMINAL_INPUT_WINDOW, TERMINAL_OUTPUT_WINDOW, validate } from '../proto.js';
 import { Credit } from './credit.js';
 
@@ -12,7 +13,6 @@ export class TerminalChannel {
     this.replayLeft = 0;
     this.queuedInput = [];
     this.inputCredit = new Credit(TERMINAL_INPUT_WINDOW);
-    channel.binaryType = 'arraybuffer';
     channel.onmessage = ({ data }) => this.receive(data);
     channel.onclose = () => this.finish({ t: Msg.ERROR, why: 'io' });
   }
@@ -26,16 +26,16 @@ export class TerminalChannel {
     return true;
   }
 
-  size(rows, cols, target) {
-    if (this.phase !== 'ready' && !this.attached) return;
+  size(rows, cols, target, take) {
+    if (this.phase !== 'ready' && !this.attached) return false;
     const size = `${rows}:${cols}`;
-    if (this.lastSize === size) return;
+    if (this.lastSize === size) return false;
     const message = this.attached ? { t: Msg.RESIZE, rows, cols }
-      : { t: Msg.OPEN, rows, cols, ...(target === null ? { new: true } : { id: target }) };
-    if (this.send(message)) {
-      this.lastSize = size;
-      if (this.phase === 'ready') this.phase = 'opening';
-    }
+      : { t: Msg.OPEN, rows, cols, ...(target === null ? { new: true } : { id: target, ...(take && target !== undefined ? { take: true } : {}) }) };
+    if (!this.send(message)) return false;
+    this.lastSize = size;
+    if (this.phase === 'ready') this.phase = 'opening';
+    return true;
   }
 
   input(bytes) {
@@ -94,7 +94,7 @@ export class TerminalChannel {
       this.closing = false;
       this.reportOpened();
       this.status(m);
-    } else if (m.t === Msg.ERROR || (m.t === Msg.EXIT && this.attached) || (m.t === Msg.CLOSED && this.closing)) {
+    } else if (m.t === Msg.ERROR || ([Msg.EXIT, Msg.DETACHED].includes(m.t) && this.attached) || (m.t === Msg.CLOSED && this.closing)) {
       this.finish(m.t === Msg.EXIT && this.closing ? { t: Msg.CLOSED } : m);
     } else {
       this.protocolError();
@@ -116,6 +116,7 @@ export class TerminalChannel {
   finish(result) {
     if (this.phase === 'done') return;
     this.phase = 'done';
+    this.closing = false;
     this.queuedInput.length = 0;
     this.result = result;
     this.reportResult();

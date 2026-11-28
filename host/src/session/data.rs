@@ -48,10 +48,11 @@ pub struct Data {
 
 impl Data {
     pub(crate) fn new(lease: Lease, browser: BrowserUser, page: Arc<Mutex<Page>>, own: Sender<SessionEvent>, greeting: Vec<Control>) -> Self {
+        let terminal_wake = own.clone();
         Self {
             lease: lease.clone(),
             greeting: Some(greeting),
-            terminal: Terminal::new(lease.clone(), own.clone()),
+            terminal: Terminal::new(lease.clone(), move || { let _ = terminal_wake.send(SessionEvent::TerminalReady); }),
             terminal_channel: None,
             files: Some(Files {
                 call: browser.browse.clone(), lease: lease.clone(), own: own.clone(), channel: None, work: Work::Idle,
@@ -145,7 +146,10 @@ impl Role for Data {
                 Ok(Control::Hello { caps, .. }) => {
                     // The browser opens the shell after our hello, with its caps already known.
                     if let Some(greeting) = self.greeting.take() {
-                        self.terminal.negotiate(&caps);
+                        let offers_takeover = greeting.iter().any(|message| {
+                            matches!(message, Control::Hello { caps, .. } if caps.iter().any(|cap| cap == wire::caps::TERMINAL_TAKEOVER))
+                        });
+                        self.terminal.negotiate(&caps, offers_takeover);
                         for message in greeting {
                             super::send_message(cx.rtc, Some(d.id), &message);
                         }
@@ -330,7 +334,7 @@ mod tests {
         let data = Data {
             lease: lease.clone(),
             greeting: None,
-            terminal: Terminal::new(lease.clone(), mpsc::channel().0),
+            terminal: Terminal::new(lease.clone(), || {}),
             terminal_channel: None,
             files: Some(Files { call: Arc::new(call), lease, own, channel: None, work: Work::Idle }),
             transfers: None,

@@ -108,9 +108,9 @@ session/
   data.rs          the desk seat's data-only role, routing control, terminal, browse and transfers
   file_transfer.rs admitted page's transfer record and resumable channel, with the same worker limit as browsing
   credit.rs        byte credit shared by terminal and file transfers
-  terminal.rs      one PTY attachment's resize and credit
-  terminal/        registry.rs: browser PTYs, one desk attachment and per-PTY idle timeouts;
-                   replay.rs: the bounded recent output and its safe start
+  terminal.rs      one PTY attachment's protocol, credit and resize over a transport port
+  terminal/        registry.rs: PTYs, desk and local holders, attachment IDs and idle timeouts;
+                   replay.rs: bounded recent output; local.rs: the bounded local stream runner
   ai.rs            the AI role, an AI client's deskway: control and ai channels (MCP in
                    frames, wire::mcp), no media. Decides when the AI seat is idle
 mcp/               an AI session's MCP requests, answered off the session thread: mod.rs
@@ -136,7 +136,7 @@ vitals.rs          startup hardware and a short-lived worker for requested CPU, 
 wake.rs            channel senders that wake the receiving thread's poller
 service/           Windows services, agent, IPC; the machine-wide folder; worker.rs, the user
                    and admin workers (their keys, their pipes, reconnecting)
-ui/                tray, panel and indicator (mod.rs, indicator.rs), the panel's backend:
+ui/                tray, panel, indicator and terminal window (mod.rs, indicator.rs, terminal.rs), the panel's backend:
                    the network service over its pipe (service.rs, Windows) or the host in
                    this process (inprocess.rs, macOS); installer window (setup.rs); the
                    pages, and what they share, put in at markers like design.css: page.js
@@ -159,7 +159,8 @@ tunnels, and a desktop adds desktop tools. Desktop hosts supply a `Platform` and
 `host/build.rs` sets `desktop_host` for Windows and macOS. The browser offers desktop control
 according to the live hello's `desk` capability. Linux, macOS and Windows offer `terminal`,
 `terminal-keep`, `terminals`, `browse` and `file-transfer` through the ordinary user's workspace. View-only hosts omit
-those capabilities. The host status reports why a browser workspace is unavailable.
+those capabilities. Windows and macOS hosts with a terminal workspace also offer
+`terminal-takeover`. The host status reports why a browser workspace is unavailable.
 Verified data-only and picture browser offers contend for the same desk seat. A picture offer to a Linux host receives
 `no_desktop`. A data-only browser offer to a host without terminal support receives `no_terminal`.
 The AI seat uses the same device proofs and signed AI switch on all hosts.
@@ -186,18 +187,24 @@ and destination, and the offsets and incremental digests used to resume. The bro
 SHA-256 blocks incrementally as it sends or writes each chunk. Web Crypto's digest API takes
 the entire input.
 
-The host's terminal registry owns each browser PTY and its replay by terminal ID even with no
-desk session. Only the admitted desk session can attach, to one PTY at a time. Each attachment
-uses a fresh channel with its own input queue and credit. The process that owns a PTY uses a
+The host's terminal registry owns each PTY and its replay by terminal ID even with no desk
+session. The browser on the desk seat and the window at the computer can each attach to one
+PTY. A PTY has one attachment at a time. Taking it revokes the old attachment ID and wakes
+its driver. Desk seat changes leave the window's attachment in place. Each attachment uses
+a fresh stream with its own input queue and credit. The process that owns a PTY uses a
 blocking reader to deliver output followed by exit.
 Windows sends those events as notices over the workspace pipe with bounded frame credit. A local
-workspace uses a bounded channel. The session consumes output with the browser's existing byte
-credit. One registry thread drains all detached PTYs and waits for events or the earliest idle
-deadline, including when signaling is unavailable. Host status reports each terminal's creation,
-attachment and last device. The registry drops a shell, its jobs and its replay when it closes,
+workspace uses a bounded channel. The same attachment driver serves the browser's data channel
+and a local stream, and their renderers share a credit and replay client. On Windows the
+local stream has a dedicated connection on the UI pipe. macOS connects inside the host
+process. One registry thread drains detached PTYs while waiting for events or the earliest
+idle deadline. Both the local stream and the registry work independently of signaling. Host
+status reports each terminal's creation, attachment and last holder. The registry drops a shell,
+its jobs and its replay when it closes,
 and drops all of them when the host stops or its workspace user changes. The signaling
 host processes queued workspace transitions before judging offers. A lock revokes the current
-data seat and releases it without auto-lock. The workspace checks the live console state before
+data seat and releases it without auto-lock, and detaches the window at the computer. The
+workspace checks the live console state before
 attached output, input and filesystem calls.
 
 - Windows uses WTS session notifications for console lock and sign-in changes. The user worker
@@ -972,7 +979,7 @@ vendor/              upstream xterm.js modules and stylesheet for Terminal, and 
   relay-only host), `first-use` (which runs its own fresh server and Windows hosts), and
   `previous-protocol` (which opens a session on a previous-version host using a fresh account
   on the current server), and `windows-workspace` (which starts an isolated Windows
-  foreground host and exercises Terminal, Files and lock). Run `scan-open` against fresh
+  foreground host and exercises Terminal, Files, lock and takeover over the UI pipe). Run `scan-open` against fresh
   public-mode and local-mode test servers to check their dialogs. The local server needs a
   private IPv4 address.
 - Use `--areas relay --relay-tls` with an HTTPS `--url` and start the host with

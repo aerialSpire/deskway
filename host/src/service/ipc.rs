@@ -56,11 +56,58 @@ const TAG_HANDSHAKE: u8 = 2;
 
 /// The SID of the account this process runs as, e.g. `S-1-5-18` for SYSTEM.
 pub fn own_sid() -> Result<String> {
-    unsafe {
-        let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
-        let token = Event(token);
-        token_sid(token.0)
+    token_sid(own_token()?.0)
+}
+
+fn own_token() -> Result<Event> {
+    let mut token = Event(HANDLE::default());
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token.0)? };
+    Ok(token)
+}
+
+#[derive(Clone)]
+pub struct WorkspaceIdentity {
+    sid: String,
+    session: u32,
+    _elevated: bool,
+}
+
+impl WorkspaceIdentity {
+    fn read(token: HANDLE) -> Result<Self> {
+        let mut session = 0u32;
+        let mut elevation = TOKEN_ELEVATION::default();
+        unsafe {
+            GetTokenInformation(token, TokenSessionId, Some((&mut session as *mut u32).cast()),
+                size_of::<u32>() as u32, &mut 0)?;
+            GetTokenInformation(token, TokenElevation, Some((&mut elevation as *mut TOKEN_ELEVATION).cast()),
+                size_of::<TOKEN_ELEVATION>() as u32, &mut 0)?;
+        }
+        Ok(Self { sid: token_sid(token)?, session, _elevated: elevation.TokenIsElevated != 0 })
+    }
+
+    pub fn own() -> Result<Self> {
+        Self::read(own_token()?.0)
+    }
+
+    pub fn matches(&self, client: &WorkspaceIdentity) -> bool {
+        // Either token of the same Windows account in the same session can use the ordinary worker.
+        (self.sid.as_str(), self.session) == (client.sid.as_str(), client.session)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn terminal_identity_matches_the_worker_account_and_session() {
+    let identity = |sid: &str, session, elevated| WorkspaceIdentity { sid: sid.into(), session, _elevated: elevated };
+    let worker = identity("S-1-5-21-1001", 3, false);
+    for (sid, session, elevated, matches) in [
+        ("S-1-5-21-1001", 3, false, true),
+        ("S-1-5-21-1001", 3, true, true),
+        ("S-1-5-21-1001", 4, false, false),
+        ("S-1-5-21-1002", 3, true, false),
+        ("S-1-5-18", 0, true, false),
+    ] {
+        assert_eq!(worker.matches(&identity(sid, session, elevated)), matches);
     }
 }
 
@@ -147,6 +194,7 @@ pub struct Pipe {
     h: HANDLE,
     /// One frame at a time, from whichever thread sends it.
     writing: std::sync::Mutex<()>,
+    starting: std::sync::Mutex<()>,
     /// A write did not finish in time: the stream may hold half a frame, so this connection
     /// is over. The other end sees it end and connects again.
     broken: std::sync::atomic::AtomicBool,
@@ -178,7 +226,7 @@ static WRITE_TIMEOUT_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomi
 
 impl Pipe {
     fn from(h: HANDLE) -> Pipe {
-        Pipe { h, writing: std::sync::Mutex::new(()), broken: std::sync::atomic::AtomicBool::new(false) }
+        Pipe { h, writing: std::sync::Mutex::new(()), starting: std::sync::Mutex::new(()), broken: std::sync::atomic::AtomicBool::new(false) }
     }
 
     /// Creates the only instance of a pipe. Fails if any other process already holds the name.
@@ -240,11 +288,15 @@ impl Pipe {
     /// Ends this connection after a stuck write: every read or write waiting on it fails, so
     /// the loops on both ends finish and connect again.
     fn cut(&self) {
+        self.cancel();
+        unsafe { let _ = DisconnectNamedPipe(self.h); }
+    }
+
+    /// Stops in-flight and future reads and writes without discarding bytes sent to the peer.
+    pub fn cancel(&self) {
+        let _starting = self.starting.lock().unwrap();
         self.broken.store(true, std::sync::atomic::Ordering::Relaxed);
-        unsafe {
-            let _ = CancelIoEx(self.h, None);
-            let _ = DisconnectNamedPipe(self.h);
-        }
+        unsafe { let _ = CancelIoEx(self.h, None); }
     }
 
     /// Waits for a client.
@@ -286,7 +338,12 @@ impl Pipe {
         unsafe {
             let ev = Event(CreateEventW(None, true, false, None)?);
             let mut ov = OVERLAPPED { hEvent: ev.0, ..Default::default() };
-            let r = if write { WriteFile(self.h, Some(buf), None, Some(&mut ov)) } else { ReadFile(self.h, Some(buf), None, Some(&mut ov)) };
+            let r = {
+                let _starting = self.starting.lock().unwrap();
+                ensure!(!self.broken.load(std::sync::atomic::Ordering::Relaxed), "pipe closed");
+                if write { WriteFile(self.h, Some(buf), None, Some(&mut ov)) }
+                else { ReadFile(self.h, Some(buf), None, Some(&mut ov)) }
+            };
             match r {
                 Ok(()) => {}
                 Err(e) if e.code() == ERROR_IO_PENDING.to_hresult() => {}
@@ -315,7 +372,6 @@ impl Pipe {
     }
 
     fn write_all(&self, mut data: Vec<u8>) -> Result<()> {
-        ensure!(!self.broken.load(std::sync::atomic::Ordering::Relaxed), "pipe closed after a stuck write");
         let _one = self.writing.lock().unwrap_or_else(|e| e.into_inner());
         let mut off = 0;
         while off < data.len() {
@@ -335,11 +391,11 @@ impl Pipe {
         self.write_all(b)
     }
 
-    fn read_frame(&self) -> Result<(u8, Vec<u8>)> {
+    fn read_frame(&self, limit: usize) -> Result<(u8, Vec<u8>)> {
         let mut head = [0u8; 5];
         self.read_exact(&mut head)?;
         let len = u32::from_le_bytes(head[..4].try_into().unwrap()) as usize;
-        ensure!(len <= MAX_FRAME, "frame too large");
+        ensure!(len <= limit.min(MAX_FRAME), "frame too large");
         let mut payload = vec![0u8; len];
         self.read_exact(&mut payload)?;
         Ok((head[4], payload))
@@ -351,7 +407,7 @@ impl Pipe {
     }
 
     pub fn recv<T: DeserializeOwned>(&self) -> Result<T> {
-        let (tag, payload) = self.read_frame()?;
+        let (tag, payload) = self.read_frame(MAX_FRAME)?;
         ensure!(tag == TAG_BINARY, "unexpected frame type {tag}");
         decode(&payload)
     }
@@ -364,9 +420,27 @@ impl Pipe {
     }
 
     pub fn recv_json<T: DeserializeOwned>(&self) -> Result<T> {
-        let (tag, payload) = self.read_frame()?;
+        let (tag, payload) = self.read_frame(MAX_FRAME)?;
         ensure!(tag == TAG_JSON, "unexpected frame type {tag}");
         serde_json::from_slice(&payload).context("bad message")
+    }
+
+    /// A frame whose body is already encoded by the caller.
+    pub fn send_frame(&self, binary: bool, bytes: &[u8], limit: usize) -> Result<()> {
+        ensure!(bytes.len() <= limit, "frame too large");
+        let mut frame = vec![0; 5];
+        frame.extend_from_slice(bytes);
+        self.write_frame(if binary { TAG_BINARY } else { TAG_JSON }, frame)
+    }
+
+    pub fn recv_frame(&self, limit: usize) -> Result<(bool, Vec<u8>)> {
+        let (tag, bytes) = self.read_frame(limit)?;
+        ensure!(tag == TAG_JSON || tag == TAG_BINARY, "unexpected frame type {tag}");
+        Ok((tag == TAG_BINARY, bytes))
+    }
+
+    pub fn client_identity(&self) -> Result<WorkspaceIdentity> {
+        WorkspaceIdentity::read(self.client_token()?.0)
     }
 
     /// The authenticated identity of the last panel message, never a SID supplied in JSON.
@@ -400,10 +474,27 @@ impl Pipe {
     }
 
     fn recv_raw(&self, len: usize) -> Result<Vec<u8>> {
-        let (tag, payload) = self.read_frame()?;
+        let (tag, payload) = self.read_frame(MAX_FRAME)?;
         ensure!(tag == TAG_HANDSHAKE && payload.len() == len, "bad handshake");
         Ok(payload)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn raw_frames_preserve_tags_and_bytes_and_check_size_before_reading_the_body() {
+    let sid = own_sid().unwrap();
+    let name = format!(r"\\.\pipe\deskway-ui-frames-test-{}", std::process::id());
+    let server = Pipe::create(&name, &format!("D:P(A;;GA;;;{sid})")).unwrap();
+    let client = Pipe::connect(&name).unwrap();
+    server.accept().unwrap();
+    for (binary, body) in [(false, &b"{}"[..]), (true, &b"\0\xff\0x"[..])] {
+        client.send_frame(binary, body, 4).unwrap();
+        assert_eq!(server.recv_frame(4).unwrap(), (binary, body.to_vec()));
+    }
+    assert!(client.send_frame(true, b"oversized", 4).is_err());
+    client.write_all(vec![5, 0, 0, 0, TAG_BINARY]).unwrap();
+    assert!(server.recv_frame(4).unwrap_err().to_string().contains("frame too large"));
 }
 
 /// The one encoding of every message. Lengths inside a message are bounded too, so a broken

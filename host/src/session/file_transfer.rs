@@ -757,7 +757,7 @@ mod tests {
             let files = (browser.bind)(0).unwrap().transfers;
             let mut file = (files.upload)(&dest, 0, &|| true).unwrap();
             let (updates, _) = Waker::default().channel();
-            let registry = Terminals::guarded(Arc::new(|_, _, _| unreachable!()), access, updates);
+            let registry = Terminals::guarded(Arc::new(|_, _, _| unreachable!()), access, WorkspaceState::READY, false, updates);
             let mut replace = false;
             let mut staged = false;
             let wait = Duration::from_secs(5);

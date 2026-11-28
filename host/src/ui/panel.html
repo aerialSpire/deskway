@@ -35,12 +35,12 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
 #login .fields { margin-top: var(--s5); }
 .problem { margin-top: var(--s2); color: var(--danger); font-size: var(--fs-caption); line-height: var(--lh-body); overflow-wrap: anywhere; white-space: pre-line; user-select: text; }
 #running > .btn { margin-top: var(--s3); }
-.ai-row { margin-top: var(--s3); padding: var(--s2) var(--s3); display: flex; align-items: center; gap: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); line-height: var(--lh-tight); }
-.ai-row[hidden] { display: none; }
-.ai-row > #ai-line { flex: 1; min-width: 0; }
-.ai-row > .btn { flex: none; }
-.ai-row > .dot { background: var(--warn); }
-.ai-row > .dot.off { display: none; }
+.activity-row { margin-top: var(--s3); padding: var(--s2) var(--s3); display: flex; align-items: center; gap: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); background: var(--surface); line-height: var(--lh-tight); }
+.activity-row[hidden] { display: none; }
+.activity-row > .activity-text { flex: 1; min-width: 0; }
+.activity-row > .btn { flex: none; }
+.activity-row > .dot { background: var(--warn); }
+.activity-row > .dot.off { display: none; }
 .hub-row { margin-top: var(--s3); padding: var(--s2) var(--s2) var(--s2) var(--s3); display: flex; align-items: center; gap: var(--s2); border: 1px solid var(--line); border-radius: var(--r-box); line-height: var(--lh-tight); }
 .hub-row > .text { flex: 1; min-width: 0; font-size: var(--fs-small); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hub-row > .btn { flex: none; }
@@ -170,8 +170,12 @@ body { display: flex; flex-direction: column; user-select: none; overflow: hidde
     <div class="problem" id="problem" role="status" hidden></div>
     <div id="running" hidden>
       <button class="btn primary block" id="end" type="button" hidden></button>
-      <div class="ai-row" id="ai-row" hidden><span class="dot" id="ai-dot" aria-hidden="true"></span><span id="ai-line"></span><button class="btn compact" id="stop-ai" type="button"></button></div>
+      <div class="activity-row" id="ai-row" hidden><span class="dot" id="ai-dot" aria-hidden="true"></span><span class="activity-text" id="ai-line"></span><button class="btn compact" id="stop-ai" type="button"></button></div>
       <button class="btn primary block" id="start-service" type="button" hidden data-i18n="panel.start_service"></button>
+      <div class="activity-row" id="terminal-row" hidden>
+        <span class="activity-text"><span data-i18n="panel.terminal"></span><span class="note" id="terminal-count" hidden></span></span>
+        <button class="btn compact" id="open-terminal" type="button" data-i18n="panel.terminal_open"></button>
+      </div>
       <h2 class="sec" data-i18n="panel.settings"></h2>
       <div class="row" id="local-setting" hidden>
         <span><span data-i18n="local.run"></span><span class="note" id="local-setting-note"></span></span>
@@ -757,6 +761,9 @@ window.render = (s) => {
   $('ai-dot').className = s.ai_client ? 'dot' : 'dot off';
   $('stop-ai').hidden = s.ai_state !== 'on';
   $('stop-ai').textContent = s.ai_client ? t('overlay.disconnect') : t('panel.stop_ai');
+  $('terminal-row').hidden = s.terminal_count == null;
+  $('terminal-count').hidden = !s.terminal_count;
+  $('terminal-count').textContent = s.terminal_count ? t('panel.terminals_running', { n: s.terminal_count }) : '';
   renderLocal(s);
   if (s.enrolled) renderAdding(s);
 };
@@ -843,6 +850,7 @@ $('prevent-sleep').addEventListener('click', () => send({ cmd: 'prevent-sleep', 
 $('autostart-no').addEventListener('click', () => { $('autostart-confirm').hidden = true; });
 $('autostart-yes').addEventListener('click', () => { $('autostart-confirm').hidden = true; send({ cmd: 'autostart', on: false }); });
 $('start-service').addEventListener('click', () => send({ cmd: 'start-service' }));
+$('open-terminal').onclick = () => send({ cmd: 'open-terminal' });
 $('leave').addEventListener('click', () => { ui.leaving = true; if (window.last) window.render(window.last); });
 for (const id of ['add', 'add2', 'add-first']) $(id).addEventListener('click', startAdding);
 $('add-close').addEventListener('click', () => { ui.adding = false; send({ cmd: 'pair-stop' }); if (window.last) window.render(window.last); });

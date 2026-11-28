@@ -10,10 +10,11 @@ import { TerminalChannel } from './terminal-channel.js';
 const encoder = new TextEncoder();
 
 export class TerminalView {
-  constructor(s, target) {
+  constructor(s, target, taken) {
     this.s = s;
     // An ID returns to that shell, null starts a new shell, and undefined uses the host's default.
     this.target = target;
+    this.taken = taken;
     this.buttons = [s.osk.button];
     this.onscreenCapsLock = false;
     this.el = h('div', { class: 'terminal-surface' });
@@ -52,20 +53,23 @@ export class TerminalView {
     }, true);
   }
 
-  useChannels({ terminal }) {
+  useChannels({ terminal }, take = false) {
     this.target = this.selection;
+    this.take = take;
+    terminal.binaryType = 'arraybuffer';
     this.stream?.dispose();
     // xterm keeps queued writes across reset. Each stream needs its own emulator.
-    if (this.emulator) this.mountEmulator();
+    if (this.xterm) this.mountEmulator();
     this.status.hidden = true;
     this.switching = false;
     this.stream = new TerminalChannel(terminal, (bytes, done) => this.emulator.write(bytes, done), (m) => this.onStatus(m));
     terminal.onopen = () => this.active();
   }
 
-  select(target) {
+  select(target, take = false) {
     if (!this.stream || this.stream.phase === 'ready') {
       this.target = target;
+      this.take = take;
       return;
     }
     if (!this.canSwitch || (target != null && target === this.stream.id && this.stream.attached)) return;
@@ -77,7 +81,7 @@ export class TerminalView {
     this.s.updateRemoteControls();
     stream.leave(() => {
       if (this.s.closed || this.stream !== stream) return;
-      this.useChannels({ terminal: this.s.connection.pc.createDataChannel(CAPS.TERMINAL) });
+      this.useChannels({ terminal: this.s.connection.pc.createDataChannel(CAPS.TERMINAL) }, take);
       if (!this.s.stage.hidden) this.s.setWaiting(t(this.waiting));
       this.active();
     });
@@ -144,7 +148,10 @@ export class TerminalView {
   }
 
   size() {
-    this.stream.size(this.emulator.rows, this.emulator.cols, this.s.hasCap(CAPS.TERMINALS) ? this.target : undefined);
+    const target = this.s.hasCap(CAPS.TERMINALS) ? this.target : undefined;
+    if (this.stream.size(this.emulator.rows, this.emulator.cols, target, this.take && this.s.hasCap(CAPS.TERMINAL_TAKEOVER))) {
+      this.take = false;
+    }
   }
 
   keyboardSink() {
@@ -197,6 +204,14 @@ export class TerminalView {
       this.opened = true;
       this.fit();
       if (m.dropped) this.showStatus(t('terminal.dropped'));
+    } else if (m.t === Msg.DETACHED) {
+      const id = this.stream.id;
+      this.opened = false;
+      this.target = this.stream.id = undefined;
+      this.s.osk.toggle(false);
+      this.emulator?.dispose();
+      this.emulator = this.fitter = null;
+      this.taken?.(id);
     } else {
       const why = m.why === 'open' && this.target != null && this.s.hasCap(CAPS.TERMINALS) ? 'return' : m.why;
       if (m.t === Msg.EXIT || (m.why !== 'close' && this.stream.channel.readyState === 'open')) {

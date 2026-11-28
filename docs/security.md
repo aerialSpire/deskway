@@ -513,12 +513,15 @@ the ordinary worker of the console user. The shell starts in the user's home or 
 with ordinary rights, regardless of the AI administrator switch. On macOS, Terminal and Files
 work without Screen Recording or Accessibility. The shell runs with the host app's privacy
 permissions, which can differ from those of a terminal app the user opens directly.
-Browser shells and their programs survive the sessions that opened them. A browser admitted
-to the desk seat can attach to one shell at a time and receive its most recent 256 KiB of
-output, kept in memory. Each shell ends on exit, when an attached browser explicitly closes
+Deskway shells and their programs survive the attachments that opened them. The admitted
+browser and the terminal window at the computer can each attach to one shell and receive
+its most recent 256 KiB of output, kept in memory. A terminal takeover revokes only the
+displaced attachment. Each shell ends on exit, when the holder explicitly closes
 it, or after 24 hours detached. All shells end when the host stops or the Windows sign-in ends
 or changes users. Locking Windows or macOS blocks new data sessions and ends any attached one
-while kept shells continue to run.
+while kept shells continue to run. A lock also detaches the terminal window at the computer.
+Its access follows the same workspace refusals and works while signaling is unavailable or
+the computer awaits approval.
 This also applies on the Windows secure desktop and when fast user switching takes the Mac
 app's session off the active console. The host reads these states independently of capture.
 It checks access before queueing each terminal output frame, including replay, and stops a
@@ -646,12 +649,12 @@ The service mode consists of three processes, all from one binary:
 | Agent (`agent`) | SYSTEM token, console session; privileges stripped except SeChangeNotify and SeImpersonate | Capture, encode, input, file transfers (as the signed-in user), input desktop tracking (Default, Winlogon, UAC), and applying administrator-authorized browser trust for a local server | Network |
 | `DeskwayNet` service (`net`) | `NT SERVICE\DeskwayNet` (a virtual account): SeChangeNotify, SeCreateGlobal and SeImpersonate only | Signaling, WebRTC, TURN, device key checks, pairing | Run as SYSTEM, touch the screen |
 
-The user worker serves browser Terminal and Files through its authenticated pipe. The admin
+The user worker serves Terminal and browser Files through its authenticated pipe. The admin
 worker serves elevated AI requests, as described under
 [AI clients at the computer](#ai-clients-at-the-computer).
 
 The desktop panel and the tray icon run as the signed-in user and talk to `DeskwayNet` over
-`\\.\pipe\deskway-ui`. The pipe accepts only the panel's requests (`PanelRequest` in
+`\\.\pipe\deskway-ui`. A panel connection accepts the panel's requests (`PanelRequest` in
 `host/src/settings.rs`):
 
 - show the status;
@@ -665,6 +668,13 @@ The desktop panel and the tray icon run as the signed-in user and talk to `Deskw
 The pipe's DACL gives SYSTEM and DeskwayNet full control. Interactive users can read and write
 but cannot create pipe instances. The panel checks that the process serving the pipe is the one
 that the service manager reports as running DeskwayNet.
+
+A separate connection on the same pipe carries the terminal window's bounded raw frames.
+DeskwayNet checks the connecting token's SID and Windows session ID against the authenticated
+user worker for the current workspace generation before granting a terminal lease. An
+elevated panel with the same SID and session attaches to the ordinary worker's shell.
+The terminal list is sent only in the matching panel's status, with device credentials
+omitted. macOS runs the terminal window in the same process as the host.
 
 Adding a device is something the person sitting at the computer does, so it does not require an
 administrator. The trade-off is that a program running as that person could also open a QR code

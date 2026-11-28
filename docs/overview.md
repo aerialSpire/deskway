@@ -39,6 +39,9 @@ being verified, so it can try them as soon as that answer is applied.
 - A Mac can be controlled without a monitor attached, as long as macOS provides a display.
 - The clipboard can be shared (text, HTML, pictures and files), and files and images can be sent
   in both directions.
+- Use the same Deskway terminals from the browser and the host panel on Windows and macOS.
+  Shells keep running when you leave them, and you can take an attachment between the
+  browser and the computer.
 - One person controls a computer at a time. Another of your devices can take over, and the
   first one can take it back.
 
