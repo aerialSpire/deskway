@@ -82,7 +82,14 @@ if [ "$mode" != install ]; then
         mkdir "$staging/image"
         mv "$bundle" "$staging/image/"
         ln -s /Applications "$staging/image/Applications"
-        hdiutil create -volname 'Deskway Host' -srcfolder "$staging/image" -format UDZO "$staging/$package"
+        # hdiutil can fail with "Resource busy" while the system still scans the fresh bundle.
+        attempt=1
+        until hdiutil create -volname 'Deskway Host' -srcfolder "$staging/image" -format UDZO "$staging/$package"; do
+            [ "$attempt" -lt 5 ] || exit 1
+            rm -f "$staging/$package"
+            attempt=$((attempt + 1))
+            sleep 5
+        done
         hdiutil verify "$staging/$package"
     else
         package=DeskwayHost-macos-arm64.zip
