@@ -59,6 +59,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The macOS runner has no Go on PATH; the app bundles the local server (build-mac-host.sh).
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: Build universal macOS host DMG and CLI (Apple silicon and Intel)
         shell: bash
         run: |
