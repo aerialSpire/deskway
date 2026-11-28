@@ -1,12 +1,11 @@
-//! A terminal channel's attachment to the host's PTY.
+//! A terminal attachment to the host's PTY.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io;
 use std::sync::mpsc::Sender;
-use std::time::Instant;
 
 use anyhow::Context;
-use str0m::channel::{Channel, ChannelData, ChannelId};
 use wire::terminal::{Terminal as Msg, TerminalError, FRAME, INPUT_WINDOW, OUTPUT_WINDOW};
 
 use crate::i18n::t;
@@ -16,10 +15,34 @@ use replay::History;
 
 pub mod registry;
 mod replay;
-use super::{credit::Credit, Cx, SessionEvent};
+use super::{credit::Credit, SessionEvent};
 
 const HIGH: usize = 64 * 1024;
-const LOW: usize = 16 * 1024;
+pub(super) const LOW: usize = 16 * 1024;
+
+pub(super) trait Port {
+    /// Returns false if the transport did not accept the frame.
+    fn write(&mut self, binary: bool, data: &[u8]) -> anyhow::Result<bool>;
+    fn buffered(&mut self) -> usize;
+}
+
+#[derive(Debug)]
+pub(super) enum PumpError {
+    Terminal(anyhow::Error),
+    Transport(anyhow::Error),
+}
+
+// Shell::output passes through send errors alongside PTY errors.
+#[derive(Debug)]
+struct PortWrite(anyhow::Error);
+
+impl fmt::Display for PortWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for PortWrite {}
 
 #[derive(Default)]
 struct OutputCredit {
@@ -211,23 +234,23 @@ impl Terminal {
         }
     }
 
-    pub(super) fn message(&mut self, active: bool, d: ChannelData) {
+    pub(super) fn message(&mut self, active: bool, binary: bool, bytes: Vec<u8>) {
         if self.done {
             return;
         }
-        if d.data.len() > FRAME {
+        if bytes.len() > FRAME {
             self.error(TerminalError::Protocol);
             return;
         }
-        if d.binary {
+        if binary {
             if let Some(stream) = &mut self.stream {
-                if !stream.input.receive(d.data) {
+                if !stream.input.receive(bytes) {
                     self.error(TerminalError::Protocol);
                 }
             }
             return;
         }
-        match serde_json::from_slice(&d.data) {
+        match serde_json::from_slice(&bytes) {
             Ok(Msg::Open { rows, cols, id, new }) if active && rows > 0 && cols > 0 && self.stream.is_none() => {
                 match selection(id, new, self.peer_has_terminals) {
                     Some(target) => self.open(rows, cols, target),
@@ -267,64 +290,57 @@ impl Terminal {
         }
     }
 
-    fn pump(&mut self, ch: &mut Channel<'_>) -> anyhow::Result<Option<Instant>> {
+    pub(super) fn pump(&mut self, port: &mut impl Port) -> Result<bool, PumpError> {
         if let Some(reply) = &self.reply {
-            if !ch.write(false, &serde_json::to_vec(reply)?)? {
-                return Ok(None);
+            let bytes = serde_json::to_vec(reply).map_err(|e| PumpError::Terminal(e.into()))?;
+            if !port.write(false, &bytes).map_err(PumpError::Transport)? {
+                return Ok(false);
             }
             self.reply = None;
             if self.stream.is_none() {
-                return Ok(Some(Instant::now()));
+                return Ok(true);
             }
         }
-        self.pump_stream(ch.buffered_amount(), |binary, data| Ok(ch.write(binary, data)?))
-    }
-
-    fn pump_stream(&mut self, buffered: usize, mut send: impl FnMut(bool, &[u8]) -> anyhow::Result<bool>) -> anyhow::Result<Option<Instant>> {
-        let Some(stream) = &mut self.stream else { return Ok(None) };
+        let buffered = port.buffered();
+        let Some(stream) = &mut self.stream else { return Ok(false) };
         let Some(result) = self.lease.with_shell(|shell| {
             stream.pump(shell, buffered, |binary, data| {
                 if binary && !self.lease.accessible() { return Ok(false); }
-                send(binary, data)
+                Ok(port.write(binary, data).map_err(PortWrite)?)
             })
-        }) else { return Ok(None) };
-        let (progress, exit) = result?;
+        }) else { return Ok(false) };
+        let (progress, exit) = result.map_err(|e| match e.downcast::<PortWrite>() {
+            Ok(PortWrite(e)) => PumpError::Transport(e),
+            Err(e) => PumpError::Terminal(e),
+        })?;
         if let Some(code) = exit {
             self.lease.close(Closed::Exit(code));
             self.finish(Some(Msg::Exit { code }));
         }
-        Ok((progress || exit.is_some()).then(Instant::now))
+        Ok(progress || exit.is_some())
     }
 
-    pub(super) fn channel_closed(&mut self) {
+    pub(super) fn pump_failed(&mut self, failure: PumpError) {
+        let (error, close) = match failure {
+            PumpError::Terminal(error) => (error, true),
+            PumpError::Transport(error) => (error, false),
+        };
+        eprintln!("{}: {error:#}", t("terminal.io"));
+        if close {
+            self.lease.close(Closed::Io);
+        }
+        self.error(TerminalError::Io);
+    }
+
+    pub(super) fn discard_reply(&mut self) {
+        self.reply = None;
+    }
+
+    pub(super) fn transport_closed(&mut self) {
         self.lease.detach(Reason::Failed.as_str());
         self.stream = None;
         self.reply = None;
         self.done = false;
-    }
-
-    pub(super) fn configure(&self, ch: &mut Channel<'_>) {
-        ch.set_buffered_amount_low_threshold(LOW - 1);
-    }
-
-    pub(super) fn poll(&mut self, cx: &mut Cx, id: ChannelId) -> Option<Instant> {
-        let mut ch = cx.rtc.channel(id)?;
-        match self.pump(&mut ch) {
-            Ok(next) => next,
-            Err(e) => {
-                eprintln!("{}: {e:#}", t("terminal.io"));
-                if e.is::<io::Error>() {
-                    self.lease.close(Closed::Io);
-                }
-                self.error(TerminalError::Io);
-                // If the channel cannot send even an error, its close reports the failure.
-                if self.pump(&mut ch).is_err() {
-                    cx.rtc.direct_api().close_data_channel(id);
-                    self.finish(None);
-                }
-                Some(Instant::now())
-            }
-        }
     }
 }
 
@@ -376,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn output_uses_channel_hysteresis_and_emulator_credit() {
+    fn output_uses_buffer_hysteresis_and_emulator_credit() {
         let mut flow = OutputCredit::default();
         for (buffered, expected) in [(0, FRAME), (HIGH - 1, 1), (HIGH, 0), (LOW, 0), (LOW - 1, FRAME)] {
             assert_eq!(flow.capacity(buffered), expected);
